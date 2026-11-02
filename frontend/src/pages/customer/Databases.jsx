@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Database, Trash2, MoreHorizontal, KeyRound, ExternalLink, Copy, Plus, Stethoscope } from 'lucide-react'
 import { api, get, post, patch, del } from '@/lib/api'
@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/DropdownMenu'
 import { toast } from '@/components/ui/Toast'
 import { Checkbox } from '@/components/ui/Toggle'
+import { InlineError } from './InlineFeedback'
 
 export default function Databases() {
   const username = useAccountUsername()
@@ -41,6 +42,9 @@ export default function Databases() {
   const [createOpen, setCreateOpen] = useState(false)
   const [selectedDatabases, setSelectedDatabases] = useState(new Set())
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
+  // Set when a sign-on request answers that phpMyAdmin is not published,
+  // even if the database list was fetched before that changed.
+  const [pmaMissing, setPmaMissing] = useState(false)
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['databases', username],
@@ -52,6 +56,11 @@ export default function Databases() {
     queryFn: () => get(`/api/v1/accounts/${username}/databases/users`),
     enabled: !!username,
   })
+  // An absent flag (older servers) means unknown, so the button stays usable.
+  const pmaAvailable = data?.pma_available !== false && !pmaMissing
+  // remote_access.available is null when the listener could not be read.
+  const remoteAccess = usersQuery.data?.remote_access
+  const remoteOff = remoteAccess?.available === false
   const refreshDatabaseState = () => {
     qc.invalidateQueries({ queryKey: ['databases', username] })
     qc.invalidateQueries({ queryKey: ['database-users', username] })
@@ -152,9 +161,10 @@ export default function Databases() {
   const pmaMut = useMutation({
     mutationFn: ({ row }) => post(`/api/v1/accounts/${username}/databases/${row.db_name}/pma-token`, {}),
     onSuccess: (res, { popup }) => {
-      if (!res?.pma_url) {
+      if (res?.available === false || !res?.pma_url) {
         popup?.close()
-        toast.error('phpMyAdmin is not set up', 'Ask your administrator to configure phpMyAdmin access.')
+        setPmaMissing(true)
+        toast.error('phpMyAdmin is not set up on this server', 'Ask your administrator to set up phpMyAdmin.')
         return
       }
       if (popup && !popup.closed) popup.location.replace(res.pma_url)
@@ -178,11 +188,20 @@ export default function Databases() {
       const body = new FormData(); body.append('file', file)
       return api.post(`/api/v1/accounts/${username}/databases/${encodeURIComponent(row.db_name)}/import`, body).then(response => response.data)
     },
-    onSuccess: () => { toast.success('SQL imported', 'A private pre-import recovery copy was retained.'); refreshDatabaseState() },
+    onSuccess: (_res, { row }) => { toast.success('SQL imported', `The file was applied to ${row.db_name}.`); refreshDatabaseState() },
+    // A 400 carries the MariaDB error line (the database was restored); a
+    // 409 means earlier failed imports wait for administrator review. The
+    // message also stays in the import tab, since it can be long.
     onError: (e) => toast.error('Could not import SQL', e.message),
   })
 
+  // An import error belongs to the database it was run on; drop it when the
+  // details dialog closes or shows another database.
+  const resetImport = importMut.reset
+  useEffect(() => { resetImport() }, [selected?.db_name, resetImport])
+
   function openPma(row) {
+    if (!pmaAvailable) return
     // Open during the click gesture so slow token creation does not trigger
     // popup blocking. If the browser blocks it, use this tab after success.
     const popup = window.open('about:blank', '_blank')
@@ -236,9 +255,11 @@ export default function Databases() {
               <DropdownMenuItem onSelect={() => resetMut.mutate(r)}>
                 <KeyRound className="h-4 w-4" /> Reset password
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => openPma(r)}>
-                <ExternalLink className="h-4 w-4" /> phpMyAdmin
-              </DropdownMenuItem>
+              {pmaAvailable && (
+                <DropdownMenuItem onSelect={() => openPma(r)}>
+                  <ExternalLink className="h-4 w-4" /> phpMyAdmin
+                </DropdownMenuItem>
+              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem destructive onSelect={() => setToDelete(r)}>
                 <Trash2 className="h-4 w-4" /> Delete
@@ -252,7 +273,7 @@ export default function Databases() {
 
   return (
     <div className="customer-databases">
-      <PageHeader title="Databases" description="Create and manage MySQL databases, users and application credentials." icon={Database} primaryAction={<Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4"/>Create database</Button>} />
+      <PageHeader title="Databases" description="Create and manage MySQL databases, users and application credentials." icon={Database} primaryAction={<Button onClick={() => { createMut.reset(); setCreateOpen(true) }}><Plus className="h-4 w-4"/>Create database</Button>} />
       <Tabs defaultValue="databases">
         <TabsList aria-label="Database management sections">
           <TabsTrigger value="databases">Databases</TabsTrigger>
@@ -260,7 +281,7 @@ export default function Databases() {
           <TabsTrigger value="access">Access &amp; privileges</TabsTrigger>
         </TabsList>
         <TabsContent value="databases" className="space-y-6">
-      <h2 className="interior-section-title">Current Databases</h2>
+      <h2 className="interior-section-title">Current databases</h2>
 
       <DataTable
         columns={columns}
@@ -284,16 +305,21 @@ export default function Databases() {
       <section className="database-create-section" aria-labelledby="database-user-create-title">
         <h2 id="database-user-create-title">Create Database User</h2>
         <p className="mb-4 text-sm text-muted-foreground">Create one login, then assign it to any database on this account.</p>
-        <form onSubmit={event => { event.preventDefault(); createUserMut.mutate({ name: userForm.name.trim(), password: userForm.password || undefined, host: userForm.host.trim() || 'localhost' }) }}>
+        <form onSubmit={event => { event.preventDefault(); createUserMut.mutate({ name: userForm.name.trim(), password: userForm.password || undefined, host: remoteOff ? 'localhost' : userForm.host.trim() || 'localhost' }) }}>
           <FormField label="New user" htmlFor="database-user-name" required hint="Your account prefix is added automatically.">
             <div className="database-name-input"><span aria-hidden="true">{username}_</span><Input id="database-user-name" value={userForm.name} onChange={event => setUserForm(current => ({ ...current, name: event.target.value }))} placeholder="reporter" required /></div>
           </FormField>
           <FormField label="User password" htmlFor="database-user-password" hint="Leave blank to generate a strong password.">
             <Input id="database-user-password" type="password" value={userForm.password} onChange={event => setUserForm(current => ({ ...current, password: event.target.value }))} autoComplete="new-password" placeholder="Generate automatically" />
           </FormField>
-          <FormField label="Allowed host" htmlFor="database-user-host" hint="Use localhost for applications on this server, or one exact remote hostname/IP. Wildcards are refused and port 3306 is not opened automatically.">
-            <Input id="database-user-host" value={userForm.host} onChange={event => setUserForm(current => ({ ...current, host: event.target.value }))} placeholder="localhost" required />
+          <FormField label="Allowed host" htmlFor="database-user-host" hint={remoteOff
+            ? 'Remote access is off: MariaDB accepts local connections only. An administrator must enable MariaDB network listening and open port 3306.'
+            : remoteAccess?.available
+              ? `Use localhost for applications on this server, or one exact remote hostname or IP address. Wildcards are refused. Remote clients also need port ${remoteAccess.port || 3306} open in the server firewall; ask your administrator, it is not opened automatically.`
+              : 'Use localhost for applications on this server, or one exact remote hostname/IP. Wildcards are refused and port 3306 is not opened automatically.'}>
+            <Input id="database-user-host" value={remoteOff ? 'localhost' : userForm.host} disabled={remoteOff} onChange={event => setUserForm(current => ({ ...current, host: event.target.value }))} placeholder="localhost" required />
           </FormField>
+          <InlineError error={createUserMut.error} className="mb-4" />
           <Button type="submit" loading={createUserMut.isPending} disabled={!userForm.name.trim()}>Create user</Button>
         </form>
       </section>
@@ -338,7 +364,7 @@ export default function Databases() {
         </TabsContent>
       </Tabs>
 
-      <Dialog open={createOpen} onOpenChange={open => !createMut.isPending && setCreateOpen(open)}><DialogContent size="sm"><DialogHeader><DialogTitle>Create New Database</DialogTitle><DialogDescription>A database and its matching user are created together. Save the credentials shown after creation.</DialogDescription></DialogHeader><form onSubmit={event => { event.preventDefault(); createMut.mutate({ name: form.name.trim(), password: form.password || undefined }) }}><DialogBody className="space-y-4"><FormField label="New database" htmlFor="database-name" required hint="Enter a short suffix, such as shop. Your account prefix is added automatically."><div className="database-name-input"><span aria-hidden="true">{username}_</span><Input id="database-name" value={form.name} onChange={event => setForm(current => ({ ...current, name: event.target.value }))} placeholder="shop" required aria-describedby="database-prefix" /></div></FormField><span id="database-prefix" className="sr-only">Database name will start with {username} underscore.</span><FormField label="Database password" htmlFor="database-password" hint="Leave blank to generate a strong password."><Input id="database-password" type="password" value={form.password} onChange={event => setForm(current => ({ ...current, password: event.target.value }))} autoComplete="new-password" placeholder="Generate automatically" /></FormField></DialogBody><DialogFooter><Button type="button" variant="secondary" disabled={createMut.isPending} onClick={() => setCreateOpen(false)}>Cancel</Button><Button type="submit" loading={createMut.isPending} disabled={!form.name.trim()}>Create database</Button></DialogFooter></form></DialogContent></Dialog>
+      <Dialog open={createOpen} onOpenChange={open => !createMut.isPending && setCreateOpen(open)}><DialogContent size="sm"><DialogHeader><DialogTitle>Create New Database</DialogTitle><DialogDescription>A database and its matching user are created together. Save the credentials shown after creation.</DialogDescription></DialogHeader><form onSubmit={event => { event.preventDefault(); createMut.mutate({ name: form.name.trim(), password: form.password || undefined }) }}><DialogBody className="space-y-4"><FormField label="New database" htmlFor="database-name" required hint="Enter a short suffix, such as shop. Your account prefix is added automatically."><div className="database-name-input"><span aria-hidden="true">{username}_</span><Input id="database-name" value={form.name} onChange={event => setForm(current => ({ ...current, name: event.target.value }))} placeholder="shop" required aria-describedby="database-prefix" /></div></FormField><span id="database-prefix" className="sr-only">Database name will start with {username} underscore.</span><FormField label="Database password" htmlFor="database-password" hint="Leave blank to generate a strong password."><Input id="database-password" type="password" value={form.password} onChange={event => setForm(current => ({ ...current, password: event.target.value }))} autoComplete="new-password" placeholder="Generate automatically" /></FormField><InlineError error={createMut.error} /></DialogBody><DialogFooter><Button type="button" variant="secondary" disabled={createMut.isPending} onClick={() => setCreateOpen(false)}>Cancel</Button><Button type="submit" loading={createMut.isPending} disabled={!form.name.trim()}>Create database</Button></DialogFooter></form></DialogContent></Dialog>
       <ConfirmDialog open={bulkDeleteOpen} onOpenChange={open => !open && !bulkDeleteMut.isPending && setBulkDeleteOpen(false)} title={`Delete ${selectedDatabases.size} selected database${selectedDatabases.size === 1 ? '' : 's'}?`} description={[...selectedDatabases].join(', ')} confirmLabel="Delete databases" variant="danger" loading={bulkDeleteMut.isPending} error={bulkDeleteMut.error} onConfirm={() => bulkDeleteMut.mutate()} />
 
       {/* Credentials reveal (after create / reset) */}
@@ -373,14 +399,17 @@ export default function Databases() {
               <TabsList><TabsTrigger value="overview">Overview</TabsTrigger><TabsTrigger value="access">Users &amp; privileges</TabsTrigger><TabsTrigger value="transfer">Import / export</TabsTrigger><TabsTrigger value="maintenance">Maintenance</TabsTrigger></TabsList>
               <TabsContent value="overview" className="space-y-5">
                 <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm"><dt className="text-muted-foreground">Database</dt><dd className="break-all">{selected?.db_name}</dd><dt className="text-muted-foreground">Primary user</dt><dd className="break-all">{selected?.db_user}</dd><dt className="text-muted-foreground">Storage</dt><dd>{formatBytes(selected?.size_bytes || 0)} across {selected?.table_count || 0} tables</dd><dt className="text-muted-foreground">Engines</dt><dd>{selected?.engines?.join(', ') || 'No tables'}</dd><dt className="text-muted-foreground">Created</dt><dd>{selected?.created_at ? formatDate(selected.created_at) : '—'}</dd></dl>
-                <Button loading={pmaMut.isPending} onClick={() => openPma(selected)}><ExternalLink className="h-4 w-4"/> Open phpMyAdmin</Button>
+                <div className="space-y-2">
+                  <Button loading={pmaMut.isPending} disabled={!pmaAvailable} aria-describedby={pmaAvailable ? undefined : 'pma-unavailable-note'} onClick={() => openPma(selected)}><ExternalLink className="h-4 w-4"/> Open phpMyAdmin</Button>
+                  {!pmaAvailable && <p id="pma-unavailable-note" className="text-sm text-muted-foreground">phpMyAdmin is not set up on this server. Ask your administrator to set it up.</p>}
+                </div>
               </TabsContent>
               <TabsContent value="access" className="space-y-3"><h3 className="font-semibold">Users with access</h3>
               {(data?.databases?.find(row => row.db_name === selected?.db_name)?.grants || []).map(grant => <div key={`${grant.db_user}@${grant.host}`} className="flex items-center justify-between gap-3 rounded-btn border border-border px-3 py-2 text-sm"><span><code>{grant.db_user}@{grant.host}</code><small className="ml-2 text-muted-foreground">{grant.preset === 'read_only' ? 'Read only' : grant.preset === 'custom' ? grant.privileges.join(', ') : 'Full hosted access'}</small></span>{!grant.original && <Button size="sm" variant="ghost" loading={revokeMut.isPending} onClick={() => revokeMut.mutate({ database: selected.db_name, user: grant.db_user, host: grant.host })}>Remove</Button>}</div>)}
               <div className="grid gap-2 sm:grid-cols-[2fr_1fr_auto]"><Select aria-label="Database user to assign" value={assignUser} onChange={event => setAssignUser(event.target.value)}><option value="">Choose a user</option>{(usersQuery.data?.users || []).filter(user => !(data?.databases?.find(row => row.db_name === selected?.db_name)?.grants || []).some(grant => grant.db_user === user.db_user && grant.host === user.host)).map(user => <option key={user.id} value={`${user.db_user}\n${user.host}`}>{user.db_user}@{user.host}</option>)}</Select><Select aria-label="Database privileges" value={assignPreset} onChange={event => setAssignPreset(event.target.value)}><option value="all">Full hosted access</option><option value="read_only">Read only</option><option value="custom">Custom</option></Select><Button disabled={!assignUser || (assignPreset === 'custom' && !customPrivileges.length)} loading={assignMut.isPending} onClick={() => { const [user, host] = assignUser.split('\n'); assignMut.mutate({ database: selected.db_name, user, host }) }}>Assign user</Button></div>
               {assignPreset === 'custom' && <fieldset className="grid gap-2 rounded-btn border border-border p-3 sm:grid-cols-3"><legend className="px-1 text-sm font-medium">Custom privileges</legend>{['SELECT','INSERT','UPDATE','DELETE','CREATE','DROP','ALTER','INDEX','REFERENCES','CREATE TEMPORARY TABLES','LOCK TABLES'].map(privilege => <label key={privilege} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={customPrivileges.includes(privilege)} onChange={event => setCustomPrivileges(values => event.target.checked ? [...values, privilege] : values.filter(value => value !== privilege))}/>{privilege}</label>)}</fieldset>}
               </TabsContent>
-              <TabsContent value="transfer" className="space-y-4"><p className="text-sm text-muted-foreground">Move SQL data into or out of this database. Imports keep a private pre-import recovery copy.</p><div className="flex flex-wrap gap-3"><Button variant="outline" asChild><a href={`/api/v1/accounts/${username}/databases/${encodeURIComponent(selected?.db_name || '')}/export`}>Export SQL</a></Button><label className="inline-flex h-9 cursor-pointer items-center rounded-btn border border-input px-3 text-sm font-medium hover:bg-muted">{importMut.isPending ? 'Importing…' : 'Import SQL'}<input type="file" accept=".sql,application/sql,text/plain" className="sr-only" disabled={importMut.isPending} onChange={event => { const file = event.target.files?.[0]; if (file && selected) importMut.mutate({ row: selected, file }); event.target.value = '' }}/></label></div></TabsContent>
+              <TabsContent value="transfer" className="space-y-4"><p className="text-sm text-muted-foreground">Move SQL data into or out of this database. The file is applied to the database; tables it does not mention are kept. If the import fails, the database is restored automatically.</p><div className="flex flex-wrap gap-3"><Button variant="outline" asChild><a href={`/api/v1/accounts/${username}/databases/${encodeURIComponent(selected?.db_name || '')}/export`}>Export SQL</a></Button><label className="inline-flex h-9 cursor-pointer items-center rounded-btn border border-input px-3 text-sm font-medium hover:bg-muted focus-within:border-accent focus-within:ring-[3px] focus-within:ring-ring/30">{importMut.isPending ? 'Importing…' : 'Import SQL'}<input type="file" accept=".sql,application/sql,text/plain" className="sr-only" disabled={importMut.isPending} onChange={event => { const file = event.target.files?.[0]; if (file && selected) importMut.mutate({ row: selected, file }); event.target.value = '' }}/></label></div>{importMut.variables?.row?.db_name === selected?.db_name && <InlineError error={importMut.error} />}</TabsContent>
               <TabsContent value="maintenance" className="space-y-5">
                 <div className="flex flex-wrap gap-3"><Button variant="outline" loading={resetMut.isPending} onClick={() => {resetMut.mutate(selected);setSelected(null)}}><KeyRound className="h-4 w-4"/> Reset primary password</Button><Button variant="outline" loading={healthMut.isPending} onClick={() => healthMut.mutate({ row: selected, repair: false })}><Stethoscope className="h-4 w-4"/> Check tables</Button><Button variant="outline" loading={healthMut.isPending} onClick={() => healthMut.mutate({ row: selected, repair: true })}>Repair MyISAM/Aria</Button></div>
                 <div className="rounded-btn border border-border p-3"><h3 className="font-semibold">Rename database</h3><p className="mt-1 text-sm text-muted-foreground">Boron copies and validates the database before switching. Update application configuration after the rename.</p><div className="mt-3 flex gap-2"><div className="database-name-input flex-1"><span aria-hidden="true">{username}_</span><Input aria-label="New database name" value={renameName} onChange={event => setRenameName(event.target.value)} placeholder="newname" /></div><Button variant="outline" disabled={!renameName.trim()} loading={renameMut.isPending} onClick={() => renameMut.mutate({ row: selected, newName: renameName.trim() })}>Rename</Button></div></div>

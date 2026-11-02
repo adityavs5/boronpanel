@@ -505,8 +505,9 @@ def test_every_admin_policy_rejects_customer_and_reseller():
 
 
 def test_all_account_policies_reject_missing_foreign_and_mismatched_targets(isolated_db):
-    from daemon.rpc_authority import Principal, authorize
+    from daemon.rpc_authority import NEW_DOMAIN_OPERATIONS, Principal, authorize
     from shared.models import Domain
+    from shared.validation import ConflictError
     with write_session() as db:
         alice = Account(username='alice')
         bob = Account(username='bob')
@@ -528,7 +529,10 @@ def test_all_account_policies_reject_missing_foreign_and_mismatched_targets(isol
         for target in ({}, {'username': 'bob'}, {'domain': 'bob.example'},
                        {'username': 'alice', 'domain': 'bob.example'},
                        {'username': 'bob', 'domain': 'alice.example'}):
-            with pytest.raises(AuthorizationError):
+            # Adding a name another account holds is a conflict for the owner
+            # of the named account (round 2), never an authorization pass.
+            taken = operation in NEW_DOMAIN_OPERATIONS and target == {'username': 'alice', 'domain': 'bob.example'}
+            with pytest.raises(ConflictError if taken else AuthorizationError):
                 authorize(operation, target, principal)
 
 

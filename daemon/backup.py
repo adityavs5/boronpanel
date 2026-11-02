@@ -23,6 +23,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import contextlib
 import stat
 import subprocess
@@ -44,6 +45,9 @@ from shared.models import (
     BackupJob,
     BackupSchedule,
     DatabaseGrant,
+    DatabaseUser,
+    DatabaseUserGrant,
+    DkimKey,
     Domain,
     DnsZone,
     MailDomain,
@@ -77,6 +81,39 @@ class BackupError(ValidationError):
     pass
 
 
+class BackupNotFoundError(BackupError, NotFoundError):
+    """The account, backup or restore job does not exist (HTTP 404)."""
+
+
+# An absolute host path inside an error message (staging files, homes).
+_HOST_PATH_RE = re.compile(r"(?<![\w.:/])/(?:[\w.@+-]+/)*[\w.@+-]+/?")
+
+
+def _job_error(exc: BaseException, label: str) -> str:
+    """The text a backup or restore job row may show its account.
+
+    Job rows are read back by the customer panel. A validation failure keeps
+    its explanation, with any absolute host path replaced; anything else is
+    reported only by a reference. The full exception is always logged under
+    that reference.
+    """
+    reference = secrets.token_hex(8)
+    logger.error("%s failed (reference: %s)", label, reference, exc_info=exc)
+    if isinstance(exc, ValidationError):
+        return _HOST_PATH_RE.sub("[server path]", str(exc))[:1000]
+    return f"The operation failed because of an internal error (reference: {reference})"
+
+
+def _tool_failure(message: str, result) -> BackupError:
+    """Log a failed archiving command's output; return the short error.
+
+    tar's stderr names host paths and staging files, so it stays in the log.
+    """
+    reference = secrets.token_hex(8)
+    logger.error("%s (reference: %s): %s", message, reference, (result.stderr or "").strip()[-2000:])
+    return BackupError(f"{message} (reference: {reference})")
+
+
 def _safe_extract_tar(archive_path: str | Path, destination: str | Path) -> None:
     """Extract a backup component with traversal and expansion limits."""
     try:
@@ -102,7 +139,9 @@ def _safe_extract_tar(archive_path: str | Path, destination: str | Path) -> None
                         )
             archive.extractall(destination, filter="data")
     except (tarfile.TarError, ArchiveMetadataTooLarge) as exc:
-        raise BackupError(f"unsafe or unreadable archive component: {exc}") from exc
+        # The filter's message names the extraction directory on this host.
+        logger.warning("refused archive component %s: %s", archive_path, exc)
+        raise BackupError("The backup contains an unsafe or unreadable archive component") from exc
 
 
 # --- destinations ---------------------------------------------------------
@@ -452,7 +491,7 @@ def _resolve_account_id(username: str) -> int:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise BackupNotFoundError(f"account '{username}' not found")
         return account.id
 
 
@@ -468,7 +507,7 @@ def get_job(params: dict) -> dict:
     with write_session() as session:
         job = session.get(BackupJob, job_id)
         if job is None or job.account_id != account_id:
-            raise BackupError(f"backup job {job_id} not found")
+            raise BackupNotFoundError(f"backup job {job_id} not found")
         return _job_to_dict(job)
 
 
@@ -519,6 +558,9 @@ def _build_user_tar(username, output, directory, item):
             stdout=archive, stderr=errors, timeout=1800, user=owner.pw_uid,
             group=owner.pw_gid, extra_groups=())
         if result.returncode:
+            errors.seek(0)
+            logger.error("file backup tar for '%s' exited %d: %s", username, result.returncode,
+                         errors.read()[-2000:].decode("utf-8", "replace").strip())
             raise BackupError("account-privileged file backup failed")
 
 
@@ -563,8 +605,20 @@ def _write_mysql_defaults_file(user: str | None = None, password: str | None = N
 def _build_full_backup(username: str, staging_dir: Path, job_id: int) -> Path:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
-        domains = session.scalars(select(Domain).where(Domain.account_id == account.id)).all()
+        # Creation order: a restore re-adds parent domains before subdomains.
+        domains = session.scalars(select(Domain).where(Domain.account_id == account.id).order_by(Domain.id)).all()
         databases = session.scalars(select(DatabaseGrant).where(DatabaseGrant.account_id == account.id)).all()
+        database_names = {db.id: db.db_name for db in databases}
+        database_users = []
+        for user in session.scalars(select(DatabaseUser).where(DatabaseUser.account_id == account.id)
+                                    .order_by(DatabaseUser.id)).all():
+            links = session.scalars(select(DatabaseUserGrant).where(DatabaseUserGrant.database_user_id == user.id)).all()
+            database_users.append({
+                "db_user": user.db_user, "host": user.host,
+                "grants": [{"db_name": database_names[link.database_grant_id], "preset": link.privileges,
+                            "privileges": link.privilege_list.split(",") if link.privilege_list else []}
+                           for link in links if link.database_grant_id in database_names],
+            })
         mail_domains = session.scalars(select(MailDomain).where(MailDomain.account_id == account.id)).all()
         mail_domain_ids = [m.id for m in mail_domains]
         mail_users = (
@@ -588,6 +642,9 @@ def _build_full_backup(username: str, staging_dir: Path, job_id: int) -> Path:
             "pids_max": account.pids_max,
             "domains": [{"domain": d.domain, "kind": d.kind, "docroot": d.docroot, "ssl_status": d.ssl_status} for d in domains],
             "databases": [{"db_name": db.db_name, "db_user": db.db_user} for db in databases],
+            # Logins and their database access (passwords are never stored).
+            # Optional for readers: archives made before this have none.
+            "database_users": database_users,
             "mail_domains": [m.domain for m in mail_domains],
             "mail_users": [{"local_part": u.local_part, "domain": u.domain, "quota_mb": u.quota_mb} for u in mail_users],
             "cron_jobs": [],
@@ -633,7 +690,7 @@ def _build_full_backup(username: str, staging_dir: Path, job_id: int) -> Path:
                     ["tar", "czf", str(mail_dir / f"{domain}.tar.gz"), "-C", settings.mail_base, domain], timeout=1800
                 )
                 if not result.ok:
-                    raise BackupError(f"tar of mail domain '{domain}' failed: {result.stderr.strip()}")
+                    raise _tool_failure(f"Could not archive the mail of {domain}", result)
 
     # Component checksums make the artifact independently verifiable after it
     # has crossed servers or storage providers. The manifest itself is not in
@@ -655,7 +712,7 @@ def _build_full_backup(username: str, staging_dir: Path, job_id: int) -> Path:
     artifact = staging_dir.parent / f"{staging_dir.name}.tar"
     result = run(["tar", "cf", str(artifact), "-C", str(staging_dir.parent), staging_dir.name], timeout=1800)
     if not result.ok:
-        raise BackupError(f"final tar assembly failed: {result.stderr.strip()}")
+        raise _tool_failure("Could not assemble the backup archive", result)
     return artifact
 
 
@@ -696,7 +753,7 @@ def _build_databases_backup(account_id: int, staging_dir: Path, job_id: int) -> 
     artifact = staging_dir.parent / f"{staging_dir.name}-databases.tar"
     result = run(["tar", "cf", str(artifact), "-C", str(staging_dir), "manifest.json", "databases"], timeout=1800)
     if not result.ok:
-        raise BackupError(f"database archive assembly failed: {result.stderr.strip()}")
+        raise _tool_failure("Could not assemble the database backup archive", result)
     return artifact
 
 
@@ -713,7 +770,7 @@ def _build_mailbox_backup(item_ref: str, staging_dir: Path, job_id: int) -> Path
     artifact = staging_dir / "mailbox.tar.gz"
     result = run(["tar", "czf", str(artifact), "-C", str(mail_dir), local_part], timeout=600)
     if not result.ok:
-        raise BackupError(f"tar of mailbox '{item_ref}' failed: {result.stderr.strip()}")
+        raise _tool_failure(f"Could not archive the mailbox {item_ref}", result)
     return artifact
 
 
@@ -836,12 +893,12 @@ def _run_backup_job(job_id: int) -> None:
         if kind == "full":
             events.emit("backup.completed", account_snapshot, job_id=job_id)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("backup job %d failed", job_id)
+        error = _job_error(exc, f"backup job {job_id}")
         shutil.rmtree(staging_dir, ignore_errors=True)
         guard.close()
-        _update_job(job_id, status="failed", error=str(exc), progress_message="failed", completed_at=utcnow())
+        _update_job(job_id, status="failed", error=error, progress_message="failed", completed_at=utcnow())
         if kind == "full" and account_snapshot is not None:
-            events.emit("backup.failed", account_snapshot, job_id=job_id, error=str(exc))
+            events.emit("backup.failed", account_snapshot, job_id=job_id, error=error)
     finally:
         if staging_dir.exists():
             shutil.rmtree(staging_dir, ignore_errors=True)
@@ -981,7 +1038,7 @@ def browse_backup(params: dict) -> dict:
     with write_session() as session:
         job = session.get(BackupJob, job_id)
         if job is None or job.account_id != account_id:
-            raise BackupError(f"backup job {job_id} not found")
+            raise BackupNotFoundError(f"backup job {job_id} not found")
         if job.status != "completed":
             raise BackupError(f"backup job {job_id} is not completed (status: {job.status})")
         destination = session.get(BackupDestination, job.destination_id)
@@ -1029,6 +1086,22 @@ def trigger_restore(params: dict) -> dict:
             return _trigger_restore_locked(params)
 
 
+def _require_restorable(status: str, kind: str, backup_kind: str) -> None:
+    """A restore runs on an active account, or recreates a terminated one.
+
+    Termination released the account's domains, databases and mail, so a
+    terminated (or partly terminated, 'error') account can only come back
+    through a full restore of a full backup, which recreates all of it.
+    """
+    if status == "active":
+        return
+    if status in ("terminated", "error"):
+        if kind == "full" and backup_kind == "full":
+            return
+        raise BackupError("This account is terminated. Restore a full backup to recreate it first.")
+    raise BackupError(f"cannot run restore for an account in status '{status}'")
+
+
 def _trigger_restore_locked(params: dict) -> dict:
     backup_job_id = int(params["backup_job_id"])
     item_ref = params.get("item_ref")
@@ -1037,7 +1110,7 @@ def _trigger_restore_locked(params: dict) -> dict:
     with write_session() as session:
         backup_job = session.get(BackupJob, backup_job_id)
         if backup_job is None or backup_job.account_id != account_id:
-            raise BackupError(f"backup job {backup_job_id} not found")
+            raise BackupNotFoundError(f"backup job {backup_job_id} not found")
         if backup_job.status != "completed":
             raise BackupError(f"backup job {backup_job_id} is not completed")
         account = session.get(Account, backup_job.account_id)
@@ -1051,6 +1124,12 @@ def _trigger_restore_locked(params: dict) -> dict:
             raise ValidationError(f"kind must be one of {BACKUP_KINDS}")
         if backup_job.kind != "full" and effective_kind != backup_job.kind:
             raise BackupError("a non-full backup artifact can only restore its own kind")
+        _require_restorable(account.status, effective_kind, backup_job.kind)
+        if account.status != "active" and params.get("customer_scope"):
+            # Recreating a terminated account brings back a whole account an
+            # administrator ended; a reseller would also pass its plan's
+            # account and disk limits (terminated accounts do not count).
+            raise BackupError("Only an administrator can restore a terminated account.")
         if backup_job.kind not in ("full", "databases") and not item_ref:
             item_ref = backup_job.item_ref
         _authorize_item(session, account, effective_kind, item_ref)
@@ -1102,7 +1181,7 @@ def get_restore_job(params: dict) -> dict:
     with write_session() as session:
         r = session.get(RestoreJob, restore_job_id)
         if r is None or r.account_id != account_id:
-            raise BackupError(f"restore job {restore_job_id} not found")
+            raise BackupNotFoundError(f"restore job {restore_job_id} not found")
         return _restore_to_dict(r)
 
 
@@ -1308,6 +1387,408 @@ def _reactivate_for_restore(username: str, params: dict) -> dict:
     return recreated
 
 
+def _note_not_restored(summary: dict, item: str, exc: BaseException) -> None:
+    """Record an item a full restore could not bring back, and why.
+
+    The summary is shown to the account: a validation message is kept as
+    the reason, anything else is logged and named only by a reference.
+    """
+    if isinstance(exc, ValidationError):
+        reason = _HOST_PATH_RE.sub("[server path]", str(exc))[:300]
+    else:
+        reference = secrets.token_hex(8)
+        logger.error("full restore could not recreate %s (reference: %s)", item, reference, exc_info=exc)
+        reason = f"internal error (reference: {reference})"
+    summary["not_restored"].append({"item": item, "reason": reason})
+
+
+def _noted(summary: dict, item: str) -> bool:
+    return any(entry["item"] == item for entry in summary["not_restored"])
+
+
+def _foreign_names(username: str, manifest: dict) -> set[str]:
+    """Hostnames in the manifest that another account holds now.
+
+    Termination releases an account's hostnames, so another tenant may have
+    added one before the backup is restored. The restore leaves such a name
+    (its site, mail and DNS zone) alone and reports it, instead of refusing
+    the whole restore or taking the name over.
+    """
+    names = {entry["domain"] for entry in manifest.get("domains", [])}
+    names.update(manifest.get("mail_domains", []))
+    names.update(entry["domain"] for entry in manifest.get("mail_users", []))
+    if manifest.get("dns_zone"):
+        names.add(manifest["dns_zone"]["zone"])
+    foreign = set()
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        for name in names:
+            validate_domain(name)
+            for model, field in ((Domain, Domain.domain), (MailDomain, MailDomain.domain), (DnsZone, DnsZone.zone)):
+                row = session.scalar(select(model).where(field == name))
+                if row is not None and row.account_id != account.id:
+                    foreign.add(name)
+    return foreign
+
+
+def _domain_params(username: str, entry: dict) -> dict:
+    """add_domain parameters that recreate a backed-up domain as it was."""
+    params = {"username": username, "domain": entry["domain"], "kind": entry.get("kind") or "addon"}
+    docroot = entry.get("docroot")
+    if params["kind"] == "subdomain" and docroot:
+        try:
+            relative = Path(docroot).relative_to(Path(settings.home_base) / username)
+        except ValueError:
+            relative = None
+        if relative is not None and relative.parts and relative != Path(entry["domain"]) / "public_html":
+            # Created with its own folder or its parent's document root.
+            params["document_root_mode"] = "custom"
+            params["document_root"] = relative.as_posix()
+    return params
+
+
+def _parked_target(manifest: dict, entry: dict) -> str | None:
+    """The domain a backed-up parked domain points at. The manifest stores
+    no target, only the shared document root; the primary domain wins."""
+    candidates = [other for other in manifest.get("domains", [])
+                  if other.get("kind") != "parked" and entry.get("docroot")
+                  and other.get("docroot") == entry.get("docroot")]
+    candidates.sort(key=lambda other: other.get("kind") != "primary")
+    return candidates[0]["domain"] if candidates else None
+
+
+def _recreate_domains(username: str, manifest: dict, foreign: set[str], summary: dict) -> list[str]:
+    from daemon import handlers_domain, parked
+
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        present = set(session.scalars(select(Domain.domain).where(Domain.account_id == account.id)).all())
+    recreated = []
+    entries = manifest.get("domains", [])
+    # add_domain refuses kind 'parked': parked domains are recreated through
+    # parked.add_parked_domain, after the domains they point at.
+    ordered = ([entry for entry in entries if entry.get("kind") != "parked"]
+               + [entry for entry in entries if entry.get("kind") == "parked"])
+    for entry in ordered:
+        name = entry["domain"]
+        if name in foreign or name in present:
+            continue
+        try:
+            if entry.get("kind") == "parked":
+                params = {"username": username, "parked_domain": name}
+                target = _parked_target(manifest, entry)
+                if target:
+                    params["target_domain"] = target
+                parked.add_parked_domain(params)
+            else:
+                handlers_domain.add_domain(_domain_params(username, entry))
+        except Exception as exc:  # noqa: BLE001 - reported; the rest of the account still restores
+            _note_not_restored(summary, f"domain {name}", exc)
+            continue
+        present.add(name)
+        recreated.append(name)
+    return recreated
+
+
+def _recreate_databases(username: str, manifest: dict, summary: dict) -> set[str]:
+    """Create the backed-up databases the account no longer has.
+
+    Each comes back with its original application login. Database passwords
+    are never stored in a backup, so that login gets a new random password,
+    reported in the summary.
+    """
+    from daemon import handlers_database
+
+    prefix = f"{username}_"
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        present = set(session.scalars(select(DatabaseGrant.db_name).where(DatabaseGrant.account_id == account.id)).all())
+    recreated = set()
+    for entry in manifest.get("databases", []):
+        db_name = entry["db_name"]
+        if db_name in present:
+            continue
+        if not db_name.startswith(prefix) or db_name == prefix:
+            # Renamed databases keep names db.create cannot produce.
+            summary["not_restored"].append({
+                "item": f"database {db_name}",
+                "reason": f"only databases named {prefix}<name> can be recreated automatically",
+            })
+            continue
+        try:
+            created = handlers_database.create_database({"username": username, "name": db_name[len(prefix):]})
+        except Exception as exc:  # noqa: BLE001
+            _note_not_restored(summary, f"database {db_name}", exc)
+            continue
+        recreated.add(db_name)
+        summary["database_users_requiring_password_reset"].append(created.get("db_user") or entry.get("db_user") or db_name)
+    return recreated
+
+
+def _recreate_database_users(username: str, manifest: dict, recreated_databases: set[str], summary: dict) -> None:
+    """Recreate the additional database logins the account no longer has.
+
+    Their database access is granted again for every login this restore
+    created and for every database it recreated. Access the account changed
+    itself between two existing objects is left as it is now.
+    """
+    from daemon import handlers_database
+
+    prefix = f"{username}_"
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        present = {(row[0], row[1]) for row in session.execute(
+            select(DatabaseUser.db_user, DatabaseUser.host).where(DatabaseUser.account_id == account.id))}
+        databases = set(session.scalars(select(DatabaseGrant.db_name).where(DatabaseGrant.account_id == account.id)).all())
+    for entry in manifest.get("database_users") or []:
+        db_user, host = entry.get("db_user"), entry.get("host") or "localhost"
+        if not isinstance(db_user, str) or not isinstance(host, str):
+            continue
+        login = db_user if host == "localhost" else f"{db_user}@{host}"
+        created = False
+        if (db_user, host) not in present:
+            if not db_user.startswith(prefix) or db_user == prefix:
+                summary["not_restored"].append({
+                    "item": f"database user {login}",
+                    "reason": f"only logins named {prefix}<name> can be recreated automatically",
+                })
+                continue
+            try:
+                handlers_database.create_user({"username": username, "name": db_user[len(prefix):], "host": host})
+            except Exception as exc:  # noqa: BLE001
+                _note_not_restored(summary, f"database user {login}", exc)
+                continue
+            created = True
+            present.add((db_user, host))
+            summary["database_users_requiring_password_reset"].append(login)
+        for grant in entry.get("grants") or []:
+            db_name = grant.get("db_name") if isinstance(grant, dict) else None
+            if db_name not in databases or not (created or db_name in recreated_databases):
+                continue
+            try:
+                handlers_database.grant_user({
+                    "username": username, "user": db_user, "database": db_name, "host": host,
+                    "preset": grant.get("preset") or "all", "privileges": grant.get("privileges") or None,
+                })
+            except Exception as exc:  # noqa: BLE001
+                _note_not_restored(summary, f"access of {login} to {db_name}", exc)
+
+
+def _recreate_mail(username: str, manifest: dict, foreign: set[str], summary: dict) -> None:
+    from daemon import handlers_mail
+
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        domains = set(session.scalars(select(MailDomain.domain).where(MailDomain.account_id == account.id)).all())
+        mailboxes = {(row[0], row[1]) for row in session.execute(
+            select(MailUser.local_part, MailUser.domain)
+            .join(MailDomain, MailDomain.id == MailUser.mail_domain_id)
+            .where(MailDomain.account_id == account.id))}
+    for domain in manifest.get("mail_domains", []):
+        if domain in foreign or domain in domains:
+            continue
+        try:
+            handlers_mail.create_mail_domain({"username": username, "domain": domain})
+        except Exception as exc:  # noqa: BLE001
+            _note_not_restored(summary, f"mail domain {domain}", exc)
+            continue
+        domains.add(domain)
+    # Mailbox passwords are never stored in a backup (a manifest holding
+    # them would be a secret-handling regression), so every recreated
+    # mailbox gets a fresh random one and the summary lists them for reset.
+    for entry in manifest.get("mail_users", []):
+        local_part, domain = entry["local_part"], entry["domain"]
+        if domain in foreign or domain not in domains or (local_part, domain) in mailboxes:
+            continue
+        params = {"username": username, "domain": domain, "local_part": local_part,
+                  "password": mariadb.generate_password()}
+        if entry.get("quota_mb") is not None:
+            params["quota_mb"] = entry["quota_mb"]
+        try:
+            handlers_mail.create_mailbox(params)
+        except Exception as exc:  # noqa: BLE001
+            _note_not_restored(summary, f"mailbox {local_part}@{domain}", exc)
+            continue
+        mailboxes.add((local_part, domain))
+        summary["mailboxes_requiring_password_reset"].append(f"{local_part}@{domain}")
+
+
+def _recreate_cron_jobs(username: str, manifest: dict, summary: dict) -> None:
+    """Add the saved cron jobs the crontab no longer has (same schedule and command)."""
+    from daemon import handlers_cron
+
+    saved = manifest.get("cron_jobs") or []
+    if not saved:
+        return
+    try:
+        present = {(job["schedule"], job["command"]) for job in cron.list_jobs(username)}
+    except Exception as exc:  # noqa: BLE001
+        _note_not_restored(summary, "cron jobs", exc)
+        return
+    for entry in saved:
+        key = (entry.get("schedule"), entry.get("command"))
+        if key in present:
+            continue
+        try:
+            handlers_cron.add_cron_job({"username": username, "schedule": entry["schedule"],
+                                        "command": entry["command"], "label": entry.get("label", "")})
+        except Exception as exc:  # noqa: BLE001
+            _note_not_restored(summary, f"cron job {entry.get('label') or entry.get('schedule')}", exc)
+            continue
+        present.add(key)
+
+
+def _record_name(record: dict, zone: str) -> str:
+    return str(record.get("name") or zone).rstrip(".").lower()
+
+
+def _restore_apex_nameservers(zone: str, rrset: dict, records: list[dict], summary: dict) -> None:
+    """Restore a custom delegation the way the Nameservers page sets one.
+
+    Both record editors refuse the zone-apex NS rrset: it is managed with
+    the glue of in-zone nameservers. The glue comes from the backup's own
+    address records; when one was not saved, set_nameservers names the
+    nameserver that needs it and the delegation is reported, not guessed.
+    """
+    from daemon import nameservers
+
+    wanted = [str(value).rstrip(".").lower() for value in rrset.get("values") or []]
+    default, _default_glue = nameservers.default_delegation(zone)
+    if not wanted or sorted(wanted) == sorted(name.rstrip(".").lower() for name in default):
+        return  # create_zone already delegates the zone this way
+    glue = {}
+    for host in wanted:
+        if host != zone and not host.endswith("." + zone):
+            continue  # out-of-zone nameservers are resolved by their owner
+        for rtype in ("A", "AAAA"):
+            match = next((rec for rec in records if rec.get("type") == rtype and rec.get("values")
+                          and _record_name(rec, zone) == host), None)
+            if match is not None:
+                glue[host] = str(match["values"][0])
+                break
+    try:
+        nameservers.set_nameservers({"domain": zone, "nameservers": wanted, "glue": glue})
+    except Exception as exc:  # noqa: BLE001
+        _note_not_restored(summary, f"nameservers of {zone}", exc)
+
+
+def _recreate_dns_zone(username: str, dns_zone: dict, restore_records: bool, summary: dict) -> None:
+    """Recreate the saved DNS zone if it is missing, then apply its records.
+
+    Records are applied only to a zone this restore recreated (or to every
+    zone of a reactivated account). A zone that existed already holds the
+    account's current DNS, which a full restore does not roll back.
+    """
+    from daemon import handlers_dns
+    from daemon.dns_zone_lookup import label_within_zone
+
+    zone = dns_zone["zone"]
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        owned = session.scalar(select(DnsZone.id).where(DnsZone.account_id == account.id, DnsZone.zone == zone)) is not None
+    if not owned:
+        try:
+            handlers_dns.create_zone({"username": username, "domain": zone})
+        except Exception as exc:  # noqa: BLE001
+            _note_not_restored(summary, f"DNS zone {zone}", exc)
+            return
+        restore_records = True
+    if not restore_records:
+        return
+    records = [rec for rec in dns_zone.get("records", []) if isinstance(rec, dict)]
+    apex_ns = next((rec for rec in records if rec.get("type") == "NS" and _record_name(rec, zone) == zone), None)
+    # First: set_nameservers writes in-zone glue as single addresses, and the
+    # saved A/AAAA record sets applied below then replace them whole.
+    if apex_ns is not None:
+        _restore_apex_nameservers(zone, apex_ns, records, summary)
+    with write_session() as session:
+        keys = session.scalars(select(DkimKey).where(
+            (DkimKey.domain == zone) | DkimKey.domain.endswith("." + zone, autoescape=True))).all()
+        signing_keys = {f"{key.selector}._domainkey.{key.domain}".lower() for key in keys}
+    for rec in records:
+        if rec is apex_ns:
+            continue
+        name = _record_name(rec, zone)
+        if rec.get("type") == "TXT" and name in signing_keys:
+            # Recreating the zone or mail domain published the key the panel
+            # signs with now; the saved record holds the discarded old key.
+            continue
+        try:
+            # Manifest records carry the FULL record name (that's what
+            # list_records returns); set_record wants the label relative to
+            # the zone. Passing the FQDN straight through created
+            # "www.example.com.example.com" records -- pre-existing bug fixed
+            # as part of the Cloudflare work (docs/PLAN-cloudflare.md SS2).
+            handlers_dns.set_record({
+                "domain": zone,
+                "subdomain": label_within_zone(name, zone),
+                "type": rec.get("type"),
+                "values": rec.get("values"),
+                "ttl": rec.get("ttl", 3600),
+                "proxied": rec.get("proxied", False),
+            })
+        except Exception as exc:  # noqa: BLE001
+            _note_not_restored(summary, f"DNS record {name} {rec.get('type')}", exc)
+
+
+def _refresh_restored_sites(username: str, names: list[str] | None) -> None:
+    """Re-grant web server access to restored docroots; re-provision vhosts.
+
+    Run after home.tar.gz is extracted, for every domain of a reactivated
+    account (names=None) or the domains this restore recreated: a plain tar
+    archive doesn't capture POSIX ACLs, so the "nobody" grant OLS's worker
+    process needs could be missing from a restored docroot (found live -- a
+    404 with no obvious cause until getfacl showed the grant was simply never
+    there, even with a correctly configured vhost pointed right at it).
+    Domain rows that predate this restore (kept by releases that did not
+    release them at termination) never had their vhost recreated by
+    add_domain either, so every vhost is provisioned again.
+    """
+    from daemon import handlers_domain, ols
+
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        rows = session.scalars(select(Domain).where(Domain.account_id == account.id).order_by(Domain.id)).all()
+        targets = [(row.domain, row.docroot) for row in rows if names is None or row.domain in names]
+        account_snapshot = account
+    for name, docroot in targets:
+        try:
+            handlers_domain.ensure_docroot(username, docroot, domain_name=name)
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to restore docroot permissions for '%s' (account '%s')", name, username)
+    try:
+        ols.provision_vhost(account_snapshot)
+    except Exception:  # noqa: BLE001
+        logger.exception("failed to (re)provision vhosts for restored account '%s'", username)
+
+
+def restore_outcome(summary: dict, done: str = "completed") -> tuple[str, str | None]:
+    """The final progress line of a full restore, and the details to keep
+    on its job row when something needs attention (None when nothing does).
+
+    Job rows have no structured summary field, so the details are text.
+    """
+    details = []
+    if summary.get("skipped_domains"):
+        details.append("Skipped because another account uses them now: "
+                       + ", ".join(summary["skipped_domains"]) + ".")
+    for entry in summary.get("not_restored") or []:
+        details.append(f"Not restored: {entry['item']} ({entry['reason']}).")
+    if summary.get("mailboxes_requiring_password_reset"):
+        details.append("Recreated mailboxes have new random passwords (backups never store passwords); "
+                       "set new ones for: " + ", ".join(summary["mailboxes_requiring_password_reset"]) + ".")
+    if summary.get("database_users_requiring_password_reset"):
+        details.append("Recreated database logins have new random passwords; set new ones and update "
+                       "the site configuration for: "
+                       + ", ".join(summary["database_users_requiring_password_reset"]) + ".")
+    if not details:
+        return done, None
+    text = " ".join(details)
+    if len(text) > 4000:
+        text = text[:3999] + "…"
+    return f"{done} with warnings", text
+
+
 @serialized_worker
 def _restore_full(
     username: str,
@@ -1316,34 +1797,51 @@ def _restore_full(
     tmp_dir: str,
     restore_job_id: int | None = None,
     progress=None,
+    reactivation: dict | None = None,
 ) -> dict:
+    """Restore a full backup onto an active account, or recreate a
+    terminated one from it.
+
+    ``reactivation["done"]`` is set once this call has made a terminated
+    account active again, so a caller whose restore then fails terminates
+    only an account its own restore brought back (terminate_after_failed_
+    recreation), never one another restore or import reactivated meanwhile.
+
+    Every domain, database (with its logins), mail domain, mailbox and cron
+    job in the backup that the account no longer has is recreated before
+    the files, databases and mail are put back -- so a deleted mailbox
+    comes back as a working mailbox, not only as its message files. The
+    saved DNS records are applied to a zone this restore recreates; a zone
+    that still exists is the account's current DNS and is left alone.
+    Hostnames another account holds now are skipped. Anything that could
+    not be recreated is listed in the returned summary (restore_outcome)
+    instead of being dropped silently or failing the whole restore.
+    """
     def report(message: str) -> None:
         if progress is not None:
             progress(message)
         elif restore_job_id is not None:
             _update_restore(restore_job_id, progress_message=message)
 
-    summary = {"initial_password": None, "mailboxes_requiring_password_reset": []}
+    summary = {
+        "initial_password": None,
+        "skipped_domains": [],
+        "not_restored": [],
+        "mailboxes_requiring_password_reset": [],
+        "database_users_requiring_password_reset": [],
+    }
     report("extracting backup")
     content_dir, manifest = _full_artifact_content(username, local_artifact, tmp_dir)
+    foreign = _foreign_names(username, manifest)
+    summary["skipped_domains"] = sorted(foreign)
+    reactivated = account_status in ("terminated", "error")
+    dns_zone = manifest.get("dns_zone") or None
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
-        names = [entry['domain'] for entry in manifest.get('domains', [])]
-        names += list(manifest.get('mail_domains', []))
-        names += [entry['domain'] for entry in manifest.get('mail_users', [])]
-        if manifest.get('dns_zone'):
-            names.append(manifest['dns_zone']['zone'])
-        for name in names:
-            validate_domain(name)
-            for model, field in ((Domain, Domain.domain), (MailDomain, MailDomain.domain), (DnsZone, DnsZone.zone)):
-                row = session.scalar(select(model).where(field == name))
-                if row is not None and row.account_id != account.id:
-                    raise BackupError("backup manifest references another account's domain")
+        zone_existed = dns_zone is not None and session.scalar(select(DnsZone.id).where(
+            DnsZone.account_id == account.id, DnsZone.zone == dns_zone["zone"])) is not None
 
-    from daemon import handlers_account, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_mail
-    from daemon.dns_zone_lookup import label_within_zone
-
-    if account_status in ("terminated", "error"):
+    if reactivated:
         # reactivate_account, not create_account: terminating an account
         # never deletes its historical DB row (see terminate_account), so
         # create_account's own "already exists" guard would always fire
@@ -1363,100 +1861,25 @@ def _restore_full(
             "pids_max": manifest.get("pids_max"),
         })
         summary["initial_password"] = recreated.get("initial_password")
+        if reactivation is not None:
+            reactivation["done"] = True
 
-        report("recreating domains")
-        for d in manifest.get("domains", []):
-            try:
-                handlers_domain.add_domain({"username": username, "domain": d["domain"], "kind": d["kind"]})
-            except RuntimeError:
-                pass  # Domain row already exists (termination never deletes it, same as
-                # the account row) -- not fatal, but neither its docroot directory nor
-                # its OLS vhost survived termination, and add_domain's own
-                # ensure_docroot()/provision_vhost() side effects never ran for it
-                # (its early "already in use" exit skips both). Handled explicitly
-                # further down, after files are restored -- provisioning the vhost
-                # needs the docroot to actually exist first (OLS's own `-t` validates
-                # DocRoot is accessible), which for an already-existing Domain row only
-                # becomes true once home.tar.gz is extracted.
-
-        report("recreating databases")
-        for db in manifest.get("databases", []):
-            try:
-                suffix = db["db_name"][len(username) + 1 :] if db["db_name"].startswith(f"{username}_") else db["db_name"]
-                handlers_database.create_database({"username": username, "name": suffix})
-            except RuntimeError:
-                pass
-
-        report("recreating mail")
-        for domain in manifest.get("mail_domains", []):
-            try:
-                handlers_mail.create_mail_domain({"username": username, "domain": domain})
-            except RuntimeError:
-                pass
-        # Mailbox passwords are never stored in a backup (correctly -- a
-        # backup manifest holding plaintext mail passwords would be a real
-        # secret-handling regression). A terminated account's original
-        # passwords are unrecoverable, so each recreated mailbox gets a
-        # fresh random one; the admin must reset the ones customers need
-        # via mail.change_password after restore. Noted in the final
-        # progress message rather than silently leaving this undiscoverable.
-        reset_mailboxes = []
-        for mu in manifest.get("mail_users", []):
-            try:
-                handlers_mail.create_mailbox(
-                    {
-                        "domain": mu["domain"],
-                        "local_part": mu["local_part"],
-                        "password": mariadb.generate_password(),
-                        "quota_mb": mu.get("quota_mb"),
-                    }
-                )
-                reset_mailboxes.append(f"{mu['local_part']}@{mu['domain']}")
-            except RuntimeError:
-                pass
-        if reset_mailboxes:
-            summary["mailboxes_requiring_password_reset"] = reset_mailboxes
-            report(
-                f"recreated {len(reset_mailboxes)} mailbox(es) with new random passwords "
-                f"(original passwords are never stored in backups) -- reset via mail.change_password"
-            )
-
-        report("recreating cron jobs")
-        for cj in manifest.get("cron_jobs", []):
-            try:
-                handlers_cron.add_cron_job(
-                    {"username": username, "schedule": cj["schedule"], "command": cj["command"], "label": cj.get("label", "")}
-                )
-            except Exception:  # noqa: BLE001
-                pass
-
-        dns_zone = manifest.get("dns_zone")
-        if dns_zone:
-            report("recreating DNS zone")
-            try:
-                handlers_dns.create_zone({"username": username, "domain": dns_zone["zone"]})
-            except RuntimeError:
-                pass
-            for rec in dns_zone.get("records", []):
-                try:
-                    # Manifest records carry the FULL record name (that's
-                    # what list_records returns); set_record wants the label
-                    # relative to the zone. Passing the FQDN straight
-                    # through created "www.example.com.example.com" records
-                    # -- pre-existing bug fixed as part of the Cloudflare
-                    # work (docs/PLAN-cloudflare.md SS2).
-                    handlers_dns.set_record(
-                        {
-                            "domain": dns_zone["zone"],
-                            "subdomain": label_within_zone(rec.get("name") or dns_zone["zone"], dns_zone["zone"]),
-                            "type": rec["type"],
-                            "values": rec["values"],
-                            "ttl": rec.get("ttl", 3600),
-                            "proxied": rec.get("proxied", False),
-                        }
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
+    # Termination released the account's domains (another tenant may hold
+    # one now: skipped above), so on a reactivated account add_domain
+    # recreates every one with its docroot and vhost; on an active account
+    # it recreates the ones removed since the backup.
+    report("recreating domains")
+    recreated_domains = _recreate_domains(username, manifest, foreign, summary)
+    report("recreating databases")
+    recreated_databases = _recreate_databases(username, manifest, summary)
+    _recreate_database_users(username, manifest, recreated_databases, summary)
+    report("recreating mail")
+    _recreate_mail(username, manifest, foreign, summary)
+    report("recreating cron jobs")
+    _recreate_cron_jobs(username, manifest, summary)
+    if dns_zone is not None and dns_zone["zone"] not in foreign:
+        report("recreating DNS zone")
+        _recreate_dns_zone(username, dns_zone, reactivated or not zone_existed, summary)
 
     report("restoring files")
     home_tar = content_dir / "home.tar.gz"
@@ -1464,59 +1887,69 @@ def _restore_full(
         pw = _pwnam(username)
         _restore_tree(home_tar, Path(settings.home_base) / username, pw, prefix=username)
 
-    if account_status in ("terminated", "error"):
-        # Now that home.tar.gz has actually been extracted, redo the parts
-        # of add_domain's own success path that its early "already in use"
-        # exit skipped for every domain whose row survived termination:
-        # the docroot's ownership/permissions and the "nobody" POSIX ACL
-        # grant OLS's worker process needs to read it at all (found live --
-        # a plain tar archive doesn't capture ACLs, so a restored docroot
-        # was otherwise unreadable by OLS even with a correctly configured
-        # vhost pointed right at it, producing a 404 with no obvious cause
-        # until getfacl showed the grant was simply never there). Then
-        # (re)provision every domain-vhost, unconditionally regardless of
-        # whether its Domain row was just newly created above or already
-        # existed from before termination -- either way its OLS vhost is
-        # currently missing.
+    if reactivated or recreated_domains:
         report("restoring docroot permissions")
-        for d in manifest.get("domains", []):
-            try:
-                handlers_domain.ensure_docroot(username, d["docroot"])
-            except Exception:  # noqa: BLE001
-                logger.exception("failed to restore docroot permissions for '%s' (account '%s')", d["domain"], username)
-
-        from daemon import ols
-
-        with write_session() as session:
-            account = session.scalar(select(Account).where(Account.username == username))
-            account_snapshot = account
-        try:
-            ols.provision_vhost(account_snapshot)
-        except Exception:  # noqa: BLE001
-            logger.exception("failed to (re)provision vhosts for restored account '%s'", username)
+        _refresh_restored_sites(username, None if reactivated else recreated_domains)
 
     report("restoring databases")
     db_dir = content_dir / "databases"
     if db_dir.exists():
-        for dump in db_dir.glob("*.sql.gz"):
+        with write_session() as session:
+            account = session.scalar(select(Account).where(Account.username == username))
+            owned = set(session.scalars(select(DatabaseGrant.db_name).where(DatabaseGrant.account_id == account.id)).all())
+        for dump in sorted(db_dir.glob("*.sql.gz")):
             db_name = dump.name[: -len(".sql.gz")]
-            with write_session() as session:
-                account = session.scalar(select(Account).where(Account.username == username))
-                _authorize_item(session, account, "database", db_name)
+            if db_name not in owned:
+                # Never restored into: it could not be recreated (reported
+                # above), or the archive names a database of no account here.
+                if not _noted(summary, f"database {db_name}"):
+                    summary["not_restored"].append({"item": f"database {db_name}",
+                                                    "reason": "it is not one of this account's databases"})
+                continue
             _restore_database_dump(db_name, dump)
 
     report("restoring mail")
     mail_dir = content_dir / "mail"
     if mail_dir.exists():
-        for tarball in mail_dir.glob("*.tar.gz"):
+        with write_session() as session:
+            account = session.scalar(select(Account).where(Account.username == username))
+            owned = set(session.scalars(select(MailDomain.domain).where(MailDomain.account_id == account.id)).all())
+        for tarball in sorted(mail_dir.glob("*.tar.gz")):
             domain = tarball.name[: -len(".tar.gz")]
             validate_domain(domain)
-            with write_session() as session:
-                account = session.scalar(select(Account).where(Account.username == username))
-                if session.scalar(select(MailDomain.id).where(MailDomain.account_id == account.id, MailDomain.domain == domain)) is None:
-                    raise BackupError("mail domain is not owned by this account")
+            if domain in foreign:
+                continue  # listed with the skipped names
+            if domain not in owned:
+                if not _noted(summary, f"mail domain {domain}"):
+                    summary["not_restored"].append({"item": f"mail for {domain}",
+                                                    "reason": "it is not one of this account's mail domains"})
+                continue
             _restore_tree(tarball, Path(settings.mail_base) / domain, _pwnam('vmail'), prefix=domain)
     return summary
+
+
+def terminate_after_failed_recreation(username: str) -> str:
+    """Terminate an account that a failed restore or import reactivated.
+
+    A half-restored account must not stay active: its sites, mail and
+    logins would be live with only part of their data. Returns the sentence
+    the failed job should add to its error ('' when the account was not
+    reactivated, so there is nothing to undo).
+    """
+    from daemon import handlers_account
+
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        status = account.status if account is not None else None
+    if status != "active":
+        return ""
+    try:
+        handlers_account.terminate_account({"username": username})
+    except Exception:  # noqa: BLE001
+        logger.exception("could not terminate '%s' again after a failed restore", username)
+        return ("The account was recreated but could not be terminated again; "
+                "terminate it from the account page before retrying.")
+    return "The partly restored account was terminated again."
 
 
 def _restore_file(username: str, item_ref: str, local_artifact: str, restore_job_id: int) -> None:
@@ -1646,6 +2079,8 @@ def _restore_mailbox(item_ref: str, local_artifact: str, restore_job_id: int) ->
 def _run_restore_job(restore_job_id: int) -> None:
     tmp_dir = None
     guard = ExitStack()
+    username = account_status = None
+    reactivation = {}
     try:
         with write_session() as session:
             restore_job = session.get(RestoreJob, restore_job_id)
@@ -1656,8 +2091,7 @@ def _run_restore_job(restore_job_id: int) -> None:
             account = session.get(Account, restore_job.account_id)
             if account is None:
                 raise BackupError("restore account no longer exists")
-            if account.status != "active":
-                raise BackupError(f"cannot run restore for an account in status '{account.status}'")
+            _require_restorable(account.status, restore_job.kind, backup_job.kind)
             username = account.username
             account_status = account.status
             kind = restore_job.kind
@@ -1670,17 +2104,29 @@ def _run_restore_job(restore_job_id: int) -> None:
             restore_job.progress_message = "fetching backup artifact"
 
         from daemon.snapshot_jobs import lock
-        guard.enter_context(lock(f'account-{account.id}'))
+        # The settings handlers a full restore calls (account reactivation,
+        # domain.add, cron) take this same lock re-entrantly; any other
+        # caller is refused while the restore runs.
+        guard.enter_context(lock(f'account-{account.id}', allow_nested=True))
         with write_session() as session:
             current = session.get(Account, account.id)
-            if current is None or current.username != username or current.status != 'active':
+            if current is None or current.username != username or current.status != account_status:
                 raise BackupError('Restore account changed while waiting to start')
             _authorize_item(session, current, kind, item_ref)
         tmp_dir = tempfile.mkdtemp(dir=settings.backup_staging_dir, prefix=f"restore-{restore_job_id}-")
         local_artifact = _fetch_artifact_locally(artifact_path, dest_kind, tmp_dir)
 
+        outcome, details = "completed", None
         if kind == "full":
-            _restore_full(username, account_status, local_artifact, tmp_dir, restore_job_id)
+            summary = _restore_full(username, account_status, local_artifact, tmp_dir, restore_job_id,
+                                    reactivation=reactivation)
+            outcome, details = restore_outcome(summary)
+            if summary.get("initial_password"):
+                # Revealed once by an archive import; a restore job has no
+                # sealed field for it, so the operator sets a new one.
+                note = "The account was recreated with a new password; set one from the account page."
+                outcome = "completed with warnings"
+                details = f"{note} {details}" if details else note
         elif backup_kind == "full":
             _restore_item_from_full(username, kind, item_ref, local_artifact, tmp_dir, restore_job_id)
         elif kind == "file":
@@ -1697,14 +2143,21 @@ def _run_restore_job(restore_job_id: int) -> None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         tmp_dir = None
         guard.close()
-        _update_restore(restore_job_id, status="completed", progress_message="completed", completed_at=utcnow())
+        _update_restore(restore_job_id, status="completed", progress_message=outcome, error=details,
+                        completed_at=utcnow())
     except Exception as exc:  # noqa: BLE001
-        logger.exception("restore job %d failed", restore_job_id)
+        error = _job_error(exc, f"restore job {restore_job_id}")
         if tmp_dir is not None:
             shutil.rmtree(tmp_dir, ignore_errors=True)
             tmp_dir = None
         guard.close()
-        _update_restore(restore_job_id, status="failed", error=str(exc), progress_message="failed", completed_at=utcnow())
+        _update_restore(restore_job_id, status="failed", error=error, progress_message="failed", completed_at=utcnow())
+        if reactivation.get("done"):
+            # After the job row stops being active and the account lock is
+            # released: termination refuses to run while either is held.
+            note = terminate_after_failed_recreation(username)
+            if note:
+                _update_restore(restore_job_id, error=f"{error} {note}"[:4000])
     finally:
         if tmp_dir is not None:
             shutil.rmtree(tmp_dir, ignore_errors=True)

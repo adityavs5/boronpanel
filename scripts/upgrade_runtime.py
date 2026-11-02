@@ -35,6 +35,22 @@ protocol lmtp {
   mail_plugins = $mail_plugins sieve
 }
 """
+# dovecot-pop3d enables POP3 (110 with STARTTLS, 995) through this file; it
+# shares the IMAP passdb/userdb, so every login rule applies to it too.
+DOVECOT_POP3_PROTOCOL = Path('/usr/share/dovecot/protocols.d/pop3d.protocol')
+# Suspended accounts: daemon/mail.py keeps one mail domain per line. The file
+# sorts before the webmail (09) and SQL (10-auth) passdbs, so it applies to
+# IMAP, POP3, webmail and SMTP AUTH; LMTP delivery reads only the userdb.
+DOVECOT_SUSPENDED_PASSDB_CONFIG = Path('/etc/dovecot/conf.d/08-boron-suspended-auth.conf')
+DOVECOT_SUSPENDED_DOMAINS = Path('/etc/dovecot/boron-suspended-mail-domains')
+DOVECOT_SUSPENDED_PASSDB = f"""# Managed Boron login block for suspended hosting accounts. The list must
+# exist: Dovecot refuses every login when a deny passdb cannot be read.
+passdb {{
+  driver = passwd-file
+  args = username_format=%d {DOVECOT_SUSPENDED_DOMAINS}
+  deny = yes
+}}
+"""
 POSTFIX_FORWARDS_MAP = Path('/etc/postfix/boron/mysql-virtual-forwards.cf')
 # virtual_alias_maps wins over virtual_mailbox_maps, so an address that is
 # both a mailbox and a forwarder (or a mailbox under a catch-all) must also
@@ -152,6 +168,17 @@ def command(args: list[str], timeout: int = 900) -> None:
     subprocess.run(args, check=True, timeout=timeout, env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"})
 
 
+def repair_interrupted_dpkg() -> None:
+    """Finish a dpkg run that was cut short before installing packages.
+
+    The daemon installs packages itself (phpMyAdmin, the stack manager) and a
+    panel restart can kill apt/dpkg mid-run; every later apt-get install then
+    fails until 'dpkg --configure -a' runs. Best effort: when it cannot
+    repair the state, the apt-get install that follows reports the error."""
+    subprocess.run(["dpkg", "--configure", "-a"], check=False, timeout=900,
+                   env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"})
+
+
 def _runtime_paths() -> list[Path]:
     paths = [MSMTP_CONFIG, APPARMOR_BWRAP_PROFILE, OLS_CONFIG, OLS_NAMESPACE_POLICY, OLS_WAF_RUNTIME, FIREWALL_RECOVER_COMMAND, OLS_LIFECYCLE_CONFIG,
              LICENSE_CRON, MAIL_ROUTING_CRON,
@@ -160,9 +187,11 @@ def _runtime_paths() -> list[Path]:
              POSTFIX_MASTER_CONFIG, POSTFIX_SENDER_LOGIN,
              MAIL_SUBMIT_SOCKET_UNIT, MAIL_SUBMIT_SERVICE_UNIT, MAIL_EGRESS_UNIT,
              DOVECOT_SQL_CONFIG, DOVECOT_SSO_SQL_CONFIG, DOVECOT_SSO_PASSDB_CONFIG, DOVECOT_QUOTA_CONFIG,
-             DOVECOT_SIEVE_CONFIG, POSTFIX_FORWARDS_MAP]
+             DOVECOT_SIEVE_CONFIG, POSTFIX_FORWARDS_MAP,
+             DOVECOT_SUSPENDED_PASSDB_CONFIG, DOVECOT_SUSPENDED_DOMAINS]
     if OLS_VHOST_ROOT.exists():
         paths.extend(sorted(OLS_VHOST_ROOT.glob("*/vhconf.conf")))
+    paths.extend(_php_ini_paths())
     for pattern in ("boron-node-*.service", "boron-node-*.socket",
                     "boron-python-*.service", "boron-python-*.socket"):
         paths.extend(sorted(SYSTEMD_UNIT_DIR.glob(pattern)))
@@ -170,6 +199,14 @@ def _runtime_paths() -> list[Path]:
         paths.extend(sorted(DEFAULT_APP_ENV_DIR.glob("boron-node-*.service.env")))
         paths.extend(sorted(DEFAULT_APP_ENV_DIR.glob("boron-python-*.service.env")))
     return paths
+
+
+def _php_ini_paths() -> list[Path]:
+    """The installed lsphp php.ini files configure_php_ini_defaults edits."""
+    from daemon.phpext import php_ini_path
+    from shared.config import settings
+
+    return [path for path in map(php_ini_path, settings.php_versions) if path.is_file()]
 
 
 def _app_runtime_records() -> list[dict]:
@@ -309,7 +346,7 @@ def restore_runtime_backup() -> None:
     if any(row["path"] == str(OLS_CONFIG) and row["exists"] for row in records):
         command(["/usr/local/lsws/bin/openlitespeed", "-t"], timeout=30)
         command(["systemctl", "reload", "lshttpd"], timeout=60)
-    if any(row['path'] in {str(DOVECOT_BORON_CONFIG), str(DOVECOT_SQL_CONFIG), str(DOVECOT_SSO_SQL_CONFIG), str(DOVECOT_SSO_PASSDB_CONFIG), str(DOVECOT_QUOTA_CONFIG)} and row['exists'] for row in records):
+    if any(row['path'] in {str(DOVECOT_BORON_CONFIG), str(DOVECOT_SQL_CONFIG), str(DOVECOT_SSO_SQL_CONFIG), str(DOVECOT_SSO_PASSDB_CONFIG), str(DOVECOT_QUOTA_CONFIG), str(DOVECOT_SUSPENDED_PASSDB_CONFIG)} and row['exists'] for row in records):
         command(['doveconf', '-n'], timeout=30)
         command(['systemctl', 'reload', 'dovecot'], timeout=60)
     if any(row['path'] == str(POSTFIX_MAIN_CONFIG) and row['exists'] for row in records):
@@ -548,6 +585,10 @@ plugin {
   quota_rule = *:storage=0
 }
 """, 0o644)
+    # The list first (an existing one is the current state), then the passdb.
+    if not DOVECOT_SUSPENDED_DOMAINS.exists():
+        _write_dovecot_config(DOVECOT_SUSPENDED_DOMAINS, "", 0o640)
+    _write_dovecot_config(DOVECOT_SUSPENDED_PASSDB_CONFIG, DOVECOT_SUSPENDED_PASSDB, 0o644)
     configure_dovecot_sieve()
 
 
@@ -562,6 +603,33 @@ def configure_dovecot_sieve() -> None:
         _write_dovecot_config(DOVECOT_SIEVE_CONFIG, DOVECOT_SIEVE_CONTENT, 0o644)
     else:
         DOVECOT_SIEVE_CONFIG.unlink(missing_ok=True)
+
+
+def configure_suspended_mail_logins() -> None:
+    """Block mail logins of accounts suspended by a release that left them
+    working; later suspensions maintain the list themselves."""
+    if not DOVECOT_SUSPENDED_PASSDB_CONFIG.exists():
+        return
+    from daemon import handlers_mail
+    handlers_mail.reconcile_suspended_mail_logins()
+
+
+def configure_mail_client_ports() -> None:
+    """Open implicit-TLS submission (465) where the panel manages UFW, once:
+    when this upgrade introduces the service (dkim.configure_signer adds it
+    later in main). install.sh opens it and the other mail client ports on
+    fresh servers; later upgrades leave the firewall as the operator keeps it.
+    configure_signer adds the service only where OpenDKIM and Postfix are
+    installed, so without them the port is left closed (nothing would listen)."""
+    if not POSTFIX_MASTER_CONFIG.exists() or shutil.which("ufw") is None:
+        return
+    if shutil.which("opendkim") is None or shutil.which("postconf") is None:
+        return
+    if re.search(r"(?m)^(submissions|smtps|465)\s+inet\s", POSTFIX_MASTER_CONFIG.read_text()):
+        return
+    status = subprocess.run(["ufw", "status"], capture_output=True, text=True, timeout=30, check=False)
+    if status.stdout.startswith("Status: active"):
+        command(["ufw", "allow", "465/tcp"], timeout=60)
 
 
 def configure_postfix_forwards() -> None:
@@ -663,15 +731,20 @@ def configure_roundcube() -> None:
 def configure_phpmyadmin() -> None:
     """Servers installed before phpMyAdmin was provisioned have no package,
     so Server Setup could never publish it and every sign-on was dead.
-    Install it on database servers and republish it when a hostname is set."""
-    from shared.config import settings
-    from shared.install_profiles import component_enabled
+    Install it on database servers and republish it when a hostname is set.
+
+    Best-effort: phpMyAdmin is optional, so a failed install (no network, an
+    apt error) must not roll back the update. pma logs the failure and
+    records it for the readiness checks, which the update finalizer stores
+    as an advisory; Server Setup can retry the installation later.
+    """
     from daemon import pma
-    components = settings.enabled_components or ()
-    database = ("database" in components) if components else component_enabled(settings.install_profile, "database")
-    if not database or shutil.which("mariadb") is None and not Path("/usr/sbin/mariadbd").exists():
+    if not pma.database_component_enabled():
         return
-    pma.provision()
+    try:
+        pma.provision(source="upgrade", budget_seconds=pma.UPGRADE_INSTALL_BUDGET_SECONDS)
+    except Exception:  # noqa: BLE001 - recorded by pma.provision; the upgrade goes on
+        pass
 
 
 def configure_account_resource_parent() -> None:
@@ -749,17 +822,34 @@ def configure_bubblewrap_apparmor() -> None:
     command(["apparmor_parser", "-r", str(APPARMOR_BWRAP_PROFILE)], timeout=30)
 
 
+def configure_php_ini_defaults() -> bool:
+    """Customer PHP must not print errors (file system paths, queries) to
+    visitors: display_errors and display_startup_errors Off, log_errors On in
+    every lsphp php.ini, the same values install.sh writes on fresh servers
+    (daemon/phpdirectives.PHP_INI_DEFAULTS). Returns whether a file changed:
+    warm PHP workers keep the old values until they are restarted."""
+    from daemon import phpext
+
+    return bool(phpext.reconcile_php_ini_defaults())
+
+
 def configure_account_lifecycle_state() -> None:
     """Bring accounts suspended/terminated by older releases to current rules.
 
     Suspension now also expires the Linux login (SSH keys, SFTP, git and cron
-    were still accepted), and termination frees the account's hostnames.
-    Fresh installs have no accounts, so install.sh needs no counterpart.
+    were still accepted) and ends what the account left running, termination
+    frees the account's hostnames, and enforced inode limits are back on the
+    quota of accounts restored by an older release. Every live account's
+    resource limits are re-applied, so its slice names the whole disk and
+    byte-exact I/O bandwidth. Fresh installs have no accounts, so install.sh
+    needs no counterpart.
     """
-    from daemon import handlers_account
+    from daemon import handlers_account, inode_quotas, resource_manager
 
     handlers_account.reconcile_suspended_logins()
     handlers_account.release_terminated_domains()
+    inode_quotas.reapply_enforced()
+    resource_manager.reapply_all()
 
 
 def _arguments(argv: list[str] | None = None) -> argparse.Namespace:
@@ -797,7 +887,10 @@ def main(argv: list[str] | None = None) -> int:
         missing_packages.append("apparmor")
     if Path("/etc/dovecot/dovecot.conf").exists() and not DOVECOT_SIEVE_PLUGIN.is_file():
         missing_packages.append("dovecot-sieve")
+    if Path("/etc/dovecot/dovecot.conf").exists() and not DOVECOT_POP3_PROTOCOL.is_file():
+        missing_packages.append("dovecot-pop3d")
     if missing_packages:
+        repair_interrupted_dpkg()
         command(["apt-get", "update"])
         command(["apt-get", "install", "-y", *missing_packages])
     # Rotate historically readable keys before loading settings into memory.
@@ -816,6 +909,7 @@ def main(argv: list[str] | None = None) -> int:
     configure_ols_namespace_policy()
     webmail_sso.ensure_schema()
     configure_dovecot()
+    configure_suspended_mail_logins()
     configure_postfix_forwards()
     spamfilter.repair_virtual_config_permissions()
     configure_mail_tls()
@@ -824,14 +918,16 @@ def main(argv: list[str] | None = None) -> int:
     configure_account_resource_parent()
     configure_bubblewrap_mail()
     configure_mail_egress()
+    configure_mail_client_ports()
     configure_bubblewrap_apparmor()
     configure_account_lifecycle_state()
+    php_ini_changed = configure_php_ini_defaults()
     # Server policy is Off-by-default; refreshing main first keeps every
     # existing vhost on the native namespace until its own atomic refresh
     # enables Bubblewrap. A mid-migration failure therefore degrades to the
     # already-verified compatibility backend instead of breaking PHP.
     ols.refresh_main_config()
-    ols.refresh_all_vhosts()
+    ols.refresh_all_vhosts(recycle_php=php_ini_changed)
     dkim.configure_signer()
     # Placeholder SOA MNAME and unsplit >255-octet TXT (DKIM) in existing
     # zones; best-effort, never fails the upgrade.

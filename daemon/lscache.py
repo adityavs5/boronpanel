@@ -37,6 +37,8 @@ from sqlalchemy import select
 from shared.db import write_session
 from shared.models import Account, Domain, LscacheSettings
 from shared.validation import (
+    ConflictError,
+    NotFoundError,
     validate_cache_ttl_seconds,
     validate_domain,
     validate_lscache_exclude_paths,
@@ -53,10 +55,10 @@ WP_LSCACHE_PLUGIN_MARKER = "wp-content/plugins/litespeed-cache/litespeed-cache.p
 def _get_domain_and_account(session, domain_name: str) -> tuple[Domain, Account]:
     domain_row = session.scalar(select(Domain).where(Domain.domain == domain_name))
     if domain_row is None:
-        raise RuntimeError(f"domain '{domain_name}' not found")
+        raise NotFoundError(f"domain '{domain_name}' not found")
     account = session.get(Account, domain_row.account_id)
     if account is None:
-        raise RuntimeError(f"domain '{domain_name}' has no owning account")
+        raise NotFoundError(f"domain '{domain_name}' has no owning account")
     return domain_row, account
 
 
@@ -170,7 +172,8 @@ def purge(params: dict) -> dict:
         _domain_row, _account = _get_domain_and_account(session, domain_name)
         row = session.scalar(select(LscacheSettings).where(LscacheSettings.domain == domain_name))
         if row is None or not row.enabled:
-            raise RuntimeError(f"LSCache is not enabled for domain '{domain_name}'")
+            raise ConflictError(f"LSCache is not enabled for {domain_name}, so there is no cache to purge. "
+                                "Turn LSCache on first.")
 
     _clear_storage_dir(domain_name)
 
@@ -228,6 +231,7 @@ def get_stats(params: dict) -> dict:
         row = session.scalar(select(LscacheSettings).where(LscacheSettings.domain == domain_name))
 
     cached_object_count = 0
+    count_complete = True
     try:
         directory_fd = open_dir_beneath(str(cache_storage_path(domain_name)))
     except FileNotFoundError:
@@ -236,11 +240,12 @@ def get_stats(params: dict) -> dict:
         try:
             entries_seen = 0
             for relative, directories, files, current_fd in os.fwalk('.', dir_fd=directory_fd, follow_symlinks=False):
-                if relative.count('/') > 64:
-                    raise RuntimeError("cache statistics exceed the directory depth limit")
                 entries_seen += len(directories) + len(files)
-                if entries_seen > 200_000:
-                    raise RuntimeError("cache statistics exceed the entry limit")
+                if relative.count('/') > 64 or entries_seen > 200_000:
+                    # A very large cache is counted up to the bound and
+                    # reported as such, not turned into a failed request.
+                    count_complete = False
+                    break
                 for name in files:
                     try:
                         if stat.S_ISREG(os.stat(name, dir_fd=current_fd, follow_symlinks=False).st_mode):
@@ -253,6 +258,8 @@ def get_stats(params: dict) -> dict:
     return {
         "domain": domain_name,
         "cached_object_count": cached_object_count,
+        # False: the cache holds more objects than were counted.
+        "cached_object_count_complete": count_complete,
         "last_purged_at": row.last_purged_at.isoformat() if row and row.last_purged_at else None,
     }
 
@@ -290,10 +297,9 @@ def delete_settings_for_domain(domain_name: str) -> None:
 
 
 def terminate_account_lscache(account: Account) -> None:
-    """TERMINATE_HOOKS entry -- an account's PRIMARY domain's Domain row
-    (unlike addon/subdomain rows) survives termination, same established
-    pattern handlers_redirect.terminate_account_redirects already
-    documents, so remove_domain's own cleanup above never runs for it.
+    """TERMINATE_HOOKS entry -- termination removes the account's Domain
+    rows without remove_domain, so its own cleanup above never runs for
+    them (as handlers_redirect.terminate_account_redirects documents).
     Idempotent: safe even if the account never enabled LSCache for any
     domain."""
     with write_session() as session:

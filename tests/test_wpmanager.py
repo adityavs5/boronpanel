@@ -182,6 +182,8 @@ def test_clone_allows_empty_provisioning_folders(sites,monkeypatch):
         a=s.scalar(select(Account).where(Account.username=='alice'))
         s.add(Domain(account_id=a.id,domain='clone.example',docroot=str(root),kind='addon'))
     monkeypatch.setattr(manager.wpcli,'ensure_wpcli',lambda:'/fake/wp')
+    from daemon import ssl
+    monkeypatch.setattr(ssl,'prepare_https',lambda domain,host=None:{'https':True,'certificate':'existing','detail':None})
     monkeypatch.setattr(manager.wordpress,'_allocate_database',lambda *a:({'db_name':'alice_wp','db_user':'alice_wp','password':'secret'},'wp'))
     capture={}
     def submit(*args,**kwargs):capture.update(kwargs);return {'id':1,'status':'pending'}
@@ -376,3 +378,100 @@ def test_inventory_does_not_use_previous_domain_owners_metadata(sites):
         site=next(i for i in manager.inventory(scope)['installs'] if i['domain']=='alice.example')
         assert site['admin_user']==''
         assert site['installed_at'] is None
+
+
+
+@pytest.fixture
+def fresh_subdomain(sites, monkeypatch):
+    """A clone destination exactly as provisioning leaves a new subdomain:
+    .well-known, an empty error_pages and the panel's welcome page."""
+    from sqlalchemy import select
+    from daemon import ssl
+    root = sites/'clone'; root.mkdir(); (root/'.well-known'/'acme-challenge').mkdir(parents=True)
+    (root/'error_pages').mkdir(); (root/'welcome.html').write_text('<h1>Welcome</h1>')
+    with write_session() as s:
+        a = s.scalar(select(Account).where(Account.username=='alice'))
+        s.add(Domain(account_id=a.id, domain='clone.example', docroot=str(root), kind='subdomain'))
+    monkeypatch.setattr(manager.wpcli, 'ensure_wpcli', lambda: '/fake/wp')
+    monkeypatch.setattr(manager.wordpress, '_allocate_database',
+                        lambda *a: ({'db_name':'alice_wp2','db_user':'alice_wp2','password':'secret'}, 'wp2'))
+    events = {'retired': [], 'restored': [], 'dropped': [], 'issued': []}
+    monkeypatch.setattr(manager.domain_welcome, 'is_managed_welcome', lambda username, docroot: docroot == str(root))
+    monkeypatch.setattr(manager.domain_welcome, 'retire_welcome',
+                        lambda username, docroot, installed=False: events['retired'].append(docroot) or True)
+    monkeypatch.setattr(manager.domain_welcome, 'ensure_welcome',
+                        lambda username, domain, docroot: events['restored'].append((domain, docroot)))
+    monkeypatch.setattr(manager.wordpress.handlers_database, 'drop_database', lambda p: events['dropped'].append(p['name']))
+    monkeypatch.setattr(ssl, 'prepare_https', lambda domain, host=None: events['issued'].append(host) or
+                        {'https': True, 'certificate': 'issued', 'detail': None})
+    return root, events
+
+
+def test_clone_to_a_fresh_subdomain_tolerates_the_welcome_page(fresh_subdomain, monkeypatch):
+    """Live finding UW M3: cloning into a freshly added subdomain always
+    failed with "The clone destination must be empty" because of the
+    panel's own welcome.html."""
+    root, events = fresh_subdomain
+    captured = {}
+    monkeypatch.setattr(manager.cmdjobs, 'submit', lambda *a, **kw: captured.update(kw) or {'id': 7, 'status': 'pending'})
+
+    result = manager.operation({'username':'alice','domain':'alice.example','action':'clone','target_domain':'clone.example'})
+
+    assert result == {'id': 7, 'status': 'pending', 'url': 'https://clone.example'}
+    assert json.loads(captured['input_text'])['url'] == 'https://clone.example'
+    assert events['retired'] == [str(root)]  # removed before the worker's own emptiness check
+    assert events['issued'] == ['clone.example']
+    captured['on_failure']()
+    assert events['dropped'] == ['wp2']
+    assert events['restored'] == [('clone.example', str(root))]  # the placeholder comes back
+
+
+def test_clone_drops_its_database_when_the_welcome_page_cannot_be_retired(fresh_subdomain, monkeypatch):
+    root, events = fresh_subdomain
+    def broken(username, docroot, installed=False):
+        raise OSError('welcome state unreadable')
+    monkeypatch.setattr(manager.domain_welcome, 'retire_welcome', broken)
+    monkeypatch.setattr(manager.cmdjobs, 'submit', lambda *a, **kw: pytest.fail('nothing may be queued'))
+    with pytest.raises(OSError):
+        manager.operation({'username':'alice','domain':'alice.example','action':'clone','target_domain':'clone.example'})
+    assert events['dropped'] == ['wp2']
+    assert events['restored'] == [('clone.example', str(root))]
+
+
+def test_clone_still_refuses_a_destination_with_customer_files(fresh_subdomain, monkeypatch):
+    root, events = fresh_subdomain
+    (root/'index.html').write_text('my site')
+    monkeypatch.setattr(manager.cmdjobs, 'submit', lambda *a, **kw: pytest.fail('nothing may be queued'))
+    with pytest.raises(Exception, match='destination must be empty'):
+        manager.operation({'username':'alice','domain':'alice.example','action':'clone','target_domain':'clone.example'})
+    assert events == {'retired': [], 'restored': [], 'dropped': [], 'issued': []}
+
+
+def test_clone_without_a_certificate_falls_back_to_http_and_says_why(fresh_subdomain, monkeypatch):
+    """Live finding UW L4: an https clone got no certificate, so its admin
+    sign-in failed until SSL was issued by hand."""
+    from daemon import ssl
+    root, events = fresh_subdomain
+    monkeypatch.setattr(ssl, 'prepare_https', lambda domain, host=None: {
+        'https': False, 'certificate': None, 'detail': f'{host} does not point to this server yet'})
+    captured = {}
+    monkeypatch.setattr(manager.cmdjobs, 'submit', lambda *a, **kw: captured.update(kw) or {'id': 8, 'status': 'pending'})
+
+    result = manager.operation({'username':'alice','domain':'alice.example','action':'clone',
+                                'target_domain':'clone.example','target_www':True})
+
+    assert json.loads(captured['input_text'])['url'] == 'http://www.clone.example'
+    assert result['url'] == 'http://www.clone.example'
+    assert result['notice'] == ('The clone uses http://www.clone.example because www.clone.example does not point '
+                                'to this server yet. Issue an SSL certificate for clone.example, then change the '
+                                'WordPress address to https.')
+
+
+def test_http_clone_never_requests_a_certificate(fresh_subdomain, monkeypatch):
+    from daemon import ssl
+    root, events = fresh_subdomain
+    monkeypatch.setattr(ssl, 'prepare_https', lambda *a, **kw: pytest.fail('http clones need no certificate'))
+    monkeypatch.setattr(manager.cmdjobs, 'submit', lambda *a, **kw: {'id': 9, 'status': 'pending'})
+    result = manager.operation({'username':'alice','domain':'alice.example','action':'clone',
+                                'target_domain':'clone.example','target_protocol':'http'})
+    assert result['url'] == 'http://clone.example' and 'notice' not in result

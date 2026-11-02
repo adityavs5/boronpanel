@@ -222,3 +222,29 @@ def test_effective_config_reports_disable_functions_actually_in_force(account, t
         session.add(PhpFunctionOverride(account_id=account_id, domain=None, disable_functions="phpinfo"))
     values = hpi.effective_domain_config({"username": "demo1", "domain": "demo1.example"})["values"]
     assert values["disable_functions"] == "phpinfo"
+
+
+def test_memory_limit_cannot_exceed_the_account_memory_limit(account, stub_ols, stub_recycle):
+    """Round 1 web cross_group: plans have no PHP memory_limit of their own,
+    so the account's memory limit (cgroup memory.max) is the ceiling."""
+    from shared.db import write_session
+    from shared.models import Account
+
+    with write_session() as session:
+        session.query(Account).filter(Account.username == "demo1").update({"mem_mb": 256})
+    assert hpi.get_php_ini({"username": "demo1"})["memory_limit_max_mb"] == 256
+    with pytest.raises(ValidationError, match=r"higher than this account's memory limit \(256M\)"):
+        hpi.set_php_ini({"username": "demo1", "memory_limit": "512M"})
+    with pytest.raises(ValidationError, match="memory limit"):
+        hpi.set_php_ini({"username": "demo1", "directives": {"memory_limit": "1G"}})
+    result = hpi.set_php_ini({"username": "demo1", "memory_limit": "256M"})
+    assert result["php_ini"]["memory_limit"] == "256M"
+    # Unrelated changes do not re-check a value stored before a plan change.
+    with write_session() as session:
+        session.query(Account).filter(Account.username == "demo1").update({"mem_mb": 128})
+    assert hpi.set_php_ini({"username": "demo1", "directives": {"max_input_vars": 3000}})["extras"]["max_input_vars"] == "3000"
+    # The settings form resends the unchanged memory_limit with every save.
+    result = hpi.set_php_ini({"username": "demo1", "memory_limit": "256M", "max_execution_time": 45})
+    assert result["php_ini"]["max_execution_time"] == 45
+    with pytest.raises(ValidationError, match=r"memory limit \(128M\)"):
+        hpi.set_php_ini({"username": "demo1", "memory_limit": "192M"})

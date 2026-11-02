@@ -18,7 +18,7 @@ import { StyledSelect as Select } from '@/components/ui/StyledSelect'
 import { Checkbox, RadioGroup, Radio } from '@/components/ui/Toggle'
 import { LongValue } from '@/components/ui/LongValue'
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter,
   ConfirmDialog,
 } from '@/components/ui/Dialog'
 import {
@@ -27,6 +27,11 @@ import {
 } from '@/components/ui/DropdownMenu'
 import { toast } from '@/components/ui/Toast'
 import { waitForControlTask } from '@/lib/control-tasks'
+import { HtaccessReport, htaccessNeedsAttention } from './HtaccessReport'
+
+// Removal succeeds once the vhost is gone; steps after that are reported in
+// cleanup_failed (for example ['DNS records', 'LSCache settings']).
+const cleanupText = (items) => `These could not be cleaned up: ${items.join(', ')}. Ask your administrator to remove them.`
 
 
 // Phase 8 feature 3: parked (alias) domains — serve the same docroot as a target.
@@ -47,12 +52,21 @@ function ParkedDomainsCard({ username, domains }) {
 
   const addMut = useMutation({
     mutationFn: () => post(base, { parked_domain: form.parked_domain.trim(), target_domain: form.target_domain || null }),
-    onSuccess: () => { toast.success('Parked domain added'); setForm({ parked_domain: '', target_domain: '' }); setOpen(false); invalidate() },
+    onSuccess: (res) => {
+      toast.success('Parked domain added', res?.dns_zone_created ? `A DNS zone was created for ${res.parked_domain}.` : undefined)
+      setForm({ parked_domain: '', target_domain: '' }); setOpen(false); invalidate()
+    },
     onError: (e) => toast.error('Could not park domain', e.message),
   })
+  const resetAdd = addMut.reset
+  useEffect(() => { if (open) resetAdd() }, [open, resetAdd])
   const deleteMut = useMutation({
     mutationFn: (row) => del(`${base}/${row.parked_domain}`),
-    onSuccess: () => { toast.success('Parked domain removed'); invalidate(); setToDelete(null) },
+    onSuccess: (res, row) => {
+      if (res?.cleanup_failed?.length) toast.warning(`${row.parked_domain} was removed`, cleanupText(res.cleanup_failed))
+      else toast.success('Parked domain removed')
+      invalidate(); setToDelete(null)
+    },
     onError: (e) => { toast.error('Could not remove parked domain', e.message); setToDelete(null) },
   })
 
@@ -114,6 +128,7 @@ function ParkedDomainsCard({ username, domains }) {
             </DialogBody>
             <DialogFooter>
               {addMut.isPending && <p role="status" className="mr-auto text-sm text-muted-foreground">Adding parked domain…</p>}
+              {!addMut.isPending && addMut.error && <p role="alert" className="mr-auto min-w-0 break-words text-sm text-danger">{addMut.error.message}</p>}
               <Button type="button" variant="secondary" onClick={() => setOpen(false)}>Cancel</Button>
               <Button type="submit" loading={addMut.isPending} disabled={!form.parked_domain.trim()}>Park domain</Button>
             </DialogFooter>
@@ -154,6 +169,7 @@ export default function Domains({ subdomainsOnly = false }) {
   const [toSuspend,setToSuspend]=useState(null)
   const [suspensionReason,setSuspensionReason]=useState('')
   const [createProgress,setCreateProgress]=useState(null)
+  const [htaccessReport, setHtaccessReport] = useState(null) // {domain, report}
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['domains', username],
@@ -177,13 +193,23 @@ export default function Domains({ subdomainsOnly = false }) {
       setDomain('')
       setCustomDocroot('')
     },
+    // A 400 (invalid or reserved name) or a failed task's reason stays in
+    // the dialog footer until the next attempt.
     onError: (e) => toast.error('Could not add domain', e.message),
   })
+  const resetCreate = createMut.reset
+  useEffect(() => { if (createOpen) resetCreate() }, [createOpen, resetCreate])
+  // A name another account (or this one) already holds is a problem with the
+  // name itself, so it is shown on the field rather than in the footer. The
+  // 409 comes straight from the task route, or as a failed task's reason.
+  const createError = !createMut.isPending ? createMut.error : null
+  const nameTaken = createError && (createError.status === 409 || /already (belongs to another account|exists|in use)/i.test(createError.reason || ''))
 
   const deleteMut = useMutation({
     mutationFn: (d) => del(`/api/v1/accounts/${username}/domains/${d.domain}`),
-    onSuccess: (_res, d) => {
-      toast.success('Domain removed', `${d.domain} and its vhost were removed. Files on disk are kept.`)
+    onSuccess: (res, d) => {
+      if (res?.cleanup_failed?.length) toast.warning(`${d.domain} was removed`, cleanupText(res.cleanup_failed))
+      else toast.success('Domain removed', `${d.domain} and its vhost were removed. Files on disk are kept.`)
       qc.invalidateQueries({ queryKey: ['domains', username] })
       setToDelete(null)
     },
@@ -202,9 +228,16 @@ export default function Domains({ subdomainsOnly = false }) {
     onError: (e) => toast.error('Could not change domain status', e.message),
   })
 
+  // Reloading re-renders the vhost: rewrite rules and the access rules the
+  // server can enforce both take effect. The response carries the same
+  // access report as GET .../htaccess-status.
   const htaccessMut = useMutation({
     mutationFn: d => post(`/api/v1/accounts/${username}/domains/${encodeURIComponent(d.domain)}/reload-htaccess`, {}),
-    onSuccess: (_result, d) => toast.success('.htaccess reloaded', `${d.domain} is using the latest rewrite rules.`),
+    onSuccess: (result, d) => {
+      if (htaccessNeedsAttention(result)) toast.warning('.htaccess reloaded with warnings', `${d.domain} uses its .htaccess rewrite rules and the access rules the server supports. Some lines need your attention.`)
+      else toast.success('.htaccess reloaded', `${d.domain} now uses its .htaccess rewrite and access rules.`)
+      if (htaccessNeedsAttention(result) || result?.access_rules?.length) setHtaccessReport({ domain: d.domain, report: result })
+    },
     onError: e => toast.error('Could not reload .htaccess', e.message),
   })
 
@@ -218,9 +251,13 @@ export default function Domains({ subdomainsOnly = false }) {
       for (const [index, row] of bulkRows.entries()) {
         setBulkProgress(`${bulkAction === 'delete' ? 'Removing' : bulkAction === 'suspend' ? 'Suspending' : 'Reactivating'} ${row.domain} (${index + 1}/${bulkRows.length})…`)
         try {
-          if (bulkAction === 'delete') await del(`/api/v1/accounts/${username}/domains/${row.domain}`)
-          else await patch(`/api/v1/accounts/${username}/domains/${encodeURIComponent(row.domain)}/suspension`, { suspended: bulkAction === 'suspend', reason: bulkAction === 'suspend' ? '' : null })
-          report.push({ domain: row.domain, ok: true })
+          if (bulkAction === 'delete') {
+            const result = await del(`/api/v1/accounts/${username}/domains/${row.domain}`)
+            report.push({ domain: row.domain, ok: true, warning: result?.cleanup_failed?.length ? `Removed. ${cleanupText(result.cleanup_failed)}` : null })
+          } else {
+            await patch(`/api/v1/accounts/${username}/domains/${encodeURIComponent(row.domain)}/suspension`, { suspended: bulkAction === 'suspend', reason: bulkAction === 'suspend' ? '' : null })
+            report.push({ domain: row.domain, ok: true })
+          }
           setSelected(previous => new Set([...previous].filter(name => name !== row.domain)))
         } catch (error) { report.push({ domain: row.domain, ok: false, message: error.message }) }
         setBulkReport([...report])
@@ -231,7 +268,9 @@ export default function Domains({ subdomainsOnly = false }) {
       qc.invalidateQueries({ queryKey: ['domains', username] })
       setBulkAction(null); setBulkProgress('')
       const failed = report.filter(row => !row.ok)
-      failed.length ? toast.error('Some domains could not be changed', `${failed.length} failed. See the per-domain results below.`) : toast.success('Domains updated', `${report.length} domains changed.`)
+      failed.length ? toast.error('Some domains could not be changed', `${failed.length} failed. See the per-domain results below.`)
+        : report.some(row => row.warning) ? toast.warning('Domains updated with warnings', 'Some cleanup steps failed. See the per-domain results below.')
+          : toast.success('Domains updated', `${report.length} domains changed.`)
     },
     onError: error => toast.error('Could not update selected domains', error.message),
   })
@@ -349,7 +388,17 @@ export default function Domains({ subdomainsOnly = false }) {
         emptyAction={<Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> {subdomainsOnly ? 'Add subdomain' : 'Add domain'}</Button>}
       />
 
-      {bulkReport.length > 0 && <section className="tool-section" aria-label="Bulk domain results"><div className="tool-section-heading"><h2>Domain changes</h2></div>{bulkReport.map(row => <div key={row.domain} className="settings-inline-action"><strong>{row.domain}</strong><span className={row.ok ? 'text-success' : 'text-danger'}>{row.ok ? 'Updated' : row.message}</span></div>)}</section>}
+      {bulkReport.length > 0 && <section className="tool-section" aria-label="Bulk domain results"><div className="tool-section-heading"><h2>Domain changes</h2></div>{bulkReport.map(row => <div key={row.domain} className="settings-inline-action"><strong>{row.domain}</strong><span className={!row.ok ? 'text-danger' : row.warning ? 'text-warning' : 'text-success'}>{!row.ok ? row.message : row.warning || 'Updated'}</span></div>)}</section>}
+      <Dialog open={!!htaccessReport} onOpenChange={open => { if (!open) setHtaccessReport(null) }}>
+        <DialogContent size="lg">
+          <DialogHeader>
+            <DialogTitle className="break-all">.htaccess for {htaccessReport?.domain}</DialogTitle>
+            <DialogDescription>Rewrite rules are applied as written. These are the access rules the server enforces for this website.</DialogDescription>
+          </DialogHeader>
+          <DialogBody>{htaccessReport && <HtaccessReport report={htaccessReport.report} />}</DialogBody>
+          <DialogFooter><Button variant="secondary" onClick={() => setHtaccessReport(null)}>Done</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
       <ConfirmDialog open={!!bulkAction} onOpenChange={open => !open && !bulkMut.isPending && setBulkAction(null)} title={`${bulkAction === 'delete' ? 'Remove' : bulkAction === 'suspend' ? 'Suspend' : 'Unsuspend'} selected domains?`} description={<><p>{bulkRows.map(row => row.domain).join(', ')}</p><p>{bulkAction === 'delete' ? 'Primary domains are retained. Domain configuration is removed; files on disk are kept.' : 'Only these websites change status. Account files are retained.'}</p>{bulkProgress && <p role="status">{bulkProgress}</p>}</>} confirmationText={username} confirmLabel={bulkAction === 'delete' ? 'Remove domains' : bulkAction === 'suspend' ? 'Suspend domains' : 'Unsuspend domains'} loading={bulkMut.isPending} onConfirm={() => { setBulkReport([]); bulkMut.mutate() }} />
       {!subdomainsOnly && <ParkedDomainsCard username={username} domains={data?.domains} />}
 
@@ -373,13 +422,13 @@ export default function Domains({ subdomainsOnly = false }) {
           >
             <DialogBody className="space-y-4">
               {!subdomainsOnly && <FormField label="Site type" htmlFor="domain-kind"><Select id="domain-kind" value={kind} onChange={e=>{setKind(e.target.value);setDomain('');setParent(parentDomains[0]?.domain||'')}}><option value="addon">Domain</option><option value="subdomain" disabled={!parentDomains.length}>Subdomain</option></Select></FormField>}
-              <FormField error={domainError} label={kind==='subdomain'?'Subdomain':'Domain'} htmlFor="new-domain-name" required hint={kind==='subdomain'?'Enter the new name on the left. The selected parent domain remains visible beside it.':'Enter a complete domain name.'}>
+              <FormField error={domainError || (nameTaken ? createError.message : undefined)} label={kind==='subdomain'?'Subdomain':'Domain'} htmlFor="new-domain-name" required hint={kind==='subdomain'?'Enter the new name on the left. The selected parent domain remains visible beside it.':'Enter a complete domain name.'}>
                 {kind === 'subdomain' ? <div className="subdomain-address-composer">
-                  <Input id="new-domain-name" autoFocus value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="blog" required className="subdomain-label-input" autoComplete="off" spellCheck={false} />
+                  <Input id="new-domain-name" autoFocus value={domain} onChange={(e) => { setDomain(e.target.value); if (nameTaken) resetCreate() }} placeholder="blog" required className="subdomain-label-input" autoComplete="off" spellCheck={false} />
                   <div className="subdomain-parent-control"><span aria-hidden="true">.</span><Select id="subdomain-parent" aria-label="Parent domain" value={parent} onChange={e=>setParent(e.target.value)}>
                     {parentDomains.map(d=><option key={d.domain} value={d.domain}>{d.domain}</option>)}
                   </Select></div>
-                </div> : <Input id="new-domain-name" autoFocus value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="example.com" required />}
+                </div> : <Input id="new-domain-name" autoFocus value={domain} onChange={(e) => { setDomain(e.target.value); if (nameTaken) resetCreate() }} placeholder="example.com" required />}
               </FormField>
               {kind==='subdomain'&&<div className="subdomain-address-preview"><Globe aria-hidden="true" /><span>Full address</span><strong>{fullSubdomain}</strong></div>}
               {kind==='subdomain'&&<fieldset className="subdomain-root-options"><legend>Document root</legend><RadioGroup value={docrootMode} onValueChange={setDocrootMode} aria-label="Document root" className="subdomain-root-options">
@@ -393,7 +442,7 @@ export default function Domains({ subdomainsOnly = false }) {
             <DialogFooter>
               <div className="mr-auto min-w-0 text-sm">
                 {createMut.isPending && <p role="status" className="text-muted-foreground">{createProgress?.progress_message || `Adding ${kind === 'subdomain' ? fullSubdomain : domain.trim()}… this can take up to 30 seconds. Do not close this page.`}</p>}
-                {!createMut.isPending && createMut.error && <p role="alert" className="text-danger">{createMut.error.message}</p>}
+                {createError && !nameTaken && <p role="alert" className="text-danger">{createError.message}</p>}
               </div>
               <Button type="button" variant="secondary" disabled={createMut.isPending} onClick={() => setCreateOpen(false)}>Cancel</Button>
               <Button type="submit" loading={createMut.isPending} disabled={!!domainError || !domain.trim() || (kind === 'subdomain' && !parent)}>{kind === 'subdomain' ? 'Add subdomain' : 'Add domain'}</Button>
@@ -404,12 +453,13 @@ export default function Domains({ subdomainsOnly = false }) {
 
       <ConfirmDialog
         open={!!toDelete}
-        onOpenChange={(v) => { if (!v) setToDelete(null) }}
+        onOpenChange={(v) => { if (!v) { setToDelete(null); deleteMut.reset() } }}
         title={toDelete ? `Remove ${toDelete.domain}?` : 'Remove domain?'}
         description="Its vhost and any auto-created DNS record are removed. Files on disk are kept. This cannot be undone."
         confirmLabel="Remove domain"
         confirmationText={toDelete?.domain}
         loading={deleteMut.isPending}
+        error={deleteMut.error}
         onConfirm={() => toDelete && deleteMut.mutate(toDelete)}
       />
 

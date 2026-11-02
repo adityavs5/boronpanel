@@ -33,6 +33,7 @@ import os
 import pwd
 import re
 import secrets
+import threading
 import time
 from pathlib import Path
 
@@ -462,14 +463,19 @@ def bootstrap_pma_files(blowfish_secret: str | None = None) -> str:
 
 
 
-def _prepare_service_root():
-    from daemon.procutil import run
-    hostname = validate_domain(settings.pma_hostname)
+def validate_service_hostname(hostname: str) -> str:
+    hostname = validate_domain(hostname)
     if hostname in (settings.panel_hostname, settings.webmail_hostname):
         raise ValidationError('phpMyAdmin hostname conflicts with another panel service')
     with write_session() as session:
         if session.scalar(select(Domain.id).where(Domain.domain == hostname)):
             raise ValidationError('phpMyAdmin hostname belongs to a customer site')
+    return hostname
+
+
+def _prepare_service_root():
+    from daemon.procutil import run
+    validate_service_hostname(settings.pma_hostname)
     root = Path(settings.pma_docroot)
     if not root.is_absolute() or root.resolve() != root or not (root/'index.php').is_file():
         raise PmaError('Install phpMyAdmin at its configured absolute document root first')
@@ -505,6 +511,7 @@ def bootstrap_pma() -> None:
     _prepare_service_root()
     bootstrap_pma_files()
     ols.bootstrap_pma()
+    _record_provision("published", hostname=settings.pma_hostname)
 
 
 # The Debian/Ubuntu package is what the vhost template, include_path override
@@ -517,36 +524,262 @@ PMA_DEBCONF_SELECTIONS = (
 )
 
 
+INSTALL_BUDGET_SECONDS = 2400
+# The update finalizer bounds the whole runtime migration, so an upgrade
+# gives phpMyAdmin only a share of it; Server Setup can retry without limit.
+UPGRADE_INSTALL_BUDGET_SECONDS = 300
+PROVISION_STATE_FILE = "phpmyadmin-provision.json"
+_SOURCE_LABELS = {"installer": "during installation", "upgrade": "during a panel update",
+                  "setup": "from Server Setup"}
+
+
 def package_installed() -> bool:
     return (Path(settings.pma_docroot) / "index.php").is_file()
 
 
-def install_package() -> bool:
+def vhost_config_exists() -> bool:
+    """Whether bootstrap_pma has written phpMyAdmin's OLS vhost config. Until
+    then any render of the main config that names the vhost fails the OLS
+    config test, so a first publication must run before such a render."""
+    from daemon import ols
+    return Path(ols._pma_vhost_conf_path()).is_file()
+
+
+def database_component_enabled() -> bool:
+    """phpMyAdmin belongs to servers with the database component and MariaDB."""
+    import shutil
+    from shared.install_profiles import component_enabled
+    components = settings.enabled_components or ()
+    enabled = ("database" in components) if components else component_enabled(settings.install_profile, "database")
+    return enabled and (shutil.which("mariadb") is not None or Path("/usr/sbin/mariadbd").exists())
+
+
+def install_package(*, budget_seconds: float = INSTALL_BUDGET_SECONDS) -> bool:
     """Install the distribution phpMyAdmin package (idempotent). Returns
     whether anything was installed. Never configures a web server or a
-    phpMyAdmin control database; bootstrap_pma owns the configuration."""
+    phpMyAdmin control database; bootstrap_pma owns the configuration.
+    Every package-manager step shares one time budget."""
     from daemon.procutil import run
     if package_installed():
         return False
+    deadline = time.monotonic() + budget_seconds
+
+    def remaining(limit: float) -> float:
+        left = deadline - time.monotonic()
+        if left < 1:
+            raise PmaError("the phpMyAdmin installation ran out of time")
+        return min(limit, left)
+
     environment = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+    lock_wait = f"DPkg::Lock::Timeout={int(min(300, budget_seconds / 3))}"
     run(["debconf-set-selections"], input_text=PMA_DEBCONF_SELECTIONS, check=True, env=environment)
-    install = ["apt-get", "install", "-y", "--no-install-recommends", "-o", "DPkg::Lock::Timeout=300", PMA_PACKAGE]
-    if not run(install, timeout=900, env=environment).ok:
+    install = ["apt-get", "install", "-y", "--no-install-recommends", "-o", lock_wait, PMA_PACKAGE]
+    if not run(install, timeout=remaining(900), env=environment).ok:
         # Upgraded servers may carry package lists older than the mirror's
         # current dependency versions (404 on fetch); refresh once and retry.
-        run(["apt-get", "-o", "DPkg::Lock::Timeout=300", "update"], timeout=600, env=environment)
-        run(install, check=True, timeout=900, env=environment)
+        run(["apt-get", "-o", lock_wait, "update"], timeout=remaining(600), env=environment)
+        run(install, check=True, timeout=remaining(900), env=environment)
     if not package_installed():
         raise PmaError(f"phpMyAdmin package did not install its document root at {settings.pma_docroot}")
     return True
 
 
-def provision() -> dict:
-    """Install and, once a phpMyAdmin hostname is configured, publish
-    phpMyAdmin. Used by the installer and by upgrades of servers installed
-    before phpMyAdmin was provisioned automatically; Server Setup publishes
-    it later when an administrator chooses the hostname."""
-    installed = install_package()
-    if settings.pma_hostname:
+def _provision_state_path() -> Path:
+    return Path(settings.db_path).parent / PROVISION_STATE_FILE
+
+
+def _record_provision(status: str, **details) -> None:
+    """Keep the last provisioning outcome for readiness checks and the
+    administrator status route; best-effort, it never fails the caller."""
+    path = _provision_state_path()
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(json.dumps({"status": status, "at": utcnow().isoformat(),
+                                         "pid": os.getpid(), **details}))
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        logger.warning("could not record the phpMyAdmin provisioning state at %s", path)
+
+
+def provision_state() -> dict:
+    try:
+        state = json.loads(_provision_state_path().read_text())
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def failure_summary(exc: BaseException) -> str:
+    """One short line for administrators: apt's own "E:" line when there is one."""
+    import subprocess
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "the package manager did not finish in time"
+    lines = [line.strip() for line in str(exc).splitlines() if line.strip()]
+    errors = [line[line.index("E: "):] for line in lines if "E: " in line]
+    return (errors[-1] if errors else lines[0] if lines else type(exc).__name__)[:300]
+
+
+def _publish(hostname: str) -> None:
+    if settings.pma_hostname == hostname:
         bootstrap_pma()
-    return {"installed": installed, "published": bool(settings.pma_hostname)}
+        return
+    # Saving the hostname publishes it (panel_config's reload runs
+    # bootstrap_pma) and restores the previous configuration on failure.
+    from daemon import panel_config
+    panel_config.apply_setup_values({"pma_hostname": hostname}, reload_services=True)
+
+
+def provision(hostname: str | None = None, *, source: str = "installer",
+              budget_seconds: float = INSTALL_BUDGET_SECONDS) -> dict:
+    """Install phpMyAdmin, then publish ``hostname`` (saving it to the panel
+    configuration) or else the configured hostname, if any. The installer
+    and upgrades call this; the outcome is recorded for readiness checks
+    and a failure is raised to the caller."""
+    target = validate_domain(hostname) if hostname else (settings.pma_hostname or None)
+    stage = "install"
+    try:
+        installed = install_package(budget_seconds=budget_seconds)
+        if target:
+            stage = "publish"
+            _publish(target)
+    except Exception as exc:
+        summary = failure_summary(exc)
+        logger.warning("phpMyAdmin %s failed %s: %s", stage, _SOURCE_LABELS.get(source, source), summary)
+        _record_provision("failed", stage=stage, source=source, hostname=target, error=summary)
+        raise
+    _record_provision("published" if target else "installed", source=source, hostname=target)
+    return {"installed": installed, "published": bool(target), "hostname": target}
+
+
+# Server Setup saves a phpMyAdmin hostname inside a configuration transaction
+# that must not wait minutes for apt. panel_config hands such a hostname here
+# instead: one background worker installs the package, then publishes the
+# most recently requested hostname. The lock is held while it publishes, so
+# a hostname saved meanwhile (withdraw_publication) is applied after it.
+_publication_lock = threading.RLock()
+_pending_hostname: str | None = None
+_worker_active = False
+
+
+def request_publication(hostname: str) -> dict:
+    global _pending_hostname, _worker_active
+    hostname = validate_domain(hostname)
+    with _publication_lock:
+        _pending_hostname = hostname
+        _record_provision("installing", source="setup", hostname=hostname)
+        if not _worker_active:
+            _worker_active = True
+            threading.Thread(target=_provision_in_background, name="phpmyadmin-provision", daemon=True).start()
+    return {"status": "installing", "hostname": hostname}
+
+
+def withdraw_publication() -> None:
+    """Drop a pending background publication: another phpMyAdmin hostname
+    (or none) is being saved. Waits for a publication already running."""
+    global _pending_hostname
+    with _publication_lock:
+        _pending_hostname = None
+        if not _worker_active:
+            # The hostname being saved supersedes an earlier attempt's outcome.
+            try:
+                _provision_state_path().unlink(missing_ok=True)
+            except OSError:
+                logger.warning("could not clear the phpMyAdmin provisioning state")
+
+
+def _provision_in_background() -> None:
+    global _pending_hostname, _worker_active
+    stage, error = "install", None
+    try:
+        install_package()
+    except Exception as exc:  # noqa: BLE001 - recorded for readiness and the status route
+        error = exc
+    with _publication_lock:
+        # Leave the worker only while holding the lock: a request arriving
+        # after this must start a new worker, not wait for this one.
+        try:
+            hostname, _pending_hostname = _pending_hostname, None
+            if error is None and hostname:
+                stage = "publish"
+                try:
+                    _publish(hostname)
+                except Exception as exc:  # noqa: BLE001
+                    error = exc
+            if error is None:
+                _record_provision("published" if hostname else "installed", source="setup", hostname=hostname)
+            else:
+                summary = failure_summary(error)
+                logger.warning("phpMyAdmin %s failed from Server Setup: %s", stage, summary)
+                _record_provision("failed", stage=stage, source="setup", hostname=hostname, error=summary)
+        finally:
+            _worker_active = False
+
+
+def provisioning_status(_params: dict | None = None) -> dict:
+    """Installation and publication state, for administrators."""
+    state = provision_state()
+    installing = state.get("status") == "installing"
+    # Only this daemon process runs the background worker; a record it did
+    # not finish was cut short by a restart.
+    interrupted = installing and not (_worker_active and state.get("pid") == os.getpid())
+    failed = state.get("status") == "failed"
+    return {
+        "installed": package_installed(),
+        "published": is_available(),
+        "hostname": settings.pma_hostname or None,
+        # What the running or last attempt installs and publishes; a held
+        # back hostname is saved to the configuration only once published.
+        "target_hostname": state.get("hostname"),
+        "provisioning": "interrupted" if interrupted else state.get("status"),
+        "last_error": state.get("error") if failed else None,
+        "last_stage": state.get("stage") if failed else None,
+        "last_source": state.get("source"),
+        "last_attempt_at": state.get("at"),
+    }
+
+
+def readiness_check() -> dict:
+    """Diagnostics row (and so an update advisory) for phpMyAdmin."""
+    from daemon.diagnostics import _result
+    label = "phpMyAdmin"
+    retry = "then save the phpMyAdmin hostname in Server Setup (Service hostnames) again to retry."
+    if not database_component_enabled():
+        return _result("phpmyadmin", label, "pass",
+                       "The database component is not enabled on this server, so phpMyAdmin is not used.")
+    status = provisioning_status()
+    host = status["hostname"]
+    if status["provisioning"] == "installing":
+        return _result("phpmyadmin", label, "warn",
+                       f"phpMyAdmin is being installed for {status['target_hostname']}; it is published when "
+                       "the installation finishes.", "Wait a few minutes, then run the checks again.")
+    if status["provisioning"] == "interrupted":
+        return _result("phpmyadmin", label, "warn", "The phpMyAdmin installation was interrupted by a panel restart.",
+                       "If the package manager reports an interrupted run, run 'dpkg --configure -a' on the "
+                       "server first; " + retry)
+    if status["provisioning"] == "failed":
+        action = "installed" if status["last_stage"] == "install" else "published"
+        when = _SOURCE_LABELS.get(status["last_source"])
+        failure = f"could not be {action}{' ' + when if when else ''}: {status['last_error']}"
+        explanation = (f"phpMyAdmin is published at https://{host}, but a later change failed: it {failure}"
+                       if status["published"] else f"phpMyAdmin {failure}")
+        fix = ("Make sure 'apt-get update' and 'apt-get install phpmyadmin' work on the server, "
+               if action == "installed" else "Fix the reported problem, ")
+        return _result("phpmyadmin", label, "warn", explanation, fix + retry)
+    if status["published"]:
+        return _result("phpmyadmin", label, "pass", f"phpMyAdmin is installed and published at https://{host}.")
+    if not status["installed"]:
+        return _result("phpmyadmin", label, "warn", "phpMyAdmin is not installed.",
+                       "Choose a phpMyAdmin hostname in Server Setup (Service hostnames); the panel installs and "
+                       "publishes it.")
+    if not host:
+        # Publishing it is the administrator's choice. Every update installs
+        # the package on database servers and the finalizer stores warnings
+        # as advisories, so a warning here would follow every update.
+        return _result("phpmyadmin", label, "pass",
+                       "phpMyAdmin is installed but not published: no phpMyAdmin hostname is configured.",
+                       "To publish it, choose a phpMyAdmin hostname in Server Setup (Service hostnames).")
+    return _result("phpmyadmin", label, "warn",
+                   f"phpMyAdmin is installed but not published at https://{host}: its sign-on script is missing.",
+                   "Save the phpMyAdmin hostname in Server Setup (Service hostnames) again to republish it.")

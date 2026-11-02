@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import threading
+import time
 
 from sqlalchemy import select
 
@@ -81,6 +83,57 @@ def _resolver():
     resolver.timeout = 2
     resolver.lifetime = 5
     return resolver
+
+
+# Interactive readiness checks (daemon/mail_dns.py) query public DNS with a
+# short timeout and reuse answers briefly: a page that reloads, or several
+# administrators looking at one domain, cost no new queries.
+PUBLIC_ANSWER_TTL = 30.0
+PUBLIC_ERROR_TTL = 10.0
+_PUBLIC_CACHE_LIMIT = 512
+_public_cache: dict[tuple[str, str], tuple[float, tuple[str, list[str]]]] = {}
+_public_cache_lock = threading.Lock()
+
+
+def public_lookup(name: str, rtype: str, deadline: float | None = None) -> tuple[str, list[str]]:
+    """One record set as public resolvers return it.
+
+    ("ok", values in presentation format), ("nxdomain", []), ("noanswer", [])
+    or ("error", []) when the resolvers did not answer in time or the
+    caller's monotonic ``deadline`` has passed.
+    """
+    key = (name.lower().rstrip("."), rtype.upper())
+    now = time.monotonic()
+    with _public_cache_lock:
+        cached = _public_cache.get(key)
+    if cached is not None and cached[0] > now:
+        return cached[1]
+    if deadline is not None and now >= deadline:
+        return ("error", [])
+    result = _public_query(*key)
+    with _public_cache_lock:
+        if len(_public_cache) >= _PUBLIC_CACHE_LIMIT:
+            _public_cache.clear()
+        _public_cache[key] = (now + (PUBLIC_ERROR_TTL if result[0] == "error" else PUBLIC_ANSWER_TTL), result)
+    return result
+
+
+def _public_query(name: str, rtype: str) -> tuple[str, list[str]]:
+    import dns.exception
+    import dns.resolver
+
+    resolver = _resolver()
+    resolver.timeout = 1.5
+    resolver.lifetime = 3
+    try:
+        answer = resolver.resolve(name, rtype)
+    except dns.resolver.NXDOMAIN:
+        return ("nxdomain", [])
+    except dns.resolver.NoAnswer:
+        return ("noanswer", [])
+    except dns.exception.DNSException:
+        return ("error", [])
+    return ("ok", sorted(row.to_text() for row in answer))
 
 
 def public_mx_status(domain: str, local_addresses: set[str] | None = None) -> str:

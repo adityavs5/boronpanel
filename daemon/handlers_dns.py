@@ -7,6 +7,7 @@ content.
 from __future__ import annotations
 
 import logging
+import re
 
 from daemon import dns_operations
 
@@ -23,7 +24,7 @@ from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 RECORD_VALUE_VALIDATORS = {
     "A": lambda v: _validate_ipv4(v),
     "AAAA": lambda v: _validate_ipv6(v),
-    "CNAME": lambda v: _validate_host(v, "CNAME target"),
+    "CNAME": lambda v: _validate_host(v, "CNAME target", allow_underscore=True),
     "MX": lambda v: _validate_mx(v),
     "TXT": lambda v: _validate_txt(v),
     "PTR": lambda v: validate_domain(_text_value(v).rstrip(".")) + ".",
@@ -43,6 +44,10 @@ APEX_NS_MESSAGE = (
     "The zone's own NS records are managed on the Nameservers page, which also "
     "checks the glue records in-zone nameservers need."
 )
+# A CNAME target is any domain name, not only a hostname: Microsoft 365 DKIM
+# (selector1-example-com._domainkey.<tenant>.onmicrosoft.com) and ACME
+# challenge delegations point at labels that contain underscores.
+_DOMAIN_NAME_RE = re.compile(r"\A(?=.{1,253}\Z)(?!-)[a-z0-9_-]{1,63}(?<!-)(\.(?!-)[a-z0-9_-]{1,63}(?<!-))+\Z")
 
 logger = logging.getLogger("borond.dns")
 
@@ -59,7 +64,7 @@ def _uint16(value: str, field: str) -> int:
     return int(value)
 
 
-def _validate_host(value, field: str, *, allow_root: bool = False) -> str:
+def _validate_host(value, field: str, *, allow_root: bool = False, allow_underscore: bool = False) -> str:
     """A target hostname (absolute, trailing dot). IP literals are rejected:
     MX/SRV/NS/CNAME targets are names, and '1.2.3.4' would be looked up as
     a host inside the '4' top-level domain."""
@@ -75,6 +80,10 @@ def _validate_host(value, field: str, *, allow_root: bool = False) -> str:
         pass
     else:
         raise ValidationError(f"{field} must be a hostname, not the IP address '{bare}'")
+    if allow_underscore and "_" in bare:
+        if not _DOMAIN_NAME_RE.match(bare.lower()):
+            raise ValidationError(f"{field} '{bare}' is not a valid domain name")
+        return bare.lower() + "."
     return validate_domain(bare) + "."
 
 
@@ -223,9 +232,38 @@ def validate_rrset(label: str, rtype: str, values, ttl) -> list[str]:
             raise ValidationError('The zone apex needs SOA/NS records and cannot be a CNAME. Use A or AAAA instead.')
         if len(result) != 1:
             raise ValidationError('A CNAME must have exactly one target')
-    if rtype == "MX" and "0 ." in result and len(result) > 1:
-        raise ValidationError("A null MX record ('0 .') must be the only MX record for its name")
+    _require_null_mx_alone(rtype, result)
     return result
+
+
+def _require_null_mx_alone(rtype: str, values: list[str]) -> None:
+    if rtype == "MX" and "0 ." in values and len(values) > 1:
+        raise ValidationError("A null MX record ('0 .') must be the only MX record for its name")
+
+
+def _merge_added_values(rtype: str, stored: list[str], added: list[str]) -> tuple[list[str], list[dict]]:
+    """'add' mode: the stored values plus the new ones, which validate_rrset
+    already checked. Stored values are normalized where they pass today's
+    rules and kept exactly as stored where they do not -- a value written
+    before validation (an IP address as MX target, say) must not block an
+    unrelated addition. Those are returned for the caller to report."""
+    validator = RECORD_VALUE_VALIDATORS[rtype]
+    merged: dict = {}
+    invalid = []
+    for raw in stored:
+        try:
+            value = validator(raw)
+        except ValidationError as exc:
+            value = raw
+            invalid.append({"value": raw, "reason": str(exc)})
+        merged.setdefault(_value_key(rtype, value), value)
+    for value in added:
+        merged.setdefault(_value_key(rtype, value), value)
+    result = list(merged.values())
+    if len(result) > MAX_RRSET_VALUES:
+        raise ValidationError(f"A DNS record set can hold at most {MAX_RRSET_VALUES} values")
+    _require_null_mx_alone(rtype, result)
+    return result, invalid
 
 
 def _zone_dict(zone: DnsZone) -> dict:
@@ -407,17 +445,14 @@ def set_record(params: dict) -> dict:
             raise ValidationError('A CNAME cannot share a name with other record types. Remove the conflicting records first.')
     elif any(row.get('type') == 'CNAME' for row in same_name):
         raise ValidationError('This name already has a CNAME. Remove it before adding another record type.')
+    invalid_existing = []
     if mode == 'add' and before_record is not None:
+        previous = [item if isinstance(item, str) else item['content']
+                    for item in before_record.get('values', before_record.get('records', []))]
         if rtype == 'CNAME':
-            current = [item if isinstance(item, str) else item['content'] for item in before_record.get('values', [])]
-            if any(_value_key(rtype, item) != _value_key(rtype, values[0]) for item in current):
+            if any(_value_key(rtype, item) != _value_key(rtype, values[0]) for item in previous):
                 raise ValidationError('This name already has a different CNAME. Edit the existing record to replace it.')
-        previous = before_record.get('values', before_record.get('records', []))
-        # Existing values pass the same validation, so the merged set is
-        # one the advanced editor can also read back.
-        values = validate_rrset(subdomain, rtype, [
-            *(item if isinstance(item, str) else item['content'] for item in previous), *values,
-        ], ttl)
+        values, invalid_existing = _merge_added_values(rtype, previous, values)
 
     after_record = {
         "name": name, "type": rtype, "values": values,
@@ -426,7 +461,8 @@ def set_record(params: dict) -> dict:
     audit.change("dns_record", before_record, after_record, sensitive=rtype == "TXT")
     with audit.step("DNS: write record through provider"):
         dnsprovider.upsert_record(domain_name, subdomain, rtype, values, ttl=ttl, proxied=proxied)
-    return {"zone": domain_name, "subdomain": subdomain, "type": rtype, "values": values, "ttl": ttl}
+    return {"zone": domain_name, "subdomain": subdomain, "type": rtype, "values": values, "ttl": ttl,
+            "invalid_existing_values": invalid_existing}
 
 
 def _require_own_zone(domain_name: str) -> None:

@@ -20,6 +20,19 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from '@/components/ui/DropdownMenu'
 import { toast } from '@/components/ui/Toast'
+import { ForceHttpsSetting } from './ForceHttps'
+import { InlineWarning } from './InlineFeedback'
+
+// ssl.issue answers once the certificate is installed: `names` are the names
+// it covers (www. and aliases that point here) and `skipped_names` the ones
+// left out, with the reason ("does not point to this server", "could not be
+// checked in public DNS").
+export function certificateSummary(result) {
+  return {
+    covers: (result?.names || []).length ? `Certificate covers: ${result.names.join(', ')}` : null,
+    skipped: (result?.skipped_names || []).map(item => `${item.name} was left out because it ${item.reason}.`),
+  }
+}
 
 export default function Ssl() {
   const username = useAccountUsername()
@@ -31,6 +44,7 @@ export default function Ssl() {
   const [confirm, setConfirm] = useState(null)
   const [selected, setSelected] = useState(null)
   const [diagnostics, setDiagnostics] = useState(null)
+  const [issued, setIssued] = useState(null) // {domain, covers, skipped}
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['ssl', serverWide ? 'all' : username],
@@ -42,9 +56,14 @@ export default function Ssl() {
 
   const issueMut = useMutation({
     mutationFn: (r) => post(admin ? (r.service === 'panel' ? '/api/v1/admin/ssl/panel/issue' : `/api/v1/admin/ssl/domains/${r.domain}/issue`) : `/api/v1/accounts/${username}/domains/${r.domain}/ssl/issue`, { force: false }),
-    onSuccess: (_res, r) => {
-      toast.success('Certificate requested', `SSL issuance started for ${r.domain}.`)
+    onSuccess: (res, r) => {
+      const summary = certificateSummary(res)
+      toast.success(`Certificate issued for ${r.domain}`, summary.covers || undefined)
+      // Skipped names stay on the page: they explain why www. or an alias
+      // is not on the certificate.
+      setIssued(summary.skipped.length ? { domain: r.domain, ...summary } : null)
       qc.invalidateQueries({ queryKey: ['ssl'] })
+      qc.invalidateQueries({ queryKey: ['force-https'] })
       setConfirm(null)
     },
     onError: (e) => toast.error('Could not issue certificate', e.message),
@@ -170,6 +189,14 @@ export default function Ssl() {
 
       {serverWide && serviceDomains.length > 0 && <section className="mb-6"><div className="ssl-section-title"><div><h2>Service certificates</h2><p>Panel services use dedicated hostnames and are verified from DNS through the presented SNI certificate.</p></div></div><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{serviceDomains.map(row => <div key={row.domain} className="rounded-lg border border-border bg-card p-4"><div className="flex items-start justify-between gap-3"><div className="flex min-w-0 items-center gap-3"><div className="rounded-md bg-muted p-2 text-accent"><Server className="h-5 w-5" /></div><div className="min-w-0"><h3 className="font-semibold text-foreground">{row.username}</h3><p className="truncate font-mono text-xs text-muted-foreground">{row.domain}</p></div></div><StatusBadge status={row.cert_status} /></div><dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm"><dt className="text-muted-foreground">Expires</dt><dd>{row.expiry_date ? `${formatDateShort(row.expiry_date)} (${row.days_remaining} days)` : 'No certificate'}</dd><dt className="text-muted-foreground">Renewal</dt><dd>{row.auto_renew ? 'Automatic' : 'Not configured'}</dd><dt className="text-muted-foreground">Deployment</dt><dd className="capitalize">{row.deployment_status || '—'}</dd></dl><div className="mt-4 flex gap-2"><Button size="sm" onClick={() => setConfirm({ action: 'issue', row })}>{row.cert_status === 'missing' ? 'Issue certificate' : 'Renew'}</Button><Button size="sm" variant="secondary" loading={diagnosticsMut.isPending && diagnosticsMut.variables?.domain === row.domain} onClick={() => diagnosticsMut.mutate(row)}><Stethoscope className="h-4 w-4" /> Diagnostics</Button></div></div>)}</div></section>}
 
+      {issued && (
+        <InlineWarning className="mb-6" title={`Certificate issued for ${issued.domain}`}>
+          {issued.covers && <p>{issued.covers}</p>}
+          <ul className="space-y-0.5">{issued.skipped.map(text => <li key={text}>{text}</li>)}</ul>
+          <Button size="sm" variant="secondary" onClick={() => setIssued(null)}>Dismiss</Button>
+        </InlineWarning>
+      )}
+
       <StatGrid className="mb-6" aria-label="Certificate summary">
         <StatCard icon={ShieldCheck} label="Secured domains" value={secured} />
         <StatCard icon={ShieldOff} label="Need a certificate" value={unsecured} />
@@ -222,6 +249,7 @@ export default function Ssl() {
       <Dialog open={!!selected} onOpenChange={open => !open && setSelected(null)}>
         <DialogContent size="lg"><DialogHeader><DialogTitle>SSL for {selected?.domain}</DialogTitle><DialogDescription>View certificate details and keep this site protected.</DialogDescription></DialogHeader>
           <DialogBody className="space-y-5"><dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm"><dt className="text-muted-foreground">Status</dt><dd><StatusBadge status={selected?.cert_status}/></dd><dt className="text-muted-foreground">Issuer</dt><dd>{selected?.issuer || 'No certificate issued'}</dd><dt className="text-muted-foreground">Expires</dt><dd>{selected?.expiry_date ? formatDateShort(selected.expiry_date) : '—'}</dd><dt className="text-muted-foreground">Automatic renewal</dt><dd>{timerActive ? 'Enabled' : 'Not active'}</dd></dl>
+          {selected && !selected.system && <ForceHttpsSetting username={serverWide ? selected.username : username} domain={selected.domain} />}
           <div className="flex flex-wrap gap-3"><Button onClick={() => {setConfirm({action:'issue',row:selected});setSelected(null)}}><RefreshCw className="h-4 w-4"/> {selected?.cert_status && !['missing','none'].includes(selected.cert_status) ? 'Renew certificate' : 'Issue certificate'}</Button>{!selected?.system && <Button variant="outline" onClick={() => {setConfirm({action:'wildcard',row:selected});setSelected(null)}}><Asterisk className="h-4 w-4"/> Wildcard certificate</Button>}</div></DialogBody>
           <DialogFooter><Button variant="secondary" onClick={() => setSelected(null)}>Done</Button></DialogFooter></DialogContent>
       </Dialog>

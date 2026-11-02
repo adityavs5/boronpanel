@@ -10,17 +10,20 @@ OLS-specific adaptation of "validate before reload" forced by `openlitespeed
 """
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import hashlib
 import json
 import datetime as dt
+from collections.abc import Collection
 from pathlib import Path
 import pwd
 import re
 import secrets
 import stat
 import string
+import threading
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from sqlalchemy import func, select
@@ -28,7 +31,7 @@ from sqlalchemy import func, select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain, DomainForwarding, FileAuthDir, LscacheSettings, MaintenanceMode, NodeApp, OlsServerSettings, ParkedDomain, PhpExtensionSet, PhpFunctionOverride, PhpIniDirective, PhpIniOverride, PythonApp, Redirect, WafCustomRule, WafDomainOverride, WafException, WafSettings, WildcardDomain, utcnow
-from shared.validation import ValidationError, validate_domain
+from shared.validation import REWRITE_EXPANSION_MESSAGE, REWRITE_EXPANSION_RE, ValidationError, validate_domain
 
 from daemon.configtx import ConfigWriterMulti, StepResult
 from daemon.procutil import run
@@ -83,6 +86,22 @@ OLS_SETTINGS_DEFAULTS = {
 OLS_CREDENTIAL_PATH = Path("/var/lib/boron/ols-admin-credential.json")
 OLS_PASSWORD_SCRIPT = Path("/usr/local/lsws/admin/misc/admpass.sh")
 _OLS_USERNAME_RE = re.compile(r"\A[A-Za-z0-9._-]{1,32}\Z")
+
+# httpd_config.conf is rendered from every account's state, so each OLS
+# transaction reads that state, renders and applies under this lock. Without
+# it a transaction could install a main config read before another
+# account's newer transaction applied, dropping that account's new vhost from
+# the live server (and pruning PHP function directories it still needs).
+_CONFIG_LOCK = threading.RLock()
+
+
+def _config_transaction(function):
+    """Run a read-render-apply OLS transaction under _CONFIG_LOCK."""
+    @functools.wraps(function)
+    def wrapped(*args, **kwargs):
+        with _CONFIG_LOCK:
+            return function(*args, **kwargs)
+    return wrapped
 
 
 def _ols_settings() -> dict:
@@ -178,6 +197,7 @@ def _domain_row_to_plain(d: Domain) -> dict:
         "php_version": d.php_version,
         "ols_log_level": d.ols_log_level or "WARN",
         "ols_log_debug_until": d.ols_log_debug_until,
+        "force_https": bool(d.force_https),
     }
 
 
@@ -193,6 +213,91 @@ def _ssl_paths_for_domain(domain: dict) -> tuple[str, str]:
         if Path(key).exists() and Path(cert).exists():
             return key, cert
     return DEFAULT_SSL_KEY, DEFAULT_SSL_CERT
+
+
+def _certificate_dns_names(cert_file: str) -> frozenset[str]:
+    """DNS names of the certificate in cert_file while it is valid: empty
+    when the file cannot be read, has no SAN, or is expired or not yet
+    valid."""
+    from cryptography import x509
+
+    try:
+        cert = x509.load_pem_x509_certificate(Path(cert_file).read_bytes())
+        names = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    except (OSError, ValueError, x509.ExtensionNotFound):
+        return frozenset()
+    now = dt.datetime.now(dt.timezone.utc)
+    if not cert.not_valid_before_utc <= now < cert.not_valid_after_utc:
+        return frozenset()
+    return frozenset(name.lower().rstrip(".") for name in names.get_values_for_type(x509.DNSName))
+
+
+def _certificate_covers(names: frozenset[str], host: str) -> bool:
+    """An exact name, or a wildcard for exactly one leading label. A
+    wildcard listener alias ("*.<domain>") needs that same wildcard."""
+    if host in names:
+        return True
+    parent = host.partition(".")[2]
+    return not host.startswith("*.") and bool(parent) and f"*.{parent}" in names
+
+
+def force_https_hosts(domain: dict, *, www_alias: bool, wildcard: bool) -> dict:
+    """The names this domain's vhost answers for, split by whether "Force
+    HTTPS" redirects them: only names the vhost's own installed, currently
+    valid certificate covers (_ssl_paths_for_domain), so the redirect never
+    sends a visitor to a certificate warning."""
+    hosts = [domain["domain"]]
+    if www_alias:
+        hosts.append(f"www.{domain['domain']}")
+    if wildcard:
+        hosts.append(f"*.{domain['domain']}")
+    _key_file, cert_file = _ssl_paths_for_domain(domain)
+    names = frozenset() if cert_file == DEFAULT_SSL_CERT else _certificate_dns_names(cert_file)
+    covered = [host for host in hosts if _certificate_covers(names, host)]
+    return {
+        "certificate_valid": bool(names),
+        "redirected_hosts": covered,
+        "unredirected_hosts": [host for host in hosts if host not in covered],
+    }
+
+
+def _force_https_context(domain: dict, vhost: dict | None) -> dict | None:
+    """Template context for the Force HTTPS redirect: None while it is off,
+    or while no name the vhost serves is covered by a valid certificate."""
+    if not domain.get("force_https") or vhost is None:
+        return None
+    hosts = force_https_hosts(domain, www_alias=bool(vhost.get("www_alias")), wildcard=bool(vhost.get("wildcard")))
+    if not hosts["redirected_hosts"]:
+        return None
+    # Valid domain names hold only [a-z0-9.-] (shared/validation.py), so
+    # escaping the dots turns each name into a literal pattern.
+    patterns = [
+        r"[a-z0-9-]+\." + host[2:].replace(".", "\\.") if host.startswith("*.") else host.replace(".", "\\.")
+        for host in hosts["redirected_hosts"]
+    ]
+    return {"host_pattern": "|".join(patterns)}
+
+
+def _www_alias(domain_name: str, reserved_hosts: set[str]) -> bool:
+    """Whether the listener also maps www.<domain> to this vhost: never for a
+    www name itself or when www.<domain> is a vhost of its own."""
+    return not domain_name.startswith("www.") and "www." + domain_name not in reserved_hosts
+
+
+def _reserved_hosts(session) -> set[str]:
+    reserved = set(session.scalars(select(Domain.domain)).all())
+    reserved.update((settings.webmail_hostname, settings.pma_hostname, settings.panel_hostname))
+    return reserved
+
+
+def force_https_status(session, domain_row: Domain) -> dict:
+    """force_https_hosts for one Domain row, with the same www/wildcard
+    aliases the listener map gives its vhost."""
+    return force_https_hosts(
+        _domain_row_to_plain(domain_row),
+        www_alias=_www_alias(domain_row.domain, _reserved_hosts(session)),
+        wildcard=_wildcard_map(session).get(domain_row.domain, False),
+    )
 
 
 def _app_proxy_map(session) -> dict[str, dict]:
@@ -269,24 +374,13 @@ def _php_ini_for_account(session, account_id: int) -> dict | None:
     }
 
 
-# A RewriteRule substitution is not literal text: $N / ${...} are rule
-# back-references and maps, %N / %{VAR} condition back-references and server
-# variables (e.g. %{HTTP_COOKIE} would copy visitors' cookies into the
-# Location sent to an external site), and backslash escapes. OLS offers no
-# documented escape for them, so redirect targets must not contain any.
-_REWRITE_EXPANSION_RE = re.compile(r"[$\\]|%(?:[0-9]|\{)")
-
-
 def literal_rewrite_target(target_url: str) -> str:
     """Reject redirect/forwarding targets the rewrite engine would expand
-    instead of emitting verbatim. Applied at write time and again when
-    rendering rows stored by older releases."""
-    if _REWRITE_EXPANSION_RE.search(target_url):
-        raise ValidationError(
-            "Redirect target URL cannot contain '$', a backslash, or '%' followed by a digit or '{' "
-            "(the web server would expand them as rewrite variables); write those characters "
-            "unencoded or remove them"
-        )
+    instead of emitting verbatim (shared.validation.REWRITE_EXPANSION_RE
+    explains which). validate_redirect_target refuses them when saved; this
+    re-checks rows stored by older releases when rendering."""
+    if REWRITE_EXPANSION_RE.search(target_url):
+        raise ValidationError(REWRITE_EXPANSION_MESSAGE)
     return target_url
 
 
@@ -359,6 +453,44 @@ def _wildcard_map(session) -> dict[str, bool]:
     return {r.domain: True for r in rows}
 
 
+_REDIRECT_PATH_LITERAL = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_~/-")
+
+
+def _redirect_regex_path(path: str) -> str:
+    """The rewrite pattern for a stored redirect path.
+
+    OpenLiteSpeed, like mod_rewrite, matches RewriteRule patterns against
+    the decoded request path, so a stored '/caf%C3%A9' or '/a%20b' never
+    matched as written. Escapes are decoded here: letters, digits and _ ~ / -
+    stay literal, '.' becomes '\\.', a printable non-ASCII character of
+    valid UTF-8 is written as itself (the decoded path carries the same
+    bytes), and every other byte becomes a \\xHH regex escape, so no decoded
+    '%', space or control character reaches the vhost file as itself.
+    """
+    import urllib.parse
+
+    raw = urllib.parse.unquote_to_bytes(path)
+    try:
+        chars = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        chars = raw.decode("latin-1")
+        valid_utf8 = False
+    else:
+        valid_utf8 = True
+    out = []
+    for char in chars:
+        if char in _REDIRECT_PATH_LITERAL:
+            out.append(char)
+        elif char == ".":
+            out.append("\\.")
+        elif valid_utf8 and ord(char) >= 128 and char.isprintable() and not char.isspace():
+            out.append(char)
+        else:
+            data = char.encode("utf-8") if valid_utf8 else char.encode("latin-1")
+            out.extend(f"\\x{byte:02x}" for byte in data)
+    return "".join(out)
+
+
 def _redirects_for_domain(session, domain_name: str) -> list[dict]:
     rows = [
         r for r in session.scalars(select(Redirect).where(Redirect.domain == domain_name)).all()
@@ -369,7 +501,7 @@ def _redirects_for_domain(session, domain_name: str) -> list[dict]:
             # Escaped here, once, in Python -- never in the Jinja template --
             # so the raw validated path is never interpolated directly into
             # an OLS rewrite-rule regex pattern.
-            "regex_path": r.path.replace(".", "\\."),
+            "regex_path": _redirect_regex_path(r.path),
             "target_url": r.target_url,
             "status_code": r.status_code,
         }
@@ -479,6 +611,7 @@ def render_vhost_conf(
     bubblewrap_enabled: bool = True,
     php_app_name: str | None = None,
     access_rules: list[dict] | None = None,
+    force_https: dict | None = None,
 ) -> str:
     home_dir = f"{settings.home_base}/{account.username}"
     app_proxy = app_proxy or domain.get("app_proxy")
@@ -511,6 +644,7 @@ def render_vhost_conf(
         php_ini=php_ini,
         private_session_path=(f"{home_dir}/tmp/sessions" if account.php_private_sessions else None),
         redirects=redirects,
+        force_https=force_https,
         hotlink=_hotlink_context(domain),
         root_access_control=_access_control(root_rule, ip_block_list),
         root_denied=root_rule is not None and root_rule["mode"] == "deny",
@@ -548,11 +682,23 @@ def _account_bubblewrap_enabled(account: Account) -> bool:
         ) from exc
 
 
-def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
+def _vhost_conf_written(vhost_name: str) -> bool:
+    return os.path.isfile(_vhost_conf_path(vhost_name))
+
+
+def _all_active_vhosts(session, pending: Collection[str] = frozenset()) -> tuple[list[dict], list[dict]]:
     """Every account that should have a live vhost: active or suspended (a
     suspended account still needs its vhosts present, just serving the
     suspended page -- ARCHITECTURE.md SS10). terminated/terminating/error
     accounts are excluded.
+
+    httpd_config.conf may only reference vhost configurations that exist:
+    `openlitespeed -t` validates the whole tree, so one missing vhconf.conf
+    fails every account's transaction. handlers_domain.add_domain commits
+    the Domain row before the domain's vhost is first written, so a domain
+    whose vhconf.conf does not exist yet is left out -- unless its vhost
+    name is in `pending`, the vhosts the caller writes in the same
+    transaction. Call this under _CONFIG_LOCK when the result is applied.
 
     Returns (domain_vhosts, account_procs):
       domain_vhosts -- one entry per (account, domain) pair. Phase 2
@@ -577,8 +723,7 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
     # else keeps the compiled-in stock scan dir by rendering nothing.
     ext_override_ids = set(session.scalars(select(PhpExtensionSet.account_id)).all())
     function_overrides = _function_override_map(session)
-    reserved_hosts = set(session.scalars(select(Domain.domain)).all())
-    reserved_hosts.update((settings.webmail_hostname, settings.pma_hostname, settings.panel_hostname))
+    reserved_hosts = _reserved_hosts(session)
     domain_vhosts = []
     account_procs = []
     for account in accounts:
@@ -610,7 +755,11 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
         overrides = function_overrides.get(account.id, {})
         account_functions = overrides.get(None)
         processes_seen: set[str] = set()
+        account_processes: list[dict] = []
         for d in domains:
+            if _vhost_name(d.domain) not in pending and not _vhost_conf_written(_vhost_name(d.domain)):
+                logger.warning("leaving %s out of httpd_config.conf until its vhost configuration is written", d.domain)
+                continue
             effective_version = d.php_version or account.php_version
             functions = overrides.get(d.domain, account_functions)
             variant = None if functions == account_functions else functions
@@ -630,14 +779,13 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
                     ),
                     "disable_functions": functions,
                 }
-                if entry_processes != 20:
-                    process["entry_processes"] = entry_processes
+                account_processes.append(process)
                 account_procs.append(process)
             domain_vhosts.append({
                 "vhost_name": _vhost_name(d.domain),
                 "domain": d.domain,
                 "php_app_name": app_name,
-                "www_alias": not d.domain.startswith("www.") and "www." + d.domain not in reserved_hosts,
+                "www_alias": _www_alias(d.domain, reserved_hosts),
                 "account_home": account_home,
                 "app_proxy": app_proxies.get(d.domain),
                 # Missing-features batch, goal feature 3: whether
@@ -647,6 +795,16 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
                 # field accepts wildcard syntax directly).
                 "wildcard": wildcard_domains.get(d.domain, False),
             })
+        # maxConns/PHP_LSAPI_CHILDREN apply per pool, and an account can run
+        # several (another PHP version, an admin disable_functions variant).
+        # Splitting its entry-process budget keeps the account's total PHP
+        # concurrency at its limit however many pools it has (never below
+        # one process per pool).
+        if account_processes:
+            share = max(1, entry_processes // len(account_processes))
+            for process in account_processes:
+                if share != 20:
+                    process["entry_processes"] = share
     return domain_vhosts, account_procs
 
 
@@ -840,13 +998,43 @@ def _attach_waf_config(targets: dict, contents: dict, waf: dict) -> None:
         contents['__boron_waf_rules'] = render_waf_rules(waf)
 
 
+INFRASTRUCTURE_VHOSTS = ("panel", "webmail", "pma")
+
+
+def _infrastructure_vhconf_paths() -> dict[str, str]:
+    return {
+        "panel": str(Path(settings.vhost_conf_dir) / "boron-panel-acme/vhconf.conf"),
+        "webmail": _webmail_vhost_conf_path(),
+        "pma": _pma_vhost_conf_path(),
+    }
+
+
+def infrastructure_in_place(writing: tuple[str, ...] = ()) -> frozenset[str]:
+    """The infrastructure vhosts (panel ACME, webmail, phpMyAdmin) a main
+    config written now may reference: those whose vhconf.conf exists, plus
+    the ones ``writing`` names, which this same transaction writes.
+
+    A hostname is saved before its bootstrap writes the vhost (two of them
+    in one save, say); referencing a missing vhconf.conf fails every
+    `openlitespeed -t` until that bootstrap ran, including the first one's.
+    """
+    paths = _infrastructure_vhconf_paths()
+    return frozenset(name for name in INFRASTRUCTURE_VHOSTS if name in writing or Path(paths[name]).is_file())
+
+
 def render_httpd_config(
     domain_vhosts: list[dict],
     account_procs: list[dict],
     waf: dict | None = None,
     cloudflare_ranges: list[str] | None = None,
     ols_settings: dict | None = None,
+    infrastructure: frozenset[str] | None = None,
 ) -> str:
+    """``infrastructure`` limits the configured infrastructure vhosts to
+    those named (see infrastructure_in_place); None renders all of them."""
+    def configured(name: str, hostname: str) -> str:
+        return hostname if infrastructure is None or name in infrastructure else ""
+
     template = _env.get_template("httpd_config.conf.j2")
     return template.render(
         server_name="boron",
@@ -860,13 +1048,13 @@ def render_httpd_config(
         default_ssl_cert="/etc/boron/ssl/default.crt",
         domain_vhosts=domain_vhosts,
         account_procs=account_procs,
-        panel_hostname=settings.panel_hostname,
+        panel_hostname=configured("panel", settings.panel_hostname),
         panel_acme_webroot=settings.panel_acme_webroot,
-        webmail_hostname=settings.webmail_hostname,
+        webmail_hostname=configured("webmail", settings.webmail_hostname),
         webmail_vhroot=str(Path(settings.webmail_docroot).parent),
         webmail_docroot=settings.webmail_docroot,
         webmail_lsphp_path=_lsphp_path(settings.default_php_version),
-        pma_hostname=settings.pma_hostname,
+        pma_hostname=configured("pma", settings.pma_hostname),
         pma_docroot=settings.pma_docroot,
         pma_lsphp_path=_lsphp_path(settings.default_php_version),
         ols_settings=ols_settings or dict(OLS_SETTINGS_DEFAULTS),
@@ -891,6 +1079,7 @@ def render_webmail_vhost_conf(ssl_key_file: str, ssl_cert_file: str) -> str:
     )
 
 
+@_config_transaction
 def bootstrap_webmail() -> None:
     """One-time (well, idempotent -- safe to re-run) infra setup, same
     category as bootstrap_baseline: Roundcube isn't an account resource, so
@@ -906,7 +1095,8 @@ def bootstrap_webmail() -> None:
         waf = waf_template_context(session)
         ols_settings = _ols_settings_from_session(session)
 
-    httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf, ols_settings=ols_settings)
+    httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf, ols_settings=ols_settings,
+                                        infrastructure=infrastructure_in_place(("webmail",)))
     webmail_content = render_webmail_vhost_conf(ssl_key_file, ssl_cert_file)
 
     targets = {"main": HTTPD_CONFIG_PATH, "webmail": _webmail_vhost_conf_path()}
@@ -958,6 +1148,7 @@ def render_pma_vhost_conf(ssl_key_file: str, ssl_cert_file: str) -> str:
     )
 
 
+@_config_transaction
 def bootstrap_pma() -> None:
     """Same category as bootstrap_webmail -- phpMyAdmin isn't an account
     resource, so nothing in the normal account/domain flow triggers this.
@@ -973,7 +1164,8 @@ def bootstrap_pma() -> None:
         waf = waf_template_context(session)
         ols_settings = _ols_settings_from_session(session)
 
-    httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf, ols_settings=ols_settings)
+    httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf, ols_settings=ols_settings,
+                                        infrastructure=infrastructure_in_place(("pma",)))
     pma_content = render_pma_vhost_conf(ssl_key_file, ssl_cert_file)
 
     targets = {"main": HTTPD_CONFIG_PATH, "pma": _pma_vhost_conf_path()}
@@ -1101,23 +1293,15 @@ def _domains_as_plain(account_id: int) -> list[dict]:
         return plain
 
 
-def _access_rules_by_domain(domains: list[dict]) -> dict[str, list[dict]]:
+def _access_rules_by_domain(account: Account, domains: list[dict]) -> dict[str, list[dict]]:
     """Translated .htaccess access rules per domain (daemon/htaccess.py),
-    scanning each document root once even when parked domains share it."""
+    scanning each document root once even when parked domains share it.
+    A scan that runs out of its budget is completed from the account's last
+    complete scan, so known rules never drop out of a render."""
     from daemon import htaccess
 
-    by_docroot: dict[str, list[dict]] = {}
-    result = {}
-    for domain in domains:
-        docroot = domain["docroot"]
-        if docroot not in by_docroot:
-            try:
-                by_docroot[docroot] = htaccess.effective_access_contexts(htaccess.scan_access_rules(docroot))
-            except Exception:
-                logger.exception("could not read .htaccess access rules under %s", docroot)
-                by_docroot[docroot] = []
-        result[domain["domain"]] = by_docroot[docroot]
-    return result
+    scans = htaccess.account_access_scans(account.id, [domain["docroot"] for domain in domains], prune=True)
+    return {domain["domain"]: htaccess.effective_access_contexts(scans[domain["docroot"]]) for domain in domains}
 
 
 def _apply_targets(account: Account, domains: list[dict], suspended: bool, context: str) -> None:
@@ -1127,59 +1311,68 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
     together: a PHP-version switch changes which server-level extprocessor
     name every single one of them references, so applying only some would
     leave the rest pointed at a since-renamed extprocessor."""
-    with write_session() as session:
-        domain_vhosts, account_procs = _all_active_vhosts(session)
-        php_ini = _php_ini_for_account(session, account.id)
-        php_app_names = {vhost["domain"]: vhost["php_app_name"] for vhost in domain_vhosts}
-        redirects_by_domain = {domain["domain"]: _redirects_for_domain(session, domain["domain"]) for domain in domains}
-        forwarding_by_domain = {domain["domain"]: _forwarding_for_domain(session, domain["domain"]) for domain in domains}
-        protected_dirs_by_domain = {
-            domain["domain"]: _protected_dirs_for_domain(session, account.username, account.id, domain["docroot"])
-            for domain in domains
-        }
-        maintenance_by_domain = {domain["domain"]: _maintenance_for_domain(session, domain["domain"]) for domain in domains}
-        parked_targets = {row.parked_domain: row.target_domain for row in session.scalars(
-            select(ParkedDomain).where(ParkedDomain.account_id == account.id)).all()}
-        suspended_by_name = {domain['domain']: bool(domain.get('suspended')) for domain in domains}
-        waf = waf_template_context(session)
-        ols_settings = _ols_settings_from_session(session)
-
     bubblewrap_enabled = _account_bubblewrap_enabled(account)
-    access_rules_by_domain = _access_rules_by_domain(domains)
+    # The bounded .htaccess scans read only this account's document roots;
+    # they run before the configuration lock so other accounts' transactions
+    # do not wait for them.
+    access_rules_by_domain = _access_rules_by_domain(account, domains)
     if domains and not os.path.isdir(sysops.vhost_log_dir(account.username)):
         # e.g. right after an account rename: OLS needs the directory to
         # exist before it opens the renamed account's logs.
         sysops.ensure_vhost_log_dir(account.username)
-    error_pages_by_domain = {
-        domain["domain"]: _error_pages_for_domain(
-            account.username, domain["domain"], maintenance_active=bool(maintenance_by_domain[domain["domain"]])
-        )
-        for domain in domains
-    }
 
-    targets = {"main": HTTPD_CONFIG_PATH}
-    content = {"main": render_httpd_config(domain_vhosts, account_procs, waf=waf, ols_settings=ols_settings)}
-    for domain in domains:
-        vhost_name = _vhost_name(domain["domain"])
-        ssl_key_file, ssl_cert_file = _ssl_paths_for_domain(domain)
-        targets[vhost_name] = _vhost_conf_path(vhost_name)
-        content[vhost_name] = render_vhost_conf(
-            account, domain, suspended or bool(domain.get("suspended")) or
-                suspended_by_name.get(parked_targets.get(domain['domain']), False),
-            ssl_key_file=ssl_key_file, ssl_cert_file=ssl_cert_file,
-            php_ini=php_ini,
-            php_app_name=php_app_names.get(domain["domain"]),
-            redirects=redirects_by_domain[domain["domain"]],
-            protected_dirs=protected_dirs_by_domain[domain["domain"]],
-            forwarding=forwarding_by_domain[domain["domain"]],
-            maintenance=maintenance_by_domain[domain["domain"]],
-            error_pages=error_pages_by_domain[domain["domain"]],
-            bubblewrap_enabled=bubblewrap_enabled,
-            access_rules=access_rules_by_domain[domain["domain"]],
-        )
+    with _CONFIG_LOCK:
+        with write_session() as session:
+            domain_vhosts, account_procs = _all_active_vhosts(
+                session, pending={_vhost_name(domain["domain"]) for domain in domains})
+            php_ini = _php_ini_for_account(session, account.id)
+            redirects_by_domain = {domain["domain"]: _redirects_for_domain(session, domain["domain"]) for domain in domains}
+            forwarding_by_domain = {domain["domain"]: _forwarding_for_domain(session, domain["domain"]) for domain in domains}
+            protected_dirs_by_domain = {
+                domain["domain"]: _protected_dirs_for_domain(session, account.username, account.id, domain["docroot"])
+                for domain in domains
+            }
+            maintenance_by_domain = {domain["domain"]: _maintenance_for_domain(session, domain["domain"]) for domain in domains}
+            parked_targets = {row.parked_domain: row.target_domain for row in session.scalars(
+                select(ParkedDomain).where(ParkedDomain.account_id == account.id)).all()}
+            suspended_by_name = {domain['domain']: bool(domain.get('suspended')) for domain in domains}
+            waf = waf_template_context(session)
+            ols_settings = _ols_settings_from_session(session)
 
-    _attach_waf_config(targets, content, waf)
-    _apply_with_php_function_dirs(targets, content, account_procs, context)
+        vhosts_by_domain = {vhost["domain"]: vhost for vhost in domain_vhosts}
+        error_pages_by_domain = {
+            domain["domain"]: _error_pages_for_domain(
+                account.username, domain["domain"], maintenance_active=bool(maintenance_by_domain[domain["domain"]])
+            )
+            for domain in domains
+        }
+
+        targets = {"main": HTTPD_CONFIG_PATH}
+        content = {"main": render_httpd_config(domain_vhosts, account_procs, waf=waf, ols_settings=ols_settings,
+                                               infrastructure=infrastructure_in_place())}
+        for domain in domains:
+            vhost_name = _vhost_name(domain["domain"])
+            ssl_key_file, ssl_cert_file = _ssl_paths_for_domain(domain)
+            vhost = vhosts_by_domain.get(domain["domain"])
+            targets[vhost_name] = _vhost_conf_path(vhost_name)
+            content[vhost_name] = render_vhost_conf(
+                account, domain, suspended or bool(domain.get("suspended")) or
+                    suspended_by_name.get(parked_targets.get(domain['domain']), False),
+                ssl_key_file=ssl_key_file, ssl_cert_file=ssl_cert_file,
+                php_ini=php_ini,
+                php_app_name=vhost["php_app_name"] if vhost else None,
+                redirects=redirects_by_domain[domain["domain"]],
+                protected_dirs=protected_dirs_by_domain[domain["domain"]],
+                forwarding=forwarding_by_domain[domain["domain"]],
+                maintenance=maintenance_by_domain[domain["domain"]],
+                error_pages=error_pages_by_domain[domain["domain"]],
+                bubblewrap_enabled=bubblewrap_enabled,
+                access_rules=access_rules_by_domain[domain["domain"]],
+                force_https=_force_https_context(domain, vhost),
+            )
+
+        _attach_waf_config(targets, content, waf)
+        _apply_with_php_function_dirs(targets, content, account_procs, context)
 
 
 def _function_dir_values(account_procs: list[dict]) -> dict[str, set[str]]:
@@ -1286,28 +1479,34 @@ def terminate_vhost(account: Account) -> None:
     which is neither 'active' nor 'suspended', so _all_active_vhosts()
     below already excludes this account's domains from the regenerated
     main config without any extra filtering needed here."""
-    with write_session() as session:
-        domain_names = list(session.scalars(select(Domain.domain).where(Domain.account_id == account.id)).all())
-        domain_vhosts, account_procs = _all_active_vhosts(session)
+    with _CONFIG_LOCK:
+        with write_session() as session:
+            domain_names = list(session.scalars(select(Domain.domain).where(Domain.account_id == account.id)).all())
 
-    if domain_names:
-        _apply_main_only(domain_vhosts, account_procs, context="terminate")
+        if domain_names:
+            _apply_main_only(context="terminate")
 
-        import shutil
+            import shutil
 
-        for domain_name in domain_names:
-            vhost_dir = Path(OLS_SERVER_BASE) / "conf" / "vhosts" / _vhost_name(domain_name)
-            shutil.rmtree(vhost_dir, ignore_errors=True)
+            for domain_name in domain_names:
+                vhost_dir = Path(OLS_SERVER_BASE) / "conf" / "vhosts" / _vhost_name(domain_name)
+                shutil.rmtree(vhost_dir, ignore_errors=True)
     # Vhost logs live outside the home (sysops.VHOST_LOG_ROOT), so home
     # removal no longer takes them; OLS stopped writing them above.
     sysops.remove_vhost_log_dir(account.username)
+    from daemon import htaccess
+
+    htaccess.forget_account_scans(account.id)
 
 
-def _apply_main_only(domain_vhosts: list[dict], account_procs: list[dict], context: str) -> None:
+@_config_transaction
+def _apply_main_only(context: str) -> None:
     with write_session() as session:
+        domain_vhosts, account_procs = _all_active_vhosts(session)
         waf = waf_template_context(session)
         ols_settings = _ols_settings_from_session(session)
-    httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf, ols_settings=ols_settings)
+    httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf, ols_settings=ols_settings,
+                                        infrastructure=infrastructure_in_place())
     targets = {"main": HTTPD_CONFIG_PATH}
     contents = {"main": httpd_content}
     _attach_waf_config(targets, contents, waf)
@@ -1320,12 +1519,10 @@ def refresh_main_config() -> None:
     whenever WAF settings/overrides/custom rules change, the same
     validate/backup/reload/verify/rollback path every other OLS config
     change goes through (ARCHITECTURE.md SS7), not a special case."""
-    with write_session() as session:
-        domain_vhosts, account_procs = _all_active_vhosts(session)
-    _apply_main_only(domain_vhosts, account_procs, context="waf_settings_change")
+    _apply_main_only(context="waf_settings_change")
 
 
-def refresh_all_vhosts() -> None:
+def refresh_all_vhosts(*, recycle_php: bool = False) -> None:
     """One-time (idempotent, safe to re-run) migration for a shared-
     template security fix (per-account /tmp + allowSymbolLink hardening,
     Phase 6a research findings): re-renders every active/suspended
@@ -1341,6 +1538,10 @@ def refresh_all_vhosts() -> None:
     set_php_version): accounts are queried and detached before use here,
     matching the established convention for reading scalar attributes off
     an Account row after its session has closed.
+
+    recycle_php restarts every account's PHP workers (the upgrade passes it
+    when it changed the lsphp php.ini files, which warm workers never
+    re-read).
     """
     with write_session() as session:
         accounts = list(session.scalars(
@@ -1354,9 +1555,10 @@ def refresh_all_vhosts() -> None:
         # Admin disable_functions overrides moved from an (unenforced) vhost
         # php_admin_value to the pool's PHP_INI_SCAN_DIR; warm workers only
         # pick that up when restarted.
-        refresh_vhost(account, recycle_php=account.id in function_override_ids)
+        refresh_vhost(account, recycle_php=recycle_php or account.id in function_override_ids)
 
 
+@_config_transaction
 def migrate_error_page_paths() -> int:
     """Repair generated paths before old release directories are pruned.
 
@@ -1385,6 +1587,7 @@ def migrate_error_page_paths() -> int:
     return len(targets)
 
 
+@_config_transaction
 def bootstrap_baseline() -> None:
     """Replace the stock OLS install's bundled 'Example' vhost with a clean,
     Boron-managed httpd_config.conf containing whatever vhosts already
@@ -1409,10 +1612,15 @@ def bootstrap_baseline() -> None:
     # config and those vhost configs in one transaction; applying main first
     # makes `openlitespeed -t` fail on missing paths before the installer can
     # reach the later Roundcube/panel certificate bootstrap steps.
+    # phpMyAdmin is written by its own bootstrap (pma.bootstrap_pma) once the
+    # package is installed; until then it is left out (infrastructure_in_place).
+    writing = tuple(name for name, hostname in (("panel", settings.panel_hostname),
+                                                 ("webmail", settings.webmail_hostname)) if hostname)
     targets = {"main": HTTPD_CONFIG_PATH}
     contents = {
         "main": render_httpd_config(
-            domain_vhosts, account_procs, waf=waf, ols_settings=ols_settings
+            domain_vhosts, account_procs, waf=waf, ols_settings=ols_settings,
+            infrastructure=infrastructure_in_place(writing),
         )
     }
 
@@ -1723,6 +1931,7 @@ def update_abuse_settings(params: dict) -> dict:
     return {"preset": preset, **values}
 
 
+@_config_transaction
 def graceful_reload(params: dict) -> dict:
     if not bool(params.get("confirm")):
         raise ValidationError("OpenLiteSpeed reload requires confirm=true")

@@ -370,3 +370,43 @@ def test_disable_functions_ini_is_materialized_and_pruned(functions_root):
     assert not first.exists()
     assert Path(phpext.phpdirectives.disable_functions_scan_dir("demo1", "phpinfo")).is_dir()
     assert sorted(p.name for p in functions_root.iterdir()) == ["demo1"]
+
+
+# --- php.ini error display defaults (round 1 ops: Joomla path leak) ---------
+
+STOCK_INI = (
+    "[PHP]\n"
+    "engine = On\n"
+    "display_errors = On\n"
+    ";display_errors = Off\n"
+    "display_startup_errors = On\n"
+    "log_errors = Off\n"
+    "\n[Date]\n"
+    ";date.timezone =\n"
+)
+
+
+def test_php_ini_defaults_rewrite_active_lines_and_add_missing_ones():
+    updated = phpext.apply_php_ini_defaults(STOCK_INI)
+    assert updated.splitlines() == [
+        "[PHP]", "engine = On", "display_errors = Off", ";display_errors = Off",
+        "display_startup_errors = Off", "log_errors = On", "", "[Date]", ";date.timezone =",
+    ]
+    assert phpext.apply_php_ini_defaults(updated) == updated
+    # Missing directives go right after [PHP], never into a later section.
+    added = phpext.apply_php_ini_defaults("[PHP]\nengine = On\n[HOST=example.test]\nengine = Off\n")
+    assert added.splitlines()[:4] == ["[PHP]", "display_errors = Off", "display_startup_errors = Off", "log_errors = On"]
+    assert added.endswith("[HOST=example.test]\nengine = Off\n")
+
+
+def test_reconcile_php_ini_defaults_edits_each_installed_version_in_place(tmp_path, monkeypatch):
+    monkeypatch.setattr(phpext, "LSWS_BASE", str(tmp_path))
+    ini = phpext.php_ini_path("8.3")
+    ini.parent.mkdir(parents=True)
+    ini.write_text(STOCK_INI)
+    ini.chmod(0o644)
+    assert phpext.reconcile_php_ini_defaults(("8.2", "8.3")) == [str(ini)]
+    assert "display_errors = Off\n" in ini.read_text()
+    assert (ini.stat().st_mode & 0o777) == 0o644
+    assert phpext.reconcile_php_ini_defaults(("8.2", "8.3")) == []
+    assert not list(ini.parent.glob(".php.ini.boron-*"))

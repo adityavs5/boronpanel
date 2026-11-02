@@ -90,7 +90,7 @@ def update_redirect(params: dict) -> dict:
 
 def delete_redirect(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
-    path = validate_redirect_path(params["path"])
+    path = validate_redirect_path(params["path"], existing=True)
 
     with write_session() as session:
         _domain_row, account = _domain_account(session, domain_name)
@@ -123,10 +123,9 @@ def delete_redirects_for_domain(domain_name: str) -> None:
 
 
 def terminate_account_redirects(account: Account) -> None:
-    """TERMINATE_HOOKS entry: an account's PRIMARY domain's Domain row
-    (unlike addon/subdomain rows) survives termination -- same
-    established pattern as Account itself -- so handlers_domain.
-    remove_domain's cleanup above never runs for it. Its redirects are
+    """TERMINATE_HOOKS entry: termination removes the account's Domain rows
+    without handlers_domain.remove_domain, so that cleanup never runs for
+    them; this hook reads the rows before they go. Their redirects would be
     otherwise-orphaned config state (the vhost they'd render into is
     already gone, ols.terminate_vhost) with the same "clean up rather
     than let a later reactivate silently reapply stale settings"

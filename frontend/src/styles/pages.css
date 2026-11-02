@@ -86,6 +86,9 @@
 .account-isolation-control strong { font-weight: 500; }
 .account-isolation-control span { color: rgb(var(--muted-fg)); font-size: var(--text-xs); }
 .account-settings-links { display: flex; flex-wrap: wrap; gap: var(--space-4); }
+/* .account-settings-section sets padding: X 0 after components.css, so the
+   danger box needs its inner padding back at higher specificity. */
+.account-settings-section.account-danger-section { padding: var(--space-4) var(--space-5); }
 .account-danger-section .account-settings-section-heading { padding: 0; background: transparent; }
 .account-usage-limits { padding: var(--space-4) 0; border-bottom: 1px solid rgb(var(--border)); }
 .account-usage-limits summary { cursor: pointer; font-size: var(--text-body); font-weight: 600; }
@@ -170,8 +173,14 @@
   .email-section-picker { gap: var(--space-2); }
   .email-section-card { min-height: 52px; padding: var(--space-2) var(--space-3); }
   .email-section-card small { display: none; }
+  .email-section-card { gap: var(--space-2); }
+  .email-section-card > span:last-child { min-width: 0; }
+  .email-section-card strong { overflow-wrap: anywhere; }
   .email-section-chip { width: 30px; height: 30px; }
 }
+/* Two tiles per row leave about 100px for the label at phone width, less
+   than "Autoresponders" needs; the label carries the meaning, so drop the icon. */
+@media (max-width: 419px) { .email-section-chip { display: none; } }
 .customer-domain-toolbar > [data-ui-button] { margin-top: 22px; }
 .customer-domain-toolbar > [data-ui-badge] { margin-top: 29px; }
 .customer-php-versions { grid-template-columns: minmax(0, 1fr); }

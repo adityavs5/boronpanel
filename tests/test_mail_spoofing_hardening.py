@@ -67,7 +67,12 @@ def test_dkim_reconciles_policy_and_passes_sasl_login_to_filter(tmp_path, monkey
     policy_calls = []
     monkeypatch.setattr(dkim.mail_hardening, "configure_postfix_policy", lambda run: policy_calls.append(run))
     commands = []
-    monkeypatch.setattr(dkim, "run", lambda args, **kw: commands.append(args))
+
+    def run(args, **kw):
+        commands.append(args)
+        return SimpleNamespace(ok=True, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(dkim, "run", run)
 
     dkim._configure_postfix_milter()
 
@@ -75,10 +80,42 @@ def test_dkim_reconciles_policy_and_passes_sasl_login_to_filter(tmp_path, monkey
     flat = [" ".join(args) for args in commands]
     sign = next(item for item in flat if item.startswith("postconf -Me boron-sign/unix="))
     assert "--login=${sasl_username}" in sign
-    assert "postconf -P submission/inet/smtpd_sender_restrictions=reject_authenticated_sender_login_mismatch" in flat
-    assert "postconf -P submission/inet/smtpd_relay_restrictions=permit_sasl_authenticated,reject" in flat
-    assert f"postconf -P submission/inet/smtpd_sender_login_maps=mysql:{boron_dir / 'mysql-sender-login.cf'}" in flat
+    # 587 and 465 share every authentication, identity and signing rule.
+    assert "postconf -Me submissions/inet=submissions inet n - y - - smtpd" in flat
+    assert "postconf -P submissions/inet/smtpd_tls_wrappermode=yes" in flat
+    for service in ("submission/inet", "submissions/inet"):
+        for name, value in dkim.submission_policy().items():
+            assert f"postconf -P {service}/{name}={value}" in flat
+        assert f"postconf -P {service}/smtpd_sender_restrictions=reject_authenticated_sender_login_mismatch" in flat
+        assert f"postconf -P {service}/smtpd_relay_restrictions=permit_sasl_authenticated,reject" in flat
+        assert f"postconf -P {service}/smtpd_sender_login_maps=mysql:{boron_dir / 'mysql-sender-login.cf'}" in flat
+        assert f"postconf -P {service}/content_filter=boron-sign:" in flat
     assert "postconf -e smtpd_milters=" in flat and "postconf -e non_smtpd_milters=" in flat
+
+
+def test_existing_smtps_entry_is_reused_for_port_465(monkeypatch):
+    commands = []
+
+    def run(args, **kw):
+        commands.append(" ".join(args))
+        listed = args[:2] == ["postconf", "-M"] and args[2] == "smtps/inet"
+        return SimpleNamespace(ok=True, returncode=0, stdout="smtps inet n - y - - smtpd\n" if listed else "", stderr="")
+
+    monkeypatch.setattr(dkim, "run", run)
+    dkim._configure_submission_services()
+    assert not any(item.startswith("postconf -Me submissions") for item in commands)
+    assert "postconf -P smtps/inet/smtpd_tls_wrappermode=yes" in commands
+    assert "postconf -P smtps/inet/content_filter=boron-sign:" in commands
+
+
+def test_installer_submissions_service_matches_the_reconciled_policy():
+    source = (REPO / "scripts" / "install.sh").read_text()
+    assert "postconf -Me 'submissions/inet=submissions inet n - y - - smtpd'" in source
+    assert "postconf -P 'submissions/inet/smtpd_tls_wrappermode=yes'" in source
+    for name, value in dkim.submission_policy().items():
+        literal = value.replace(str(dkim.SENDER_LOGIN_MAP), "/etc/postfix/boron/mysql-sender-login.cf")
+        assert f"postconf -P 'submission/inet/{name}={literal}'" in source
+        assert f"postconf -P 'submissions/inet/{name}={literal}'" in source
 
 
 def test_dkim_surfaces_hardening_failure(tmp_path, monkeypatch):

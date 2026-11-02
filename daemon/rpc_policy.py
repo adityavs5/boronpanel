@@ -47,6 +47,8 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'forwarding.set': 'account_and_domain',
     'hotlink.get': 'account_and_domain',
     'hotlink.set': 'account_and_domain',
+    'force_https.get': 'account_and_domain',
+    'force_https.set': 'account_and_domain',
     'imapsync.start': 'account_and_domain',
     'ipblock.add': 'account_and_domain',
     'ipblock.list': 'account_and_domain',
@@ -134,6 +136,8 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'apps.python.stop': 'account_username',
     'apps.python.update': 'account_username',
     'backup.job.browse': 'account_username',
+    'backup.job.download': 'account_username',
+    'backup.job.download.cleanup': 'account_username',
     'backup.job.get': 'account_username',
     'backup.job.trigger': 'account_username',
     'backup.restore.list': 'account_username',
@@ -196,6 +200,7 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'logs.download': 'account_username',
     'maillog.delivery': 'account_username',
     'maillog.admin_stats': 'global_admin',
+    'pma.status': 'global_admin',
     'malware.finding.ignore': 'account_username',
     'malware.finding.quarantine': 'account_username',
     'malware.finding.restore': 'account_username',
@@ -244,6 +249,11 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'webmail.launch.create': 'customer_admin_or_impersonation_session_account',
     # admin_account_username
     'account.set_password': 'admin_account_username',
+    # SQL import recovery copies hold the account's pre-import data; only an
+    # administrator may restore or delete them.
+    'db.recovery.list': 'admin_account_username',
+    'db.recovery.restore': 'admin_account_username',
+    'db.recovery.release': 'admin_account_username',
     'namespace.disable': 'admin_account_username',
     'namespace.enable': 'admin_account_username',
     # current_impersonation_session_self

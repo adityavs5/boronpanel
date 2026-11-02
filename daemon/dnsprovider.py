@@ -25,11 +25,6 @@ import threading
 
 from daemon import dns_operations
 
-import dns.exception
-import dns.rdataclass
-import dns.rdatatype
-import dns.tokenizer
-from dns.rdtypes.ANY.TXT import TXT
 from sqlalchemy import select
 
 from shared.db import write_session
@@ -39,88 +34,19 @@ from shared.validation import ValidationError
 from daemon import cloudflare, cloudflare_accounts, powerdns
 from daemon.cloudflare import CloudflareError
 from daemon.powerdns import DEFAULT_TTL, PowerDnsError  # re-exported for callers
+# TXT presentation helpers, re-exported: callers read TXT through this module.
+from daemon.dns_txt import (  # noqa: F401
+    TXT_STRING_OCTETS, normalize_txt, txt_bytes, txt_presentation, txt_strings, txt_text,
+)
 
 DnsError = (PowerDnsError, CloudflareError)
 logger = logging.getLogger("borond.dnsprovider")
 _batch_state = threading.local()
 
-# RFC 1035 SS3.3: a TXT character-string carries at most 255 octets. A
-# longer value (a 2048-bit DKIM key is ~410) must be published as several
-# strings, which resolvers concatenate. PowerDNS accepts one oversized
-# string, but zone-file parsers (dnspython in the advanced editor and the
-# snapshot restore validator) reject it, so every write is split here.
-TXT_STRING_OCTETS = 255
 # Placeholder MNAME from the installer's default-soa-content. Zones created
-# by Boron replace it with their primary nameserver (set_soa_primary).
+# by Boron replace it with their primary nameserver (powerdns.create_zone,
+# with set_soa_primary as the fallback).
 PLACEHOLDER_SOA_MNAME = "ns1.boron.invalid."
-
-
-def _lenient_unescape(inner: str) -> bytes:
-    out = bytearray()
-    raw = inner.encode("utf-8", "surrogateescape")
-    i = 0
-    while i < len(raw):
-        char = raw[i]
-        if char == 0x5C and i + 1 < len(raw):  # backslash
-            digits = raw[i + 1:i + 4]
-            if len(digits) == 3 and digits.isdigit() and int(digits) <= 255:
-                out.append(int(digits))
-                i += 4
-                continue
-            out.append(raw[i + 1])
-            i += 2
-            continue
-        out.append(char)
-        i += 1
-    return bytes(out)
-
-
-def txt_strings(value: str) -> list[bytes]:
-    """The character-strings of one TXT value in presentation format.
-
-    Quoted and bare words are each one string (zone-file grammar). Content
-    that grammar cannot read -- legacy rows stored before validation, such
-    as a raw newline inside quotes -- is read leniently as one string so it
-    can still be displayed, compared and rewritten instead of failing.
-    """
-    if not isinstance(value, str):
-        raise ValidationError("TXT values must be text")
-    try:
-        tokenizer = dns.tokenizer.Tokenizer(value)
-        strings = []
-        while True:
-            token = tokenizer.get()
-            if token.is_eof():
-                break
-            if not (token.is_quoted_string() or token.is_identifier()):
-                raise dns.exception.SyntaxError("unexpected token")
-            strings.append(token.unescape_to_bytes().value)
-        return strings
-    except dns.exception.DNSException:
-        stripped = value.strip()
-        if len(stripped) >= 2 and stripped[0] == stripped[-1] == '"':
-            return [_lenient_unescape(stripped[1:-1])]
-        return [stripped.encode("utf-8", "surrogateescape")]
-
-
-def txt_bytes(value: str) -> bytes:
-    """The logical TXT data: its character-strings concatenated."""
-    return b"".join(txt_strings(value))
-
-
-def txt_text(value: str) -> str:
-    """The logical TXT data as text, for comparisons and display."""
-    return txt_bytes(value).decode("utf-8", "replace")
-
-
-def txt_presentation(data: bytes) -> str:
-    """Canonical PowerDNS content: escaped strings of at most 255 octets."""
-    chunks = [data[i:i + TXT_STRING_OCTETS] for i in range(0, len(data), TXT_STRING_OCTETS)] or [b""]
-    return TXT(dns.rdataclass.IN, dns.rdatatype.TXT, chunks).to_text()
-
-
-def normalize_txt(value: str) -> str:
-    return txt_presentation(txt_bytes(value))
 
 
 def provider_values(rtype: str, values: list[str], *, cloudflare_zone: bool) -> list[str]:
@@ -136,6 +62,14 @@ def provider_values(rtype: str, values: list[str], *, cloudflare_zone: bool) -> 
         except UnicodeDecodeError:
             raise ValidationError("Cloudflare TXT records must contain UTF-8 text") from None
     return result
+
+
+def _soa_names_primary(zone_data: dict | None, primary: str) -> bool:
+    """Whether a PowerDNS zone document's SOA already names `primary`."""
+    soa = next((row for row in (zone_data or {}).get("rrsets", []) if row.get("type") == "SOA"), None)
+    records = (soa or {}).get("records") or []
+    mname = str(records[0].get("content", "")).split()[:1] if records else []
+    return bool(mname) and mname[0].rstrip(".").lower() == primary.rstrip(".").lower()
 
 
 def soa_with_primary(content: str, primary: str) -> str | None:
@@ -262,9 +196,11 @@ def create_zone(zone: str, ns_records: list[str]) -> dict:
     the fallback, and the revert target (plan SS0/SS1.9). Moving a zone to
     Cloudflare is a separate, explicit lifecycle op (cf.zone_enable)."""
     result = powerdns.create_zone(zone, ns_records)
-    if ns_records:
-        # The zone already serves; an SOA rewrite failure must not report
-        # a failed creation (the upgrade reconcile repairs it later).
+    if ns_records and not _soa_names_primary(result, ns_records[0]):
+        # powerdns.create_zone normally names the primary in the SOA it
+        # creates; this repairs a zone whose SOA came from the placeholder
+        # defaults. The zone already serves, so a failure must not report a
+        # failed creation -- the upgrade reconcile repairs it later.
         try:
             set_soa_primary(zone, ns_records[0])
         except Exception:

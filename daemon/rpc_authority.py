@@ -11,11 +11,13 @@ from shared.db import write_session
 from shared.models import Account, ApiToken, DnsClusterPeer, Domain, ImpersonationSession, MailDomain, PanelUser, ResellerAccount, ResellerProfile, RestoreJob, Session, TotpCredential, UpdateJob
 from shared.session_ids import session_digest
 from shared.passwords import verify_password
-from shared.validation import validate_domain
+from shared.validation import ConflictError, validate_domain
 
 from daemon.rpc_policy import POLICY_BY_OPERATION
 
 TOKEN_MAX_AGE = dt.timedelta(days=90)
+# Operations whose `domain` the named account does not hold yet.
+NEW_DOMAIN_OPERATIONS = frozenset({"domain.add", "taskops.domain.add", "mail.create_domain"})
 
 
 class AuthenticationError(PermissionError):
@@ -107,7 +109,10 @@ def resolve_principal(credential: object) -> Principal:
             ))
             if imp is not None:
                 account = db.get(Account, imp.account_id)
-                if user.role != "admin" or account is None or imp.admin_panel_user_id != user.id:
+                # Termination ends these sessions (impersonation.end_account_sessions);
+                # the status check is the second layer, matching redeem_token.
+                if (user.role != "admin" or account is None or imp.admin_panel_user_id != user.id
+                        or account.status not in ("active", "suspended")):
                     raise AuthenticationError("invalid impersonation session")
                 return Principal("customer", user.username, account.id, user.id,
                                  "session", digest, impersonating=True)
@@ -174,6 +179,27 @@ def _target_account_id(db, params: dict, *, allow_new_domain: bool = False) -> i
     return from_username if from_username is not None else from_domain
 
 
+def _refuse_domain_of_another_account(db, principal: Principal, params: dict) -> None:
+    """Adding a name that another account already holds is a conflict (409).
+
+    Only the owner of the named account is told: anyone else still gets the
+    ownership refusal of _target_account_id and learns nothing about the name.
+    """
+    username, domain = params.get("username"), params.get("domain")
+    if not (isinstance(username, str) and username and isinstance(domain, str) and domain):
+        return
+    account_id = db.scalar(select(Account.id).where(Account.username == username))
+    if account_id is None or not _owns_account(db, principal, account_id):
+        return
+    domain = validate_domain(domain)
+    holders = {
+        db.scalar(select(Domain.account_id).where(Domain.domain == domain)),
+        db.scalar(select(MailDomain.account_id).where(MailDomain.domain == domain)),
+    }
+    if holders - {None, account_id}:
+        raise ConflictError("domain already belongs to another account")
+
+
 def _owns_account(db, principal: Principal, account_id: int) -> bool:
     if principal.role == "admin":
         return True
@@ -215,20 +241,28 @@ def authorize(op: str, params: dict, principal: Principal | None) -> None:
     if principal is None:
         raise AuthenticationError("panel credential required")
     if disposition == "task_list_scope":
-        if principal.role not in ("admin", "customer"):
-            raise AuthorizationError("task history requires an administrator or hosting customer")
+        # daemon/tasks.py narrows the list to the caller's own accounts.
+        if principal.role not in ("admin", "customer", "reseller"):
+            raise AuthorizationError("task history requires an administrator, reseller or hosting customer")
         if principal.role == "customer" and principal.account_id is None:
             raise AuthorizationError("customer account required")
+        if principal.role == "reseller" and principal.reseller_id is None:
+            raise AuthorizationError("reseller required")
         return
     if disposition == "task_item_owner":
         if principal.role == "admin":
             return
-        if principal.role != "customer" or principal.account_id is None:
+        if principal.role not in ("customer", "reseller"):
             raise AuthorizationError("task ownership required")
         from daemon.tasks import owner_account_id
 
         owner = owner_account_id(params.get("kind"), params.get("task_id"))
-        if owner != principal.account_id:
+        # A task of no account (a server-wide job) is administrator-only.
+        if owner is None:
+            raise AuthorizationError("task ownership required")
+        with write_session() as db:
+            owned = _owns_account(db, principal, owner)
+        if not owned:
             raise AuthorizationError("task ownership required")
         return
     if disposition in {"control_task_owner", "control_task_reveal"}:
@@ -249,7 +283,10 @@ def authorize(op: str, params: dict, principal: Principal | None) -> None:
                 return
             if principal.role == "admin":
                 return
-            if principal.role != "customer" or task.account_id != principal.account_id:
+            # Customers and resellers read the tasks of the accounts they own
+            # now (a reseller starts domain tasks for its accounts as well).
+            if (principal.role not in ("customer", "reseller") or task.account_id is None
+                    or not _owns_account(db, principal, task.account_id)):
                 raise AuthorizationError("control task ownership required")
         return
     if disposition in ("global_admin", "admin_account_username"):
@@ -306,8 +343,10 @@ def authorize(op: str, params: dict, principal: Principal | None) -> None:
         if principal.role == "admin":
             return
         with write_session() as db:
-            account_id = _target_account_id(db, params,
-                                            allow_new_domain=op in ("domain.add", "taskops.domain.add", "mail.create_domain"))
+            new_domain = op in NEW_DOMAIN_OPERATIONS
+            if new_domain:
+                _refuse_domain_of_another_account(db, principal, params)
+            account_id = _target_account_id(db, params, allow_new_domain=new_domain)
             if account_id is None or not _owns_account(db, principal, account_id):
                 raise AuthorizationError("account ownership required")
         return

@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from shared.db import write_session
 from shared.models import Account
-from shared.validation import validate_username
+from shared.validation import ConflictError, NotFoundError, validate_username
 
 from daemon import cron
 
@@ -15,9 +15,9 @@ def _get_active_account(username: str) -> Account:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         if account.status not in ("active", "suspended"):
-            raise RuntimeError(f"cannot manage cron jobs for an account in status '{account.status}'")
+            raise ConflictError(f"cannot manage cron jobs for an account in status '{account.status}'")
         return account
 
 
@@ -29,7 +29,9 @@ def _mutation(function):
         from daemon.snapshot_jobs import lock
         from shared.validation import ValidationError
         try:
-            with lock(f'account-{account.id}', blocking=False):
+            # Re-entrant: a restore worker holding this account's lock
+            # recreates the saved cron jobs through these same handlers.
+            with lock(f'account-{account.id}', blocking=False, reentrant=True):
                 return function(params)
         except BlockingIOError:
             raise ValidationError('An account backup or restore is in progress. Try again shortly.') from None

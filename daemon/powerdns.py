@@ -45,11 +45,37 @@ def zone_exists(zone: str) -> bool:
         return resp.status_code == 200
 
 
+def _initial_soa(zone: str, primary: str) -> dict | None:
+    """The SOA rrset PowerDNS would synthesize from its default-soa-content
+    (/etc/powerdns/pdns.d/boron.conf), but naming `primary` as MNAME instead
+    of the installer's placeholder, which cannot be per zone. None when the
+    server configuration cannot be read; PowerDNS then synthesizes the SOA
+    and dnsprovider.set_soa_primary repairs the MNAME afterwards."""
+    try:
+        with _client() as client:
+            resp = client.get(f"/servers/{settings.powerdns_server_id}/config")
+        rows = resp.json() if resp.status_code == 200 else []
+    except (httpx.HTTPError, ValueError):
+        return None
+    config = {row.get("name"): str(row.get("value") or "") for row in rows if isinstance(row, dict)}
+    # PowerDNS itself substitutes the zone name for '@' (hostmaster.@).
+    fields = config.get("default-soa-content", "").replace("@", zone.rstrip(".")).split()
+    if len(fields) != 7 or not all(field.isdigit() for field in fields[2:]):
+        return None
+    names = [name if name.endswith(".") else f"{name}." for name in (primary, fields[1])]
+    ttl = config.get("default-ttl", "")
+    return {
+        "name": _zone_id(zone), "type": "SOA", "ttl": int(ttl) if ttl.isdigit() else DEFAULT_TTL,
+        "records": [{"content": " ".join([*names, *fields[2:]]), "disabled": False}],
+    }
+
+
 @dns_operations.serialized
 def create_zone(zone: str, ns_records: list[str]) -> dict:
-    """Create a new authoritative zone with the given NS records. PowerDNS
-    auto-generates the SOA from default-soa-content (configured in
-    /etc/powerdns/pdns.d/boron.conf) unless we override it."""
+    """Create a new authoritative zone with the given NS records and, in the
+    same request, an SOA whose primary nameserver (MNAME) is the first of
+    them. Every zone this server creates (panel zones and zones received
+    from DNS cluster peers) therefore starts with a real SOA."""
     fqdn = _zone_id(zone)
     payload = {
         "name": fqdn,
@@ -57,6 +83,9 @@ def create_zone(zone: str, ns_records: list[str]) -> dict:
         "dnssec": False,
         "nameservers": ns_records,
     }
+    soa = _initial_soa(zone, ns_records[0]) if ns_records else None
+    if soa is not None:
+        payload["rrsets"] = [soa]
     with _client() as client:
         resp = client.post(f"/servers/{settings.powerdns_server_id}/zones", json=payload)
     if resp.status_code not in (201, 200):
@@ -136,6 +165,23 @@ def list_records(zone: str) -> list[dict]:
             }
         )
     return records
+
+
+def search_records(pattern: str, max_results: int) -> list[dict]:
+    """Records of every zone this server hosts whose owner name or content
+    matches `pattern`: PowerDNS search syntax ('*' and '?' wildcards,
+    case-insensitive), names without the trailing dot. Each row carries
+    zone, name, type, content (API presentation) and disabled. A backend
+    without search support answers with no rows, so callers that need a
+    complete answer check that a record they know exists was found."""
+    with _client() as client:
+        resp = client.get(
+            f"/servers/{settings.powerdns_server_id}/search-data",
+            params={"q": pattern, "max": max_results, "object_type": "record"},
+        )
+    if resp.status_code != 200:
+        raise PowerDnsError(resp.status_code, resp.text)
+    return [row for row in resp.json() if row.get("object_type") == "record"]
 
 
 @dns_operations.serialized

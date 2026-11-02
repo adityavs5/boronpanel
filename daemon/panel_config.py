@@ -17,6 +17,7 @@ import ssl
 import time
 import tomllib
 
+from daemon import mail_identity
 from daemon.configtx import ConfigWriter, StepResult
 from daemon.procutil import run
 from shared.config import CONFIG_PATH, settings, settings_from_mapping
@@ -115,6 +116,7 @@ def apply_setup_values(updates: dict[str, str], *, config_path=CONFIG_PATH, relo
     target = Path(config_path)
     if not target.is_file() or target.is_symlink():
         raise ValidationError("Panel configuration must be an existing regular file")
+    pma_pending = _defer_pma_hostname(clean)
     original = target.read_text()
     updated = render_setup_values(original, clean)
     metadata = target.stat()
@@ -130,12 +132,21 @@ def apply_setup_values(updates: dict[str, str], *, config_path=CONFIG_PATH, relo
             fresh = settings_from_mapping(tomllib.loads(target.read_text()), source=str(target))
             for key in clean:
                 setattr(settings, key, getattr(fresh, key))
+            mail_identity.apply_postfix_identity(changed=clean)
             if reload_services:
                 from daemon import ols, panel_tls, pma
+                # Without its package the background job publishes it later.
+                # A first publication goes first: the bootstraps below render
+                # the main config, which names phpMyAdmin's vhost, and the OLS
+                # config test fails until that vhost's config exists.
+                publish_pma = bool(settings.pma_hostname) and pma.package_installed()
+                pma_first = publish_pma and not pma.vhost_config_exists()
+                if pma_first:
+                    pma.bootstrap_pma()
                 panel_tls.bootstrap_challenge()
                 if settings.webmail_hostname:
                     ols.bootstrap_webmail()
-                if settings.pma_hostname:
+                if publish_pma and not pma_first:
                     pma.bootstrap_pma()
             return StepResult(True)
         except Exception as exc:
@@ -148,7 +159,31 @@ def apply_setup_values(updates: dict[str, str], *, config_path=CONFIG_PATH, relo
     result = writer.apply(updated)
     if not result.ok:
         raise RuntimeError("Server setup configuration failed; previous settings restored. " + result.summary())
-    return {"status": "completed", "updated": sorted(clean)}
+    outcome = {"status": "completed", "updated": sorted(clean)}
+    if pma_pending:
+        from daemon import pma
+        outcome["phpmyadmin"] = pma.request_publication(pma_pending)
+    return outcome
+
+
+def _defer_pma_hostname(clean: dict) -> str | None:
+    """Hold back a phpMyAdmin hostname whose package is not installed yet.
+
+    The hostname adds an OLS vhost for phpMyAdmin's document root; written
+    before the package exists, every later `openlitespeed -t` fails on the
+    missing path. apt can take minutes, which a configuration save must not
+    wait for, so pma installs the package in the background and then saves
+    and publishes the hostname. Returns that hostname.
+    """
+    if "pma_hostname" not in clean:
+        return None
+    from daemon import pma
+    if clean["pma_hostname"] and not pma.package_installed():
+        pma.validate_service_hostname(clean["pma_hostname"])
+        return clean.pop("pma_hostname")
+    # Saved now: a background publication of an earlier choice must not follow.
+    pma.withdraw_publication()
+    return None
 
 
 def apply_hostname(hostname: str, *, config_path=CONFIG_PATH) -> dict:

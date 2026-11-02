@@ -204,9 +204,13 @@ def test_delete_custom_rule_removes_row(isolated_db, monkeypatch):
 
 
 def test_delete_custom_rule_rejects_unknown_id(isolated_db, monkeypatch):
+    from shared.validation import NotFoundError
+
     monkeypatch.setattr(waf.ols, "refresh_main_config", lambda: None)
-    with pytest.raises(ValidationError):
+    with pytest.raises(NotFoundError):
         waf.delete_custom_rule({"rule_id": 999999})
+    with pytest.raises(NotFoundError):
+        waf.delete_exception({"exception_id": 999999})
 
 
 
@@ -291,3 +295,22 @@ def test_failed_ols_validation_restores_previous_waf_settings(isolated_db, monke
     with write_session() as session:
         assert session.get(WafSettings, 1) is None
     assert calls == ["refresh", "refresh"]
+
+
+def test_delete_for_domain_drops_only_that_names_rows(isolated_db):
+    """A freed name must not carry the previous owner's WAF policy, custom
+    rules or exceptions (they are keyed by the name only)."""
+    import datetime as dt
+    from sqlalchemy import select
+
+    expires = waf.utcnow() + dt.timedelta(hours=1)
+    with write_session() as session:
+        for name in ("gone.example", "kept.example"):
+            session.add(WafDomainOverride(domain=name, disabled=True, mode="disabled"))
+            session.add(WafCustomRule(domain=name, target="ARGS", pattern="evil"))
+            session.add(WafException(domain=name, rule_id=941100, expires_at=expires))
+    assert waf.delete_for_domain("gone.example") == 3
+    assert waf.delete_for_domain("gone.example") == 0
+    with write_session() as session:
+        for model in (WafDomainOverride, WafCustomRule, WafException):
+            assert session.scalars(select(model.domain)).all() == ["kept.example"]

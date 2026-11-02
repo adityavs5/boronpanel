@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Mail, Plus, Trash2, Inbox, Forward, ShieldAlert, AtSign, Network, ScrollText,
   ShieldBan, ShieldCheck, ArrowRightLeft, Loader2, XCircle, CheckCircle2, X, ExternalLink,
-  CirclePause, CirclePlay, MoreHorizontal, Settings2, LogIn,
+  CirclePause, CirclePlay, MoreHorizontal, Settings2, LogIn, Reply,
 } from 'lucide-react'
 import { get, post, patch, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
@@ -13,7 +13,7 @@ import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/Card'
 import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
-import { Input, FormField } from '@/components/ui/Input'
+import { Input, Textarea, FormField } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { Switch, Checkbox } from '@/components/ui/Toggle'
 import { StatusBadge } from '@/components/ui/StatusBadge'
@@ -26,6 +26,7 @@ import { CenteredSpinner } from '@/components/ui/Spinner'
 import { LongValue } from '@/components/ui/LongValue'
 import { toast } from '@/components/ui/Toast'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/DropdownMenu'
+import { InlineError } from './InlineFeedback'
 
 const formatQuotaGb = value => value == null ? '—' : `${Number(value) / 1024} GB`
 
@@ -42,9 +43,10 @@ const EMAIL_MODES = {
   },
   settings: {
     title: 'Email settings',
-    description: 'Configure forwarding and delivery behavior for the selected domain.',
+    description: 'Configure forwarding, automatic replies and delivery for the selected domain.',
     sections: [
       ['forwarders', 'Forwarders', Forward],
+      ['autoresponders', 'Autoresponders', Reply],
       ['catchall', 'Catch-all', AtSign],
       ['routing', 'Mail routing', Network],
       ['delivery', 'Delivery log', ScrollText],
@@ -95,6 +97,37 @@ function useWebmailLaunch(username, domain) {
 
 // --- Mailboxes -----------------------------------------------------------
 
+// "IMAP 993 (SSL/TLS) or 143 (STARTTLS); POP3 995 (SSL/TLS) or 110 (STARTTLS)"
+function portsText(entries, withProtocol = true) {
+  const groups = []
+  for (const entry of entries || []) {
+    let group = groups.find(item => item.protocol === entry.protocol)
+    if (!group) groups.push(group = { protocol: entry.protocol, ports: [] })
+    group.ports.push(`${entry.port} (${entry.security})`)
+  }
+  return groups.map(group => `${withProtocol ? `${group.protocol} ` : ''}${group.ports.join(' or ')}`).join('; ')
+}
+
+// Settings for mail apps (GET .../mailboxes client_settings).
+function MailClientSettings({ domain, settings }) {
+  if (!settings) return null
+  const host = settings.hostname
+  return (
+    <section aria-labelledby="mail-client-settings" className="mt-5 rounded-card border border-border bg-card p-4 text-sm">
+      <h2 id="mail-client-settings" className="font-semibold text-foreground">Mail app settings</h2>
+      {host ? (
+        <ul className="mt-2 space-y-1.5 break-words text-foreground">
+          <li>Incoming mail: <span className="font-mono">{host}</span> — {portsText(settings.incoming)}</li>
+          <li>Outgoing mail (SMTP): <span className="font-mono">{host}</span> — {portsText(settings.outgoing, false)}{(settings.outgoing || []).some(entry => entry.authentication) ? ', authentication required' : ''}</li>
+          <li>Username: your full email address, for example <span className="font-mono">info@{domain}</span>. Password: the mailbox password.</li>
+        </ul>
+      ) : (
+        <p className="mt-2 text-muted-foreground">The server's mail hostname is not set up yet. Ask your hosting provider.</p>
+      )}
+    </section>
+  )
+}
+
 function MailboxesTab({ domain, createOpen, setCreateOpen }) {
   const username = useAccountUsername()
   const qc = useQueryClient()
@@ -107,6 +140,7 @@ function MailboxesTab({ domain, createOpen, setCreateOpen }) {
   const [selectedMailboxes, setSelectedMailboxes] = useState(new Set())
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
   useEffect(() => { if (selected) setQuotaGb(String(selected.quota_mb / 1024)) }, [selected])
+  const resetMailboxErrors = () => { passwordMut.reset(); quotaMut.reset() }
   const quotaMut = useMutation({ mutationFn: () => patch(`/api/v1/mail/domains/${encodeURIComponent(domain)}/mailboxes/${encodeURIComponent(selected.local_part)}/quota`, { quota_mb: Math.round(Number(quotaGb) * 1024) }), onSuccess: result => { toast.success('Mailbox quota updated'); setSelected(current => ({ ...current, quota_mb: result.quota_mb })); qc.invalidateQueries({ queryKey: key }) }, onError: error => toast.error('Could not update quota', error.message) })
   const { launching, openWebmail } = useWebmailLaunch(username, domain)
   useEffect(() => { setSelected(null); setPassword('') }, [domain, username])
@@ -132,6 +166,8 @@ function MailboxesTab({ domain, createOpen, setCreateOpen }) {
     },
     onError: (e) => toast.error('Could not create mailbox', e.message),
   })
+  const resetCreate = createMut.reset
+  useEffect(() => { if (createOpen) resetCreate() }, [createOpen, resetCreate])
 
   const deleteMut = useMutation({
     mutationFn: (localPart) => del(`/api/v1/mail/domains/${domain}/mailboxes/${localPart}`),
@@ -174,7 +210,7 @@ function MailboxesTab({ domain, createOpen, setCreateOpen }) {
       header: 'Mailbox',
       sortable: true,
       searchable: true,
-      render: (r) => <button className="font-medium text-accent-600 dark:text-accent-300 hover:underline" onClick={() => setSelected(r)}>{r.local_part}@{domain}</button>,
+      render: (r) => <button className="max-w-full break-words text-left font-medium text-accent-600 dark:text-accent-300 hover:underline" onClick={() => setSelected(r)}>{r.local_part}<wbr />@{domain}</button>,
     },
     {
       key: 'quota_mb',
@@ -221,15 +257,17 @@ function MailboxesTab({ domain, createOpen, setCreateOpen }) {
         emptyIcon={Inbox}
         emptyAction={<Button size="sm" onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> Create mailbox</Button>}
       />
+      <MailClientSettings domain={domain} settings={data?.client_settings} />
 
-      <Dialog open={!!selected} onOpenChange={open => { if (!open && !passwordMut.isPending) { setSelected(null); setPassword('') } }}>
+      <Dialog open={!!selected} onOpenChange={open => { if (!open && !passwordMut.isPending) { setSelected(null); setPassword(''); resetMailboxErrors() } }}>
         <DialogContent size="sm"><DialogHeader><DialogTitle>Manage mailbox</DialogTitle><DialogDescription>Update this mailbox’s storage limit or password.</DialogDescription></DialogHeader>
           <form onSubmit={event => { event.preventDefault(); if (password.length >= 12 && !passwordMut.isPending) passwordMut.mutate() }}>
             <DialogBody className="space-y-4"><p className="break-all font-medium">{selected?.local_part}@{domain}</p>
               <p className="text-sm text-muted-foreground">Quota: {formatQuotaGb(selected?.quota_mb)} · {selected?.active ? 'Active' : 'Inactive'}</p>
               <FormField label="Mailbox quota (GB)" htmlFor="mailbox-manage-quota" hint="This is the mailbox storage limit. Updating it does not delete mail."><div className="flex items-center gap-2"><Input id="mailbox-manage-quota" type="number" min={1 / 1024} max="100" step={1 / 1024} value={quotaGb} onChange={event => setQuotaGb(event.target.value)} /><Button type="button" variant="secondary" loading={quotaMut.isPending} disabled={!quotaGb || Number(quotaGb) <= 0 || Number(quotaGb) > 100} onClick={() => quotaMut.mutate()}>Update quota</Button></div></FormField>
               <FormField label="New mailbox password" required hint="Update your email clients after changing this password."><Input type="password" autoComplete="new-password" minLength={12} required value={password} disabled={passwordMut.isPending} onChange={event => setPassword(event.target.value)}/></FormField>
-            </DialogBody><DialogFooter><Button type="button" variant="secondary" disabled={passwordMut.isPending} onClick={() => { setSelected(null); setPassword('') }}>Done</Button><Button type="submit" loading={passwordMut.isPending} disabled={password.length < 12}>Update password</Button></DialogFooter>
+              <InlineError error={passwordMut.error || quotaMut.error} />
+            </DialogBody><DialogFooter><Button type="button" variant="secondary" disabled={passwordMut.isPending} onClick={() => { setSelected(null); setPassword(''); resetMailboxErrors() }}>Done</Button><Button type="submit" loading={passwordMut.isPending} disabled={password.length < 12}>Update password</Button></DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
@@ -286,6 +324,7 @@ function MailboxesTab({ domain, createOpen, setCreateOpen }) {
                   onChange={(e) => setForm((f) => ({ ...f, quota_gb: e.target.value }))}
                 />
               </FormField>
+              <InlineError error={createMut.error} />
             </DialogBody>
             <DialogFooter>
               <Button type="button" variant="secondary" onClick={() => setCreateOpen(false)}>Cancel</Button>
@@ -297,12 +336,13 @@ function MailboxesTab({ domain, createOpen, setCreateOpen }) {
 
       <ConfirmDialog
         open={!!toDelete}
-        onOpenChange={(v) => !v && setToDelete(null)}
+        onOpenChange={(v) => { if (!v) { setToDelete(null); deleteMut.reset() } }}
         title="Delete mailbox?"
         description={toDelete ? `${toDelete}@${domain} and all of its stored mail will be permanently removed.` : ''}
         confirmLabel="Delete mailbox"
         confirmationText={toDelete ? `${toDelete}@${domain}` : undefined}
         loading={deleteMut.isPending}
+        error={deleteMut.error}
         onConfirm={() => deleteMut.mutate(toDelete)}
       />
       <ConfirmDialog open={bulkDeleteOpen} onOpenChange={open => !open && !bulkDeleteMut.isPending && setBulkDeleteOpen(false)} title={`Delete ${selectedMailboxes.size} selected mailbox${selectedMailboxes.size === 1 ? '' : 'es'}?`} description={[...selectedMailboxes].map(name => `${name}@${domain}`).join(', ')} confirmLabel="Delete mailboxes" variant="danger" loading={bulkDeleteMut.isPending} error={bulkDeleteMut.error} onConfirm={() => bulkDeleteMut.mutate()} />
@@ -337,6 +377,8 @@ function ForwardersTab({ username, domain }) {
     },
     onError: (e) => toast.error('Could not create forwarder', e.message),
   })
+  const resetCreate = createMut.reset
+  useEffect(() => { if (createOpen) resetCreate() }, [createOpen, resetCreate])
 
   const deleteMut = useMutation({
     mutationFn: (fwd) => del(base, { params: { local_part: fwd.local_part, destination: fwd.destination } }),
@@ -377,8 +419,11 @@ function ForwardersTab({ username, domain }) {
 
   return (
     <div>
-      <div className="mb-4 flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">Forward mail from an address on <span className="font-medium text-foreground">{domain}</span> to another mailbox.</p>
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1 space-y-1 text-sm text-muted-foreground">
+          <p>Forward mail from an address on <span className="font-medium text-foreground">{domain}</span> to another mailbox.</p>
+          <p>When the address is also a mailbox, mail is delivered to both: the mailbox keeps its copy and the target receives one too.</p>
+        </div>
         <Button size="sm" onClick={() => setCreateOpen(true)}>
           <Plus className="h-4 w-4" /> Add forwarder
         </Button>
@@ -424,7 +469,7 @@ function ForwardersTab({ username, domain }) {
                   <span className="whitespace-nowrap text-sm text-muted-foreground">@{domain}</span>
                 </div>
               </FormField>
-              <FormField label="Destination" required hint="Where the mail should be delivered.">
+              <FormField label="Destination" required hint="Where the mail should be delivered. If the address is also a mailbox, it keeps a copy as well.">
                 <Input
                   type="email"
                   value={form.destination}
@@ -433,6 +478,7 @@ function ForwardersTab({ username, domain }) {
                   required
                 />
               </FormField>
+              <InlineError error={createMut.error} />
             </DialogBody>
             <DialogFooter>
               <Button type="button" variant="secondary" onClick={() => setCreateOpen(false)}>Cancel</Button>
@@ -444,14 +490,160 @@ function ForwardersTab({ username, domain }) {
 
       <ConfirmDialog
         open={!!toDelete}
-        onOpenChange={(v) => !v && setToDelete(null)}
+        onOpenChange={(v) => { if (!v) { setToDelete(null); deleteMut.reset() } }}
         title="Delete forwarder?"
         description={toDelete ? `Mail to ${toDelete.local_part}@${domain} will no longer be forwarded to ${toDelete.destination}.` : ''}
         confirmLabel="Delete forwarder"
         loading={deleteMut.isPending}
+        error={deleteMut.error}
         onConfirm={() => deleteMut.mutate(toDelete)}
       />
     </div>
+  )
+}
+
+// --- Autoresponders ------------------------------------------------------
+
+const AUTORESPONDER_SUBJECT_MAX = 255
+const AUTORESPONDER_BODY_MAX = 10000
+const EMPTY_AUTORESPONDER = { subject: '', body: '', start_date: '', end_date: '' }
+// The API sends dates as YYYY-MM-DD; keep only that part of anything longer.
+const isoDate = value => /^\d{4}-\d{2}-\d{2}/.test(String(value || '')) ? String(value).slice(0, 10) : ''
+
+function autoresponderSchedule(current) {
+  const start = isoDate(current.start_date), end = isoDate(current.end_date)
+  if (start && end) return `From ${start} until ${end}.`
+  if (start) return `From ${start}, with no end date.`
+  if (end) return `Until ${end}.`
+  return 'Always on, with no start or end date.'
+}
+
+// Replies are sent only between the dates, so a stored autoresponder can be
+// waiting for its start date or already past its end date.
+function autoresponderState(current) {
+  const today = new Date().toISOString().slice(0, 10)
+  const start = isoDate(current.start_date), end = isoDate(current.end_date)
+  if (end && end < today) return ['warning', 'Ended']
+  if (start && start > today) return ['info', 'Scheduled']
+  return ['success', 'On']
+}
+
+function AutorespondersTab({ username, domain }) {
+  const qc = useQueryClient()
+  const mailboxesQ = useQuery({
+    queryKey: ['mailboxes', domain],
+    queryFn: () => get(`/api/v1/mail/domains/${domain}/mailboxes`),
+    enabled: !!domain,
+  })
+  const mailboxes = mailboxesQ.data?.mailboxes || []
+  const [mailbox, setMailbox] = useState('')
+  const [form, setForm] = useState(EMPTY_AUTORESPONDER)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  useEffect(() => {
+    if (!mailboxes.some(row => row.local_part === mailbox)) setMailbox(mailboxes[0]?.local_part || '')
+  }, [mailboxes, mailbox])
+
+  const base = `/api/v1/accounts/${username}/domains/${domain}/email/autoresponders`
+  const key = ['autoresponder', username, domain, mailbox]
+  const currentQ = useQuery({
+    queryKey: key,
+    queryFn: () => get(`${base}/${encodeURIComponent(mailbox)}`),
+    enabled: !!username && !!domain && !!mailbox,
+  })
+  const current = currentQ.data?.autoresponder || null
+  useEffect(() => {
+    setForm(current ? {
+      subject: current.subject || '', body: current.body || '',
+      start_date: isoDate(current.start_date), end_date: isoDate(current.end_date),
+    } : EMPTY_AUTORESPONDER)
+  }, [current, mailbox])
+
+  const saveMut = useMutation({
+    mutationFn: () => post(base, {
+      local_part: mailbox, subject: form.subject.trim(), body: form.body,
+      start_date: form.start_date || null, end_date: form.end_date || null,
+    }),
+    onSuccess: () => { toast.success('Autoresponder saved', `${mailbox}@${domain} now replies automatically.`); qc.invalidateQueries({ queryKey: key }) },
+    onError: e => toast.error('Could not save autoresponder', e.message),
+  })
+  const deleteMut = useMutation({
+    mutationFn: () => del(`${base}/${encodeURIComponent(mailbox)}`),
+    onSuccess: () => { toast.success('Autoresponder removed', `${mailbox}@${domain} no longer replies automatically.`); setDeleteOpen(false); qc.invalidateQueries({ queryKey: key }) },
+    onError: e => toast.error('Could not remove autoresponder', e.message),
+  })
+  const resetSave = saveMut.reset, resetDelete = deleteMut.reset
+  useEffect(() => { resetSave(); resetDelete() }, [mailbox, resetSave, resetDelete])
+
+  const dateError = form.start_date && form.end_date && form.end_date < form.start_date ? 'The end date must be on or after the start date.' : undefined
+  const subjectLength = form.subject.trim().length
+  const canSave = !!mailbox && subjectLength >= 1 && subjectLength <= AUTORESPONDER_SUBJECT_MAX && form.body.length >= 1 && form.body.length <= AUTORESPONDER_BODY_MAX && !dateError
+  const setField = name => event => setForm(value => ({ ...value, [name]: event.target.value }))
+
+  if (mailboxesQ.isLoading) return <CenteredSpinner />
+  if (mailboxesQ.error) return <ErrorState error={mailboxesQ.error} onRetry={mailboxesQ.refetch} />
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2"><Reply className="h-4 w-4" /> Autoresponder</CardTitle>
+        <CardDescription>Reply automatically to mail that arrives at a mailbox, for example while you are away. Mail is still delivered to the mailbox.</CardDescription>
+      </CardHeader>
+      {mailboxes.length === 0 ? (
+        <CardContent><p className="text-sm text-muted-foreground">Create a mailbox first. Autoresponders are set for each mailbox.</p></CardContent>
+      ) : (
+        <form onSubmit={event => { event.preventDefault(); if (canSave && !saveMut.isPending) saveMut.mutate() }}>
+          <CardContent className="space-y-4">
+            <FormField label="Mailbox" htmlFor="autoresponder-mailbox">
+              <Select id="autoresponder-mailbox" value={mailbox} onChange={event => setMailbox(event.target.value)}>
+                {mailboxes.map(row => <option key={row.local_part} value={row.local_part}>{row.local_part}@{domain}</option>)}
+              </Select>
+            </FormField>
+            {currentQ.isLoading ? <CenteredSpinner /> : currentQ.error ? (
+              <ErrorState error={currentQ.error} onRetry={currentQ.refetch} />
+            ) : current ? (
+              <div className="flex flex-wrap items-center gap-2 text-sm" role="status">
+                <Badge variant={autoresponderState(current)[0]}>{autoresponderState(current)[1]}</Badge>
+                <span className="min-w-0 break-words text-muted-foreground">Replies with “{current.subject}”. {autoresponderSchedule(current)}</span>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2 text-sm" role="status">
+                <Badge variant="neutral">Off</Badge>
+                <span className="text-muted-foreground">No autoresponder is set for this mailbox.</span>
+              </div>
+            )}
+            <FormField label="Subject" htmlFor="autoresponder-subject" required hint={`Up to ${AUTORESPONDER_SUBJECT_MAX} characters.`}>
+              <Input id="autoresponder-subject" value={form.subject} maxLength={AUTORESPONDER_SUBJECT_MAX} onChange={setField('subject')} placeholder="Out of office" required />
+            </FormField>
+            <FormField label="Message" htmlFor="autoresponder-body" required hint={`${form.body.length} of ${AUTORESPONDER_BODY_MAX} characters.`}>
+              <Textarea id="autoresponder-body" rows={6} className="font-sans text-sm" value={form.body} maxLength={AUTORESPONDER_BODY_MAX} onChange={setField('body')} placeholder="Thank you for your message. I am away until Monday and will reply when I am back." required />
+            </FormField>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField label="Start date" htmlFor="autoresponder-start" optional hint="Leave empty to start now.">
+                <Input id="autoresponder-start" type="date" value={form.start_date} onChange={setField('start_date')} />
+              </FormField>
+              <FormField label="End date" htmlFor="autoresponder-end" optional error={dateError} hint="Leave empty to keep replying until you remove it.">
+                <Input id="autoresponder-end" type="date" value={form.end_date} min={form.start_date || undefined} onChange={setField('end_date')} />
+              </FormField>
+            </div>
+            <InlineError error={saveMut.error} />
+          </CardContent>
+          <CardFooter className="flex flex-wrap justify-end gap-3">
+            {current && <Button type="button" variant="danger-ghost" onClick={() => setDeleteOpen(true)}><Trash2 className="h-4 w-4" /> Remove autoresponder</Button>}
+            <Button type="submit" loading={saveMut.isPending} disabled={!canSave}>{current ? 'Save changes' : 'Turn on autoresponder'}</Button>
+          </CardFooter>
+        </form>
+      )}
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={open => { if (!open) { setDeleteOpen(false); deleteMut.reset() } }}
+        title="Remove autoresponder?"
+        description={`${mailbox}@${domain} will stop replying automatically. Its mail is not affected.`}
+        confirmLabel="Remove autoresponder"
+        loading={deleteMut.isPending}
+        error={deleteMut.error}
+        onConfirm={() => deleteMut.mutate()}
+      />
+    </Card>
   )
 }
 
@@ -1163,6 +1355,7 @@ export default function Email({ mode = 'accounts' }) {
     mailboxes: <MailboxesTab domain={domain} createOpen={createOpen} setCreateOpen={setCreateOpen} />,
     webmail: <WebmailTab username={username} domain={domain} />,
     forwarders: <ForwardersTab username={username} domain={domain} />,
+    autoresponders: <AutorespondersTab username={username} domain={domain} />,
     catchall: <CatchallTab username={username} domain={domain} />,
     spam: <SpamTab username={username} domain={domain} />,
     'spam-entries': <MailboxSpamFiltersTab username={username} domain={domain} />,

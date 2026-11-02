@@ -205,6 +205,117 @@ def test_invalid_redirect_targets(bad):
         validate_redirect_target(bad)
 
 
+@pytest.mark.parametrize("bad", [
+    "https://example.com/a\x00b", "https://exa\x00mple.com/", "https://example.com/a\x0bb",
+    "https://example.com/a\x0cb", "https://example.com/a\x1bb", "https://example.com/a\x7fb",
+])
+def test_redirect_targets_with_control_characters_are_rejected(bad):
+    """Round 2 review: only newline, carriage return and tab were refused, so
+    a NUL, vertical tab or DEL reached the vhost rewrite rule the target is
+    rendered into (and could end or split it)."""
+    from shared.validation import validate_http_url
+
+    with pytest.raises(ValidationError, match="is not a valid redirect target URL") as raised:
+        validate_redirect_target(bad)
+    assert str(raised.value).isprintable()
+    with pytest.raises(ValidationError, match="is not a valid support URL"):
+        validate_http_url(bad, "support URL")
+
+
+@pytest.mark.parametrize("bad", ["/../../x", "/..", "/a/../b", "/a/./b", "/.", "/a/.."])
+def test_redirect_paths_with_dot_segments_are_rejected(bad):
+    """UW L6: '/../../x' was accepted. Clients remove dot segments before
+    sending a request, so such a rule could never match anyway."""
+    with pytest.raises(ValidationError, match=r"'\.' and '\.\.' segments are not allowed"):
+        validate_redirect_path(bad)
+
+
+@pytest.mark.parametrize("good", ["/..foo", "/.well-known/x", "/a..b/c", "/file.", "/v1.2/x"])
+def test_redirect_paths_with_dots_inside_segments_are_accepted(good):
+    assert validate_redirect_path(good) == good
+
+
+def test_a_stored_dot_segment_redirect_can_still_be_named_for_deletion():
+    assert validate_redirect_path("/../../x", existing=True) == "/../../x"
+    with pytest.raises(ValidationError):
+        validate_redirect_path("/a b", existing=True)
+
+
+def test_redirect_path_error_echoes_a_short_printable_input():
+    with pytest.raises(ValidationError) as raised:
+        validate_redirect_path("no-slash" + "x" * 5000 + "\n")
+    message = str(raised.value)
+    assert len(message) < 200 and "\n" not in message
+    assert message.startswith("'no-slash") and "is not a valid redirect path" in message
+    with pytest.raises(ValidationError, match="at most 500 characters"):
+        validate_redirect_path("/" + "a" * 600)
+
+
+def test_cache_exclusion_paths_have_their_own_wording():
+    from shared.validation import validate_lscache_exclude_paths
+
+    with pytest.raises(ValidationError, match="is not a valid cache exclusion path") as raised:
+        validate_lscache_exclude_paths(["/cart", "checkout"])
+    assert "redirect" not in str(raised.value)
+    with pytest.raises(ValidationError, match="cache exclusion path: '.' and '..' segments"):
+        validate_lscache_exclude_paths(["/../cart"])
+    assert validate_lscache_exclude_paths(["/cart", "/cart", "/checkout"]) == ["/cart", "/checkout"]
+
+
+@pytest.mark.parametrize("target", [
+    "https://example.com/%{HTTP_COOKIE}", "https://example.com/$0", "https://example.com/${map:x}",
+    "https://example.com/%1", "https://example.com/a%20b", "https://example.com/a\\b",
+    "https://example.com/?next=%2Fhome", "https://example.com/100%25",
+])
+def test_redirect_targets_with_rewrite_expansions_are_rejected_when_saved(target):
+    """Round 1 web review: forwarding targets were only skipped at render."""
+    with pytest.raises(ValidationError) as raised:
+        validate_redirect_target(target)
+    message = str(raised.value)
+    assert "%20" in message and "no way to escape them" in message
+    assert "unencoded" not in message  # %20 written unencoded is a space, which is refused too
+
+
+def test_redirect_targets_with_letter_escapes_are_accepted():
+    url = "https://example.com/caf%C3%A9?x=1&y=2#top"
+    assert validate_redirect_target(url) == url
+
+
+@pytest.mark.parametrize("target", [
+    "https://example.com/%{HTTP_COOKIE}", "https://example.com/$0", "https://example.com/a%20b",
+    "https://example.com/a\\b", "https://example.com/caf%C3%A9", "https://example.com/plain?x=1",
+    "https://example.com/50%off", "https://example.com/%", "https://example.com/%7Bx",
+])
+def test_save_time_and_render_time_rewrite_checks_agree(target):
+    """daemon/ols.literal_rewrite_target re-checks stored rows at render
+    time; the save-time check must refuse exactly what it would drop."""
+    from daemon import ols
+
+    def accepted(check) -> bool:
+        try:
+            check(target)
+        except ValidationError:
+            return False
+        return True
+
+    assert accepted(validate_redirect_target) == accepted(ols.literal_rewrite_target)
+
+
+def test_support_link_urls_may_carry_percent_escapes():
+    from shared.validation import validate_http_url
+
+    url = "https://help.example.com/search?q=hosting%20help"
+    assert validate_http_url(url, "support URL") == url
+    with pytest.raises(ValidationError, match="Support URL must be an absolute HTTP"):
+        validate_http_url("ftp://example.com/", "support URL")
+
+
+def test_domain_error_echoes_a_short_input():
+    with pytest.raises(ValidationError) as raised:
+        validate_domain("bad_" + "x" * 4000 + ".com")
+    assert len(str(raised.value)) < 200
+
+
 def test_redirect_status_code_allows_only_301_302():
     assert validate_redirect_status_code(301) == 301
     assert validate_redirect_status_code(302) == 302

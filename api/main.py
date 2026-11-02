@@ -47,6 +47,7 @@ from shared.request_context import (
 from api import logsetup, ratelimit
 from api.error_context import error_response
 from api.security import Identity, get_identity, require_admin
+from api.routers import force_https
 from api.routers import panel_config, account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, diagnostics, disktree, dns, dnscluster, dnssetup, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipmanager, ipwhitelist, isolation, license, logs_router, lscache_router, mail, mailqueue, maintenance, malware, metrics, monitoring, nameservers, nodeapps, notes, notifications, olsadmin, onboarding, parked, php_functions, php_ini, plans, pma, portable_archive, processes, pythonapps, redirects, redis_router, resellers, resources, retention, server_setup, services, session_security, site_health, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl_router, stack_manager, staging, tasks, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
 
 
@@ -466,6 +467,8 @@ app.include_router(retention.api_router)
 app.include_router(session_security.api_router)
 app.include_router(session_security.admin_router)
 app.include_router(php_ini.ext_api_router)
+app.include_router(force_https.api_router)
+app.include_router(pma.admin_router)
 app.include_router(bandwidth.admin_api_router)
 app.include_router(notifications.admin_api_router)
 app.include_router(notifications.api_router)

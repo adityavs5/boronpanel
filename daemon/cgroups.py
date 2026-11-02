@@ -19,7 +19,9 @@ import os
 from pathlib import Path
 from pwd import getpwnam as _getpwnam
 import shutil
+import signal
 import stat
+import time
 
 from sqlalchemy import select
 
@@ -42,6 +44,9 @@ DEFAULT_MEM_MB = 512
 DEFAULT_IO_MB = 50
 DEFAULT_PIDS_MAX = 50
 IO_DEVICE_DIR = Path("/run/boron/cgroup-devices")
+SYS_DEV_BLOCK = Path("/sys/dev/block")
+PROC_ROOT = Path("/proc")
+LINGER_DIR = Path("/var/lib/systemd/linger")
 
 
 class CgroupError(Exception):
@@ -89,15 +94,40 @@ def _materialize_block_device(major: int, minor: int) -> Path:
     return path
 
 
+def _whole_disk(major: int, minor: int) -> tuple[int, int]:
+    """Map a partition to the disk that holds it (8:1 -> 8:0).
+
+    The kernel refuses io.max for a partition, so an I/O limit is only ever
+    enforced on the whole disk. systemd versions with block_get_whole_disk()
+    map a partition node to its disk themselves; resolving it here too keeps
+    the node Boron hands to systemd identical to the device the kernel
+    throttles, whatever the systemd version. Whole disks, device-mapper and
+    other devices are returned unchanged.
+    """
+    node = SYS_DEV_BLOCK / f"{major}:{minor}"
+    if not (node / "partition").exists():
+        return major, minor
+    try:
+        disk_major, disk_minor = (int(part) for part in (node.resolve().parent / "dev").read_text().split(":", 1))
+    except (OSError, ValueError):
+        logger.warning("could not find the disk that holds partition %s:%s; limiting the partition", major, minor)
+        return major, minor
+    return disk_major, disk_minor
+
+
 def resolve_io_device() -> str:
-    """Resolve the configured or actual home-filesystem device safely."""
+    """Resolve the configured or actual home-filesystem disk safely."""
     configured = str(settings.cgroup_io_device or "").strip()
     if configured and configured.lower() != "auto":
         path = Path(configured)
         if _is_block_device(path):
-            return str(path)
+            rdev = path.stat().st_rdev
+            disk = _whole_disk(os.major(rdev), os.minor(rdev))
+            if disk == (os.major(rdev), os.minor(rdev)):
+                return str(path)
+            return str(_materialize_block_device(*disk))
         logger.warning("configured cgroup I/O device %s is unavailable; detecting %s backing device", configured, settings.home_base)
-    major, minor = _backing_major_minor()
+    major, minor = _whole_disk(*_backing_major_minor())
     return str(_materialize_block_device(major, minor))
 
 
@@ -349,6 +379,110 @@ def audit_php_coverage() -> dict:
 def reconcile_processes() -> int:
     """Compatibility wrapper returning uncovered PHP workers, never moving them."""
     return audit_php_coverage()["uncovered"]
+
+
+def _managed_service(unit: str, username: str) -> bool:
+    """Panel-managed services keep their own start/stop lifecycle.
+
+    Node.js, Python and Redis units restart on failure, so killing them would
+    only churn them (and Redis would lose unsaved writes); the file manager
+    is started and stopped by the panel. Suspension leaves them as they are:
+    the suspended vhost no longer proxies any request to them.
+    """
+    if unit == f"boron-filebrowser@{username}.service":
+        return True
+    return unit.endswith(".service") and any(
+        unit.startswith(f"boron-{kind}-{username}-") for kind in ("node", "python", "redis")
+    )
+
+
+def _account_pids(uid: int) -> list[int]:
+    """Live (not zombie) processes running with ``uid``."""
+    pids = []
+    try:
+        entries = list(PROC_ROOT.iterdir())
+    except OSError:
+        return pids
+    for entry in entries:
+        if not entry.name.isdigit() or _pid_uid(int(entry.name)) != uid:
+            continue
+        try:
+            state = (entry / "stat").read_text().rsplit(")", 1)[1].split()[0]
+        except (OSError, IndexError):
+            continue
+        if state != "Z":
+            pids.append(int(entry.name))
+    return pids
+
+
+def _kill_pid(pid: int) -> bool:
+    try:
+        os.kill(pid, signal.SIGKILL)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def end_account_processes(username: str, uid: int | None = None) -> int:
+    """End what a suspended account left running; returns processes signalled.
+
+    Blocking logins stops new SSH, SFTP and cron sessions, not what already
+    runs: nohup, tmux and screen processes, a systemd --user manager, PHP
+    workers and anything they started, panel command jobs. cgroup.kill ends
+    each of those cgroups below the account slice at once, processes forked
+    meanwhile included. Processes of the account outside its slice (a cron
+    job started before the suspension runs in cron.service) are then killed
+    by uid. Panel-managed services are left alone (_managed_service). The
+    suspended page is a static file OpenLiteSpeed serves itself, and PHP
+    workers start again on demand after unsuspend.
+    """
+    resolved = _resolve_uid(username, uid)
+    if resolved == os.geteuid():
+        raise CgroupError(f"refusing to end the processes of '{username}': it runs with the daemon's uid")
+    slice_name = user_slice_name(resolved)
+    try:
+        children = [child for child in (USER_SLICE_ROOT / slice_name).iterdir() if child.is_dir()]
+    except OSError:
+        children = []  # no slice cgroup: nothing of the account runs below it
+    protected = []
+    for child in children:
+        if _managed_service(child.name, username):
+            protected.append(f"/user.slice/{slice_name}/{child.name}")
+            continue
+        try:
+            (child / "cgroup.kill").write_text("1")
+        except OSError:
+            logger.warning("could not kill cgroup %s of suspended account %s; killing its processes by uid",
+                           child.name, username)
+    signalled = 0
+    for attempt in range(3):
+        found = 0
+        for pid in _account_pids(resolved):
+            path = _pid_cgroup(pid)
+            if path is not None and any(path == item or path.startswith(item + "/") for item in protected):
+                continue
+            found += _kill_pid(pid)
+        signalled += found
+        if not found:
+            break
+        time.sleep(0.1)  # let a killed parent's children appear before the next pass
+    return signalled
+
+
+def resume_user_manager(username: str, uid: int | None = None) -> None:
+    """Start a lingering account's systemd --user manager after unsuspend.
+
+    Suspension ends it with the account's other processes. With lingering
+    enabled, systemd would start it again only at the next boot or login, so
+    the customer's user services would stay down after unsuspend.
+    """
+    if not (LINGER_DIR / validate_username(username)).exists():
+        return
+    resolved = _resolve_uid(username, uid)
+    result = run(["systemctl", "start", f"user@{resolved}.service"], timeout=30)
+    if not result.ok:
+        logger.warning("could not start the user manager of unsuspended account %s: %s",
+                       username, result.stderr.strip())
 
 
 def quarantine_failed_policy(account):

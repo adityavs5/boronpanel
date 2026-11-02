@@ -31,6 +31,15 @@ class ResellerError(ValidationError):
     pass
 
 
+class ResellerNotFoundError(ResellerError, NotFoundError):
+    """An unknown reseller, reseller plan or account (HTTP 404)."""
+
+
+class ResellerConflictError(ResellerError, ConflictError):
+    """The request conflicts with the reseller's current state, such as a used
+    up account or disk allocation (HTTP 409)."""
+
+
 def _bounded(value, name: str, default: int, minimum: int, maximum: int) -> int:
     labels = {'max_accounts': 'Account count', 'max_total_disk_mb': 'Total disk allocation',
               'account_quota_soft_mb': 'Account soft disk quota', 'account_quota_hard_mb': 'Account hard disk quota',
@@ -66,6 +75,8 @@ def _plan_dict(row: ResellerPlan, policy: ResourcePolicy | None = None) -> dict:
                   "io_write_iops": resource_manager.DEFAULT_WRITE_IOPS,
                   "nproc": row.account_pids_max, "entry_processes": 20,
               })
+    # New accounts start on account_cpu_pct; the policy is what they enforce.
+    result["account_cpu_pct"] = _cpu_pct_for(values["cpu_cores"], row.account_cpu_pct)
     result.update({
         "account_cpu_cores": values["cpu_cores"],
         "account_cpu_weight": values["cpu_weight"],
@@ -78,6 +89,14 @@ def _plan_dict(row: ResellerPlan, policy: ResourcePolicy | None = None) -> dict:
     return result
 
 
+def _cpu_pct_for(cpu_cores, fallback: int) -> int:
+    """account_cpu_pct mirroring a policy's CPU (capped to this server)."""
+    if cpu_cores is None:
+        return fallback  # Unlimited has no percentage form
+    value = round(min(float(cpu_cores), resource_manager.available_cpu_cores()) * 100)
+    return value if value >= 1 else fallback
+
+
 def _resource_values(params: dict, fields: dict, current: ResourcePolicy | None = None) -> dict:
     existing = ({field: getattr(current, field) for field in resource_manager.POLICY_FIELDS}
                 if current is not None else {})
@@ -88,10 +107,22 @@ def _resource_values(params: dict, fields: dict, current: ResourcePolicy | None 
         write_mb = None if current.io_write_bps is None else current.io_write_bps / 1048576
     else:
         write_mb = read_mb
+    # account_cpu_pct is the legacy form of account_cpu_cores. Either one
+    # sets the CPU; an edit naming neither keeps the enforced value instead
+    # of re-deriving it from a column that older releases let drift.
+    if "account_cpu_cores" in params:
+        cpu_cores = params["account_cpu_cores"]
+    elif "account_cpu_pct" in params or current is None:
+        cpu_cores = fields["account_cpu_pct"] / 100
+    else:
+        cpu_cores = current.cpu_cores
+    memory_high = params.get("account_memory_high_mb", existing.get("memory_high_mb", max(64, int(fields["account_mem_mb"] * .9))))
+    if "account_memory_high_mb" not in params and memory_high is not None and memory_high > fields["account_mem_mb"]:
+        memory_high = max(64, int(fields["account_mem_mb"] * .9))  # a lowered memory limit takes the soft limit down too
     raw = {
-        "cpu_cores": params.get("account_cpu_cores", fields["account_cpu_pct"] / 100),
+        "cpu_cores": cpu_cores,
         "cpu_weight": params.get("account_cpu_weight", existing.get("cpu_weight", 100)),
-        "memory_high_mb": params.get("account_memory_high_mb", existing.get("memory_high_mb", max(64, int(fields["account_mem_mb"] * .9)))),
+        "memory_high_mb": memory_high,
         "memory_max_mb": fields["account_mem_mb"],
         "io_read_bps": read_mb * 1048576,
         "io_write_bps": None if write_mb is None else int(write_mb * 1048576),
@@ -132,13 +163,15 @@ def _validate_plan(params: dict, current: ResellerPlan | None = None) -> dict:
 
 def create_plan(params: dict) -> dict:
     fields = _validate_plan(params)
+    values = _resource_values(params, fields)
+    fields["account_cpu_pct"] = _cpu_pct_for(values["cpu_cores"], fields["account_cpu_pct"])
     with _state_lock, write_session() as session:
         if session.scalar(select(ResellerPlan.id).where(ResellerPlan.name == fields["name"])) is not None:
-            raise ResellerError(f"reseller plan '{fields['name']}' already exists")
+            raise ResellerConflictError(f"reseller plan '{fields['name']}' already exists")
         row = ResellerPlan(**fields)
         session.add(row)
         session.flush()
-        policy = ResourcePolicy(scope_type="reseller_plan", scope_id=row.id, **_resource_values(params, fields))
+        policy = ResourcePolicy(scope_type="reseller_plan", scope_id=row.id, **values)
         session.add(policy)
         session.flush()
         return _plan_dict(row, policy)
@@ -156,11 +189,11 @@ def _profile_usage(session, profile_id: int) -> tuple[int, int]:
 def _require_capacity(session, profile: ResellerProfile, plan: ResellerPlan) -> None:
     account_count, disk_mb = _profile_usage(session, profile.id)
     if account_count > plan.max_accounts:
-        raise ResellerError(
+        raise ResellerConflictError(
             f"plan allows {plan.max_accounts} accounts, but reseller currently has {account_count}"
         )
     if disk_mb > plan.max_total_disk_mb:
-        raise ResellerError(
+        raise ResellerConflictError(
             f"plan allows {plan.max_total_disk_mb} MB, but reseller currently allocates {disk_mb} MB"
         )
 
@@ -170,11 +203,11 @@ def update_plan(params: dict) -> dict:
     with _state_lock, write_session() as session:
         row = session.get(ResellerPlan, plan_id)
         if row is None:
-            raise ResellerError(f"reseller plan {plan_id} not found")
+            raise ResellerNotFoundError(f"reseller plan {plan_id} not found")
         fields = _validate_plan(params, row)
         duplicate = session.scalar(select(ResellerPlan.id).where(ResellerPlan.name == fields["name"], ResellerPlan.id != plan_id))
         if duplicate is not None:
-            raise ResellerError(f"reseller plan '{fields['name']}' already exists")
+            raise ResellerConflictError(f"reseller plan '{fields['name']}' already exists")
         candidate = ResellerPlan(id=row.id, **fields)
         profiles = session.scalars(select(ResellerProfile).where(ResellerProfile.plan_id == plan_id)).all()
         for profile in profiles:
@@ -183,6 +216,7 @@ def update_plan(params: dict) -> dict:
             ResourcePolicy.scope_type == "reseller_plan", ResourcePolicy.scope_id == plan_id,
         ))
         values = _resource_values(params, fields, policy)
+        fields["account_cpu_pct"] = _cpu_pct_for(values["cpu_cores"], fields["account_cpu_pct"])
         for key, value in fields.items():
             setattr(row, key, value)
         if policy is None:
@@ -217,7 +251,7 @@ def delete_plan(params: dict) -> dict:
     with _state_lock, write_session() as session:
         row = session.get(ResellerPlan, plan_id)
         if row is None:
-            raise ResellerError(f"reseller plan {plan_id} not found")
+            raise ResellerNotFoundError(f"reseller plan {plan_id} not found")
         assigned = session.scalar(select(func.count()).select_from(ResellerProfile).where(ResellerProfile.plan_id == plan_id)) or 0
         if assigned:
             raise ConflictError(
@@ -263,7 +297,7 @@ def create_reseller(params: dict) -> dict:
     with _state_lock:
         with write_session() as session:
             if session.get(ResellerPlan, plan_id) is None:
-                raise ResellerError(f"reseller plan {plan_id} not found")
+                raise ResellerNotFoundError(f"reseller plan {plan_id} not found")
         user = handlers_auth.create_panel_user({"username": username, "password": password, "role": "reseller"})
         try:
             with write_session() as session:
@@ -293,12 +327,12 @@ def update_reseller(params: dict) -> dict:
     with _state_lock, write_session() as session:
         profile = session.get(ResellerProfile, profile_id)
         if profile is None:
-            raise ResellerError(f"reseller {profile_id} not found")
+            raise ResellerNotFoundError(f"reseller {profile_id} not found")
         if "plan_id" in params:
             plan_id = int(params["plan_id"])
             plan = session.get(ResellerPlan, plan_id)
             if plan is None:
-                raise ResellerError(f"reseller plan {plan_id} not found")
+                raise ResellerNotFoundError(f"reseller plan {plan_id} not found")
             _require_capacity(session, profile, plan)
             profile.plan_id = plan_id
             resource_account_ids = list(session.scalars(select(ResellerAccount.account_id).where(
@@ -391,7 +425,7 @@ def move_account(params: dict) -> dict:
     with _state_lock, write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None or account.status == "terminated":
-            raise ResellerError(f"account '{username}' not found")
+            raise ResellerNotFoundError(f"account '{username}' not found")
         current = session.scalar(select(ResellerAccount).where(ResellerAccount.account_id == account.id))
         if current is not None and current.reseller_id == target_id:
             target = session.get(ResellerProfile, target_id) if target_id is not None else None
@@ -402,15 +436,21 @@ def move_account(params: dict) -> dict:
         if target_id is not None:
             target = session.get(ResellerProfile, target_id)
             if target is None:
-                raise ResellerError(f"reseller {target_id} not found")
+                raise ResellerNotFoundError(f"reseller {target_id} not found")
             if target.status != "active":
-                raise ResellerError("accounts can only be assigned to an active reseller")
+                raise ResellerConflictError("accounts can only be assigned to an active reseller")
             plan = session.get(ResellerPlan, target.plan_id)
             count, disk_mb = _profile_usage(session, target.id)
             if count + 1 > plan.max_accounts:
-                raise ResellerError("target reseller account limit reached")
+                raise ResellerConflictError(
+                    f"Target reseller account limit reached: its plan allows {plan.max_accounts} "
+                    f"account(s) and it already has {count}."
+                )
             if disk_mb + account.quota_hard_mb > plan.max_total_disk_mb:
-                raise ResellerError("target reseller disk allocation limit reached")
+                raise ResellerConflictError(
+                    f"Target reseller disk allocation limit reached: its plan allows {plan.max_total_disk_mb} MB, "
+                    f"{disk_mb} MB is allocated and this account needs {account.quota_hard_mb} MB."
+                )
 
         if current is not None:
             session.delete(current)
@@ -476,16 +516,25 @@ def create_account(params: dict) -> dict:
             accounts = session.scalars(select(Account).join(ResellerAccount, ResellerAccount.account_id == Account.id).where(
                 ResellerAccount.reseller_id == profile.id, Account.status != "terminated"
             )).all()
+            # A full allocation is a 409 with the numbers: the request is
+            # fine and succeeds once an account is terminated or the plan grows.
             if len(accounts) >= plan.max_accounts:
-                raise ResellerError("reseller account limit reached")
-            if sum(account.quota_hard_mb for account in accounts) + plan.account_quota_hard_mb > plan.max_total_disk_mb:
-                raise ResellerError("reseller disk allocation limit reached")
+                raise ResellerConflictError(
+                    f"Reseller account limit reached: your plan allows {plan.max_accounts} account(s) and all "
+                    "are in use. Terminate an account or ask the server administrator for a larger plan."
+                )
+            allocated = sum(account.quota_hard_mb for account in accounts)
+            if allocated + plan.account_quota_hard_mb > plan.max_total_disk_mb:
+                raise ResellerConflictError(
+                    f"Reseller disk allocation limit reached: your plan allows {plan.max_total_disk_mb} MB in total, "
+                    f"{allocated} MB is allocated and a new account needs {plan.account_quota_hard_mb} MB."
+                )
             login = session.scalar(select(PanelUser).where(PanelUser.username == username))
             # A terminated account's login is released by create_account.
             if login is not None and not (login.role == "customer" and login.account_id is not None and session.scalar(
                 select(Account.status).where(Account.id == login.account_id)
             ) == "terminated"):
-                raise ResellerError(f"panel login '{username}' already exists")
+                raise ResellerConflictError(f"panel login '{username}' already exists")
             policy = session.scalar(select(ResourcePolicy).where(
                 ResourcePolicy.scope_type == "reseller_plan", ResourcePolicy.scope_id == plan.id,
             ))

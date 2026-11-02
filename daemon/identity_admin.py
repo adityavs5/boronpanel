@@ -283,6 +283,14 @@ def rename_account(params: dict) -> dict:
             phpext.rename_scan_dirs(old, new)
         undo.append(("rename: restore PHP extension scan dirs", lambda: phpext.rename_scan_dirs(new, old)))
 
+        # Same for the root-owned vhost log directory (/var/log/boron-vhosts),
+        # or the account would start an empty one and orphan its history.
+        # Its undo re-grants the account read access by Linux name, so it
+        # runs last, once the login is called `old` again.
+        with audit.step("rename: move web server log directory"):
+            sysops.rename_vhost_log_dir(old, new)
+        undo.insert(0, ("rename: restore web server log directory", lambda: sysops.rename_vhost_log_dir(new, old)))
+
         # The native slice is keyed by UID, which rename preserves. Removing
         # it would stop the account and erase its aggregate limits.
         with audit.step("rename: apply account resource limits"):

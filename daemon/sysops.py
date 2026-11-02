@@ -129,7 +129,80 @@ VHOST_LOG_ROOT = "/var/log/boron-vhosts"
 # <vhost>-access.log / <vhost>-error.log (+ rotations). A vhost name is a
 # domain with dots replaced by "_", so it always contains one ("php-error.log",
 # the account's own PHP log, never matches).
-_VHOST_LOG_NAME_RE = re.compile(r"\A[a-z0-9-]+(?:_[a-z0-9-]+)+-(?:access|error)\.log(?:\.[A-Za-z0-9_.-]{1,64})?\Z")
+_VHOST_LOG_NAME_RE = re.compile(
+    r"\A(?P<log>[a-z0-9-]+(?:_[a-z0-9-]+)+-(?:access|error)\.log)(?:\.(?P<archive>[A-Za-z0-9_.-]{1,64}))?\Z"
+)
+# OLS rolls each vhost log at 50 MB and deletes archives older than 90 days
+# itself (templates/vhost.conf.j2), but it has no limit on how many archives
+# a busy site collects inside that window, and they all live on /var. Only
+# the newest archives within both bounds are kept per log (prune_vhost_logs,
+# run by every usage refresh; the ~/logs migration moves no more than that).
+VHOST_LOG_KEEP_ARCHIVES = 10
+VHOST_LOG_KEEP_ARCHIVE_BYTES = 512 * 1024 * 1024
+# Copying old logs across file systems stops while /var would keep less
+# free space than this (the larger of the two).
+_VHOST_LOG_COPY_RESERVE_BYTES = 1024 ** 3
+_VHOST_LOG_COPY_RESERVE_FRACTION = 0.05
+
+
+def _archives_to_keep(entries: list[tuple[str, float, int]]) -> set[str]:
+    """Names of the rotated archives that stay, from (name, mtime, size) of
+    every file of one account's vhost logs: per log, the newest ones within
+    VHOST_LOG_KEEP_ARCHIVES and VHOST_LOG_KEEP_ARCHIVE_BYTES."""
+    by_log: dict[str, list[tuple[float, str, int]]] = {}
+    for name, mtime, size in entries:
+        match = _VHOST_LOG_NAME_RE.match(name)
+        if match is not None and match["archive"] is not None:
+            by_log.setdefault(match["log"], []).append((mtime, name, size))
+    keep = set()
+    for archives in by_log.values():
+        total = 0
+        for position, (_mtime, name, size) in enumerate(sorted(archives, reverse=True)):
+            total += size
+            if position >= VHOST_LOG_KEEP_ARCHIVES or total > VHOST_LOG_KEEP_ARCHIVE_BYTES:
+                break
+            keep.add(name)
+    return keep
+
+
+def prune_vhost_logs(username: str) -> int:
+    """Delete the account's oldest rotated vhost log archives beyond the
+    per-log bound; active logs are never touched. Returns how many went."""
+    from daemon.safeio import UnsafePathError, open_dir_beneath
+
+    _assert_safe_username(username)
+    try:
+        directory = open_dir_beneath(VHOST_LOG_ROOT, username)
+    except (OSError, UnsafePathError):
+        return 0
+    removed = 0
+    try:
+        archives = []
+        with os.scandir(directory) as entries:
+            for index, entry in enumerate(entries):
+                if index >= 8192:
+                    break
+                match = _VHOST_LOG_NAME_RE.match(entry.name)
+                if match is None or match["archive"] is None:
+                    continue
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISREG(info.st_mode):
+                    archives.append((entry.name, info.st_mtime, info.st_size))
+        keep = _archives_to_keep(archives)
+        for name, _mtime, _size in archives:
+            if name in keep:
+                continue
+            try:
+                os.unlink(name, dir_fd=directory)
+                removed += 1
+            except FileNotFoundError:
+                continue
+    finally:
+        os.close(directory)
+    return removed
 
 
 def vhost_log_dir(username: str) -> str:
@@ -197,29 +270,45 @@ def _migrate_legacy_vhost_logs(username: str, home: str) -> int:
     single link -- the account can create neither) out of ~/logs. Anything
     the account created itself stays where it is. Same-filesystem renames
     keep OLS's open descriptors writing to the moved file until the vhost
-    is re-rendered; across filesystems the file is copied."""
+    is re-rendered; across filesystems the file is copied.
+
+    The move is bounded like the logs themselves: each active log plus only
+    the archives prune_vhost_logs would keep. Older archives, and any file
+    whose copy would leave /var with less than its reserve, stay in ~/logs
+    (still the account's to read or delete) and are logged."""
     import errno
     import logging
     import shutil
 
     from daemon.safeio import UnsafePathError, open_dir_beneath
 
+    log = logging.getLogger("borond.sysops")
     try:
         nobody_uid = pwd.getpwnam("nobody").pw_uid
         legacy_fd = open_dir_beneath(home, "logs")
     except (KeyError, FileNotFoundError, UnsafePathError, OSError):
         return 0
     moved = 0
+    left = 0
     try:
         target_fd = open_dir_beneath(VHOST_LOG_ROOT, username)
         try:
             with os.scandir(legacy_fd) as entries:
                 names = [entry.name for entry in entries if _VHOST_LOG_NAME_RE.match(entry.name)]
+            candidates = []
             for name in names[:4096]:
                 try:
                     info = os.stat(name, dir_fd=legacy_fd, follow_symlinks=False)
-                    if not stat.S_ISREG(info.st_mode) or info.st_uid != nobody_uid or info.st_nlink != 1:
-                        continue
+                except OSError:
+                    continue
+                if stat.S_ISREG(info.st_mode) and info.st_uid == nobody_uid and info.st_nlink == 1:
+                    candidates.append((name, info.st_mtime, info.st_size))
+            keep = _archives_to_keep(candidates)
+            for name, _mtime, size in candidates:
+                if _VHOST_LOG_NAME_RE.match(name)["archive"] is not None and name not in keep:
+                    left += 1
+                    continue
+                try:
                     try:
                         os.stat(name, dir_fd=target_fd, follow_symlinks=False)
                         continue  # never overwrite a log OLS already writes
@@ -230,6 +319,12 @@ def _migrate_legacy_vhost_logs(username: str, home: str) -> int:
                     except OSError as exc:
                         if exc.errno != errno.EXDEV:
                             raise
+                        space = os.fstatvfs(target_fd)
+                        reserve = max(_VHOST_LOG_COPY_RESERVE_BYTES,
+                                      int(space.f_blocks * space.f_frsize * _VHOST_LOG_COPY_RESERVE_FRACTION))
+                        if space.f_bavail * space.f_frsize - size < reserve:
+                            left += 1
+                            continue
                         source = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=legacy_fd)
                         try:
                             destination = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
@@ -246,12 +341,14 @@ def _migrate_legacy_vhost_logs(username: str, home: str) -> int:
                         os.unlink(name, dir_fd=legacy_fd)
                     moved += 1
                 except OSError:
-                    logging.getLogger("borond.sysops").exception(
-                        "could not move vhost log '%s' for account '%s'", name, username)
+                    log.exception("could not move vhost log '%s' for account '%s'", name, username)
         finally:
             os.close(target_fd)
     finally:
         os.close(legacy_fd)
+    if left:
+        log.warning("left %d older or oversized vhost log file(s) in %s/logs for account '%s'; only each "
+                    "active log and its newest archives move to %s", left, home, username, VHOST_LOG_ROOT)
     return moved
 
 

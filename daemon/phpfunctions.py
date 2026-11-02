@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from shared.db import write_session
 from shared.models import Account, Domain, PhpFunctionOverride
-from shared.validation import validate_domain, validate_username
+from shared.validation import NotFoundError, validate_domain, validate_username
 
 from daemon import phpdirectives
 
@@ -26,7 +26,7 @@ from daemon import phpdirectives
 def _get_account(session, username: str) -> Account:
     account = session.scalar(select(Account).where(Account.username == username))
     if account is None:
-        raise RuntimeError(f"account '{username}' not found")
+        raise NotFoundError(f"account '{username}' not found")
     return account
 
 
@@ -77,7 +77,7 @@ def set_override(params: dict) -> dict:
         if domain is not None:
             domain_row = session.scalar(select(Domain).where(Domain.domain == domain, Domain.account_id == account.id))
             if domain_row is None:
-                raise RuntimeError(f"domain '{domain}' not found for account '{username}'")
+                raise NotFoundError(f"domain '{domain}' not found for account '{username}'")
 
         query = select(PhpFunctionOverride).where(PhpFunctionOverride.account_id == account.id)
         query = query.where(PhpFunctionOverride.domain.is_(None)) if domain is None else query.where(PhpFunctionOverride.domain == domain)
@@ -107,7 +107,7 @@ def delete_override(params: dict) -> dict:
         query = query.where(PhpFunctionOverride.domain.is_(None)) if domain is None else query.where(PhpFunctionOverride.domain == domain)
         row = session.scalar(query)
         if row is None:
-            raise RuntimeError(f"no PHP function override at scope domain={domain!r} for account '{username}'")
+            raise NotFoundError(f"no PHP function override at scope domain={domain!r} for account '{username}'")
         session.delete(row)
         account_snapshot = account
 

@@ -135,7 +135,9 @@ export default function Branding() {
                 placeholder="support@example.com"
               />
             </FormField>
-            <FormField label="Support URL" hint="Optional, for example a help centre or ticket system.">
+            {/* Support URL refusals ("Support URL has an invalid port", "'x' is
+                not a valid support URL") belong on this field. */}
+            <FormField label="Support URL" hint="Optional, for example a help centre or ticket system. An absolute http:// or https:// address without a user name or password." error={!saveMut.isPending && /support url/i.test(saveMut.error?.message || '') ? saveMut.error.message : undefined}>
               <Input
                 value={active.support_url}
                 onChange={(e) => setForm({ ...active, support_url: e.target.value })}

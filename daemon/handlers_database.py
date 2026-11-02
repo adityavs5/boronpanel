@@ -1,6 +1,7 @@
 """Per-account MariaDB database/user CRUD (Phase d)."""
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import os
 import re
@@ -22,6 +23,7 @@ from shared.validation import (ConflictError, NotFoundError, ValidationError, va
 
 from daemon.database_operations import serialized
 from daemon import db_governor, mariadb, resource_limits
+from daemon.snapshot_databases import SqlImportError
 
 logger = logging.getLogger("borond.databases")
 
@@ -35,7 +37,19 @@ SAFETY_KINDS = (IMPORT_SAFETY_KIND, RENAME_SAFETY_KIND)
 # never pruned automatically; past this many, imports wait for an operator.
 IMPORT_RECOVERY_MAX = 3
 RECOVERY_MARKER = "RECOVERY-REQUIRED"
+RECOVERY_MARKER_KEYS = ("origin", "database", "import_error", "rollback_error", "restored_copy")
+RECOVERY_COPY_ID = re.compile(r"[0-9a-f]{32}")
+# mariadb-dump writes this footer last; a dump without it was cut short.
+DUMP_COMPLETE_FOOTER = b"-- Dump completed"
 IMPORT_ERROR_MAX_CHARS = 600
+RECOVERY_ORIGINS = {
+    "rollback_failed": "An SQL import failed and its automatic rollback also failed. "
+                       "This copy holds the database as it was before that import.",
+    "incomplete_import": "An SQL import did not finish: it was interrupted, or it failed under an "
+                         "earlier release. This copy holds the database as it was before that import.",
+    "before_restore": "The database's contents just before an administrator restored another "
+                      "recovery copy.",
+}
 
 
 def _account_safety_entries(kind: str, account_id: int) -> list[Path]:
@@ -48,7 +62,7 @@ def _account_safety_entries(kind: str, account_id: int) -> list[Path]:
     )
 
 
-def _safety_directory(kind: str, account_id: int) -> Path:
+def _safety_directory(kind: str, account_id: int, *, enforce_limit: bool = True) -> Path:
     from daemon.snapshot_jobs import private_directory
     prefix = f"account-{account_id}-"
     existing = _account_safety_entries(kind, account_id)
@@ -56,7 +70,7 @@ def _safety_directory(kind: str, account_id: int) -> Path:
         # A leftover import copy means a rollback failed or the helper was
         # interrupted mid-import; either way it may hold the last known-good
         # contents, so it is kept until an operator resolves it.
-        if len(existing) >= IMPORT_RECOVERY_MAX:
+        if enforce_limit and len(existing) >= IMPORT_RECOVERY_MAX:
             raise ConflictError(
                 "Earlier SQL imports for this account left recovery copies that need administrator "
                 "review. Ask an administrator to restore or release them before importing again"
@@ -79,11 +93,42 @@ def purge_account_safety_copies(account_id: int) -> int:
     return removed
 
 
+def _write_recovery_marker(directory: Path, **fields) -> None:
+    """One key=value line per field; values are flattened to one line so
+    multi-line client errors cannot break the record."""
+    (directory / RECOVERY_MARKER).write_text("".join(
+        f"{key}={' '.join(str(value or '').split())[:IMPORT_ERROR_MAX_CHARS]}\n"
+        for key, value in fields.items()))
+
+
+def _read_recovery_marker(directory: Path) -> dict | None:
+    path = directory / RECOVERY_MARKER
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        with path.open("rb") as handle:
+            text = handle.read(64 * 1024).decode("utf-8", "replace")
+    except OSError:
+        return None
+    fields: dict[str, str] = {}
+    key = None
+    for line in text.splitlines():
+        name, separator, value = line.partition("=")
+        if separator and name in RECOVERY_MARKER_KEYS:
+            key, fields[name] = name, value.strip()
+        elif key is not None and line.strip():
+            # Markers written before values were flattened continue a
+            # multi-line rollback error on the following lines.
+            fields[key] = f"{fields[key]} {line.strip()}".strip()[:IMPORT_ERROR_MAX_CHARS]
+    return fields
+
+
 def _mariadb_error_line(error: Exception) -> str:
     """The customer-facing part of a failed import: MariaDB's own message.
 
-    restore_database reports "Database restore failed for <db>: <stderr>";
-    the mariadb client's stderr is the diagnostics for the customer's SQL.
+    A rejected statement arrives as snapshot_databases.SqlImportError, whose
+    message is that line alone; any other restore failure reports "Database
+    restore failed for <db>: <stderr>" and its first stderr line is used.
     """
     text = str(error)
     if text.startswith("Database restore failed for ") and ": " in text:
@@ -561,7 +606,7 @@ def rename_user(params: dict) -> dict:
         if host == "localhost" and session.scalar(select(DatabaseGrant.id).where(DatabaseGrant.account_id == account.id, DatabaseGrant.db_user == old_name)):
             raise ValidationError("Rename the database's original application login by updating the application and database together")
         if session.scalar(select(DatabaseUser.id).where(DatabaseUser.db_user == new_name, DatabaseUser.host == host)) or mariadb.user_exists(new_name, host):
-            raise ValidationError(f"database user '{new_name}' already exists")
+            raise ConflictError(f"database user '{new_name}' already exists")
         user_id = user.id
     mariadb.rename_db_user(old_name, new_name, host)
     try:
@@ -742,8 +787,8 @@ def import_database(params: dict) -> dict:
             restore_database(name, saved, safety, replace_tables=True)
         except Exception as rollback_error:
             try:
-                (safety / RECOVERY_MARKER).write_text(
-                    f"database={name}\nimport_error={reason}\nrollback_error={rollback_error}\n")
+                _write_recovery_marker(safety, origin="rollback_failed", database=name,
+                                       import_error=reason, rollback_error=rollback_error)
             except OSError:
                 pass
             logger.error("SQL import into %s failed and its automatic rollback failed; "
@@ -760,6 +805,156 @@ def import_database(params: dict) -> dict:
     return {**result, "status": "imported", "safety_copy": False}
 
 
+# Administrator handling of the import recovery copies kept above. Past
+# IMPORT_RECOVERY_MAX of them the account's imports are refused, so these
+# are the only way to unblock it without shell access.
+
+def _account_databases(username: str) -> tuple[int, set[str]]:
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            raise NotFoundError(f"account '{username}' not found")
+        owned = set(session.scalars(select(DatabaseGrant.db_name).where(
+            DatabaseGrant.account_id == account.id)).all())
+        return account.id, owned
+
+
+def _recovery_copy(account_id: int, copy_id) -> Path:
+    if not isinstance(copy_id, str) or not RECOVERY_COPY_ID.fullmatch(copy_id):
+        raise ValidationError("Invalid recovery copy id")
+    for path in _account_safety_entries(IMPORT_SAFETY_KIND, account_id):
+        if path.name == f"account-{account_id}-{copy_id}":
+            return path
+    raise NotFoundError(f"recovery copy '{copy_id}' not found")
+
+
+def _dump_is_complete(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            handle.seek(max(0, handle.seek(0, os.SEEK_END) - 4096))
+            return DUMP_COMPLETE_FOOTER in handle.read()
+    except OSError:
+        return False
+
+
+def _recovery_copy_details(path: Path, account_id: int, owned: set[str]) -> dict:
+    marker = _read_recovery_marker(path)
+    # uploaded.sql is the customer's file, left behind when an import was cut short.
+    dumps = sorted(item for item in path.iterdir() if item.suffix == ".sql" and item.name != "uploaded.sql"
+                   and item.is_file() and not item.is_symlink())
+    dump = dumps[0] if len(dumps) == 1 else None
+    try:
+        db_name = validate_db_identifier(dump.stem) if dump is not None else None
+    except ValidationError:
+        db_name, dump = None, None
+    if marker is None:
+        origin = "incomplete_import"
+    else:
+        origin = marker.get("origin") if marker.get("origin") in RECOVERY_ORIGINS else "rollback_failed"
+    complete = dump is not None and _dump_is_complete(dump)
+    reason = None
+    if not dumps:
+        reason = "This copy holds no database dump; release it"
+    elif dump is None:
+        reason = "This copy does not hold exactly one valid database dump, so it cannot be restored automatically; release it"
+    elif marker is not None and marker.get("database") and marker["database"] != db_name:
+        reason = "This copy's record names a different database than its dump; release it"
+    elif not complete:
+        reason = ("This copy is incomplete: the import stopped while the copy was being taken, before the "
+                  "database was changed. Release it")
+    elif db_name not in owned:
+        reason = (f"Database '{db_name}' no longer exists in this account, so this copy cannot be restored. "
+                  "Release it, or create the database again first")
+    taken = (dump or path).stat().st_mtime
+    return {
+        "id": path.name.removeprefix(f"account-{account_id}-"),
+        "db_name": db_name,
+        "created_at": dt.datetime.fromtimestamp(taken, dt.timezone.utc).isoformat(),
+        "size_bytes": dump.stat().st_size if dump is not None else 0,
+        "origin": origin,
+        "description": RECOVERY_ORIGINS[origin],
+        "import_error": (marker or {}).get("import_error") or None,
+        "rollback_error": (marker or {}).get("rollback_error") or None,
+        "complete": complete,
+        "database_exists": db_name in owned,
+        "restorable": reason is None,
+        "reason": reason,
+    }
+
+
+def list_import_recovery_copies(params: dict) -> dict:
+    username = validate_username(params["username"])
+    account_id, owned = _account_databases(username)
+    copies = [_recovery_copy_details(path, account_id, owned)
+              for path in _account_safety_entries(IMPORT_SAFETY_KIND, account_id)]
+    return {"username": username, "copies": copies, "limit": IMPORT_RECOVERY_MAX,
+            "imports_blocked": len(copies) >= IMPORT_RECOVERY_MAX}
+
+
+def _recovery_summary(account_id: int) -> dict:
+    remaining = len(_account_safety_entries(IMPORT_SAFETY_KIND, account_id))
+    return {"remaining": remaining, "imports_blocked": remaining >= IMPORT_RECOVERY_MAX}
+
+
+@serialized
+def restore_import_recovery_copy(params: dict) -> dict:
+    username = validate_username(params["username"])
+    if params.get("confirm") is not True:
+        raise ValidationError("Confirm the restore: it replaces the database's current contents with the recovery copy")
+    account_id, owned = _account_databases(username)
+    path = _recovery_copy(account_id, params.get("copy_id"))
+    copy = _recovery_copy_details(path, account_id, owned)
+    if not copy["restorable"]:
+        raise ConflictError(copy["reason"])
+    name = copy["db_name"]
+    from daemon.snapshot_databases import dump_database, restore_database
+    # The restore overwrites everything the database holds now, possibly
+    # including changes made since the failed import. Keep that as a new
+    # recovery copy first, so an administrator restore can be undone too.
+    previous = _safety_directory(IMPORT_SAFETY_KIND, account_id, enforce_limit=False)
+    try:
+        _require_safety_capacity(previous, name)
+        dump_database(name, previous / f"{name}.sql", previous)
+        _write_recovery_marker(previous, origin="before_restore", database=name, restored_copy=copy["id"])
+    except Exception:
+        shutil.rmtree(previous, ignore_errors=True)
+        raise
+    previous_id = previous.name.removeprefix(f"account-{account_id}-")
+    try:
+        restore_database(name, path / f"{name}.sql", path, replace_tables=True)
+    except Exception as error:
+        logger.error("restoring recovery copy %s into %s failed; it and copy %s (the contents before this "
+                     "attempt) were kept: %s", copy["id"], name, previous_id, error)
+        if isinstance(error, ValidationError):
+            # Caller-visible refusals (a rejected statement, a foreign key to
+            # another database) must also name the copy this attempt added,
+            # or each retry leaves one more copy nobody knows to release.
+            detail = f"MariaDB reported: {error}" if isinstance(error, SqlImportError) else str(error).rstrip(".")
+            raise ValidationError(
+                f"The recovery copy could not be restored. {detail}. The copy and the "
+                f"database's contents before this attempt (copy {previous_id}) were both kept"
+            ) from error
+        raise
+    shutil.rmtree(path, ignore_errors=True)
+    logger.info("recovery copy %s restored into %s; previous contents kept as copy %s", copy["id"], name, previous_id)
+    return {"status": "restored", "db_name": name, "copy_id": copy["id"],
+            "previous_contents_copy_id": previous_id, **_recovery_summary(account_id),
+            "warning": (f"'{name}' now holds the contents from {copy['created_at']}. What it held before this "
+                        f"restore was kept as recovery copy {previous_id}; release it once it is no longer needed.")}
+
+
+@serialized
+def release_import_recovery_copy(params: dict) -> dict:
+    username = validate_username(params["username"])
+    if params.get("confirm") is not True:
+        raise ValidationError("Confirm the release: the recovery copy is deleted permanently")
+    account_id, _owned = _account_databases(username)
+    path = _recovery_copy(account_id, params.get("copy_id"))
+    shutil.rmtree(path)
+    logger.info("recovery copy %s of account %s released", path.name, username)
+    return {"status": "released", "copy_id": params["copy_id"], **_recovery_summary(account_id)}
+
+
 @serialized
 def rename_database(params: dict) -> dict:
     username = validate_username(params["username"])
@@ -769,10 +964,10 @@ def rename_database(params: dict) -> dict:
         raise ValidationError("Choose a different database name")
     with write_session() as session:
         if session.scalar(select(DatabaseGrant.id).where(DatabaseGrant.db_name == new_name)):
-            raise ValidationError(f"database '{new_name}' already exists")
+            raise ConflictError(f"database '{new_name}' already exists")
         assignments = _database_assignments(session, account_id, grant_id)
     if mariadb.database_exists(new_name):
-        raise ValidationError(f"database '{new_name}' already exists in MariaDB")
+        raise ConflictError(f"database '{new_name}' already exists in MariaDB")
     _require_reusable_database_name(new_name)
     from daemon.snapshot_databases import dump_database, restore_database
     work = _safety_directory(RENAME_SAFETY_KIND, account_id)
@@ -827,6 +1022,10 @@ def rename_database(params: dict) -> dict:
         if not failures:
             # The original database was never modified; its dump is spare.
             shutil.rmtree(work, ignore_errors=True)
+            if isinstance(operation_error, SqlImportError):
+                raise ValidationError(
+                    f"Database rename failed; '{old_name}' is unchanged. MariaDB reported: {operation_error}"
+                ) from operation_error
         _raise_with_cleanup("Database rename", operation_error, failures)
     shutil.rmtree(work, ignore_errors=True)
     # The old name's sign-on login keeps native grants on a name that no

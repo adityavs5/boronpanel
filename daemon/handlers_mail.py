@@ -44,10 +44,16 @@ logger = logging.getLogger("borond.mail")
 def create_mail_domain(params: dict) -> dict:
     username = params.get("username")
     domain_name = validate_domain(params["domain"])
-    from daemon import domain_ownership, mail_local_delivery
+    from daemon import domain_ownership, mail_identity, mail_local_delivery
     reason = domain_ownership.reserved_reason(domain_name, include_infrastructure=False)
     if reason:
         raise ValidationError(reason)
+    if domain_name == mail_identity.canonical_hostname():
+        # Postfix runs as this name (myhostname), and mail for its own name
+        # is delivered to the server's system users, never to mailboxes.
+        raise ValidationError(
+            f"'{domain_name}' is this server's mail hostname and cannot also be a mail domain"
+        )
 
     with write_session() as session:
         account_id = None
@@ -62,6 +68,7 @@ def create_mail_domain(params: dict) -> dict:
             if account is None:
                 raise ValidationError(f"mail domain '{domain_name}' requires an owning hosting account")
             account_id = account.id
+        account_status = account.status
         hosting_domain = session.scalar(select(Domain).where(Domain.domain == domain_name))
         if hosting_domain is not None and hosting_domain.account_id != account_id:
             raise ValidationError("mail and hosting domain ownership must match")
@@ -83,7 +90,14 @@ def create_mail_domain(params: dict) -> dict:
     routing_local = mail_local_delivery.routing_mode(domain_name) == "local"
     accept_locally = routing_local and mail_local_delivery.local_delivery_allowed(domain_name)
     local_delivery = "active" if accept_locally else ("pending_mx" if routing_local else "off")
-    mail.create_mail_domain(domain_name, active=accept_locally)
+    # A domain added (or restored) while its account is suspended is on the
+    # login deny list before any of its mailboxes exists.
+    held = account_status == "suspended" and mail.update_suspended_login_domains(add=[domain_name])
+    try:
+        mail.create_mail_domain(domain_name, active=accept_locally)
+    except Exception:
+        _release_login_hold(domain_name, held)
+        raise
 
     try:
         with write_session() as session:
@@ -97,6 +111,7 @@ def create_mail_domain(params: dict) -> dict:
             mail.delete_mail_domain(domain_name)
         except Exception:
             logger.exception("failed to roll back external mail domain '%s' after cache write failure", domain_name)
+        _release_login_hold(domain_name, held)
         raise
 
     # Phase 3 feature 1: SPF/DKIM/DMARC sane defaults, generated the moment
@@ -112,6 +127,14 @@ def create_mail_domain(params: dict) -> dict:
             "SPF/DKIM/DMARC setup failed for '%s' -- mail domain itself was still created", domain_name
         )
     return result
+
+
+def _release_login_hold(domain_name: str, held: bool) -> None:
+    if held:
+        try:
+            mail.update_suspended_login_domains(remove=[domain_name])
+        except Exception:
+            logger.exception("failed to remove '%s' from the suspended-login list", domain_name)
 
 
 @serialized
@@ -140,11 +163,15 @@ def _delete_mail_domain_cache(domain_name: str) -> None:
 def delete_mail_domain(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     webmail_sso.revoke_domain(domain_name)
+    webmail_sso.purge_domain(domain_name)
     mail.delete_mail_domain(domain_name)
     # Keep ownership/cache rows until cleanup succeeds, so a failed delete
     # remains authorized and discoverable for retry (including termination).
     spamfilter.delete_entries_for_domain(domain_name)
     spamfilter.remove_domain_spam_settings(domain_name)
+    if domain_name in mail.suspended_login_domains():
+        # A later owner of the name must not inherit the suspension.
+        mail.update_suspended_login_domains(remove=[domain_name])
     _delete_mail_domain_cache(domain_name)
     try:
         dkim.teardown_dns_signing(domain_name)
@@ -157,8 +184,11 @@ _mail_provision_lock = threading.RLock()
 
 
 @serialized
-def ensure_mail_domain(domain_name: str) -> None:
-    """Provision mail lazily for an existing active hosting domain."""
+def ensure_mail_domain(domain_name: str) -> dict | None:
+    """Provision mail lazily for an existing active hosting domain.
+
+    Returns create_mail_domain's result (with its DKIM, SPF and DMARC
+    outcome) when this call created the mail domain, otherwise None."""
     with _mail_provision_lock:
         with write_session() as session:
             existing = session.scalar(select(MailDomain).where(MailDomain.domain == domain_name))
@@ -166,7 +196,7 @@ def ensure_mail_domain(domain_name: str) -> None:
                 domain = session.scalar(select(Domain).where(Domain.domain == domain_name))
                 if domain is not None and domain.account_id != existing.account_id:
                     raise ValidationError("mail and hosting domain ownership must match")
-                return
+                return None
             domain = session.scalar(select(Domain).where(Domain.domain == domain_name))
             account = session.get(Account, domain.account_id) if domain else None
             if account is None or account.status != 'active':
@@ -176,8 +206,7 @@ def ensure_mail_domain(domain_name: str) -> None:
             # Missing ownership metadata is not evidence that external mail
             # belongs to the current web owner. Require explicit recovery.
             raise ValidationError("Existing mail domain has no ownership record; administrator recovery required")
-        else:
-            create_mail_domain({'username': username, 'domain': domain_name})
+        return create_mail_domain({'username': username, 'domain': domain_name})
 
 
 @serialized
@@ -195,7 +224,7 @@ def create_mailbox(params: dict) -> dict:
     if not (MAILBOX_QUOTA_MIN_MB <= quota_mb <= MAILBOX_QUOTA_MAX_MB):
         raise ValidationError(f"quota_mb must be between {MAILBOX_QUOTA_MIN_MB} and {MAILBOX_QUOTA_MAX_MB}")
 
-    ensure_mail_domain(domain_name)
+    created_domain = ensure_mail_domain(domain_name)
 
     with write_session() as session:
         mail_domain = session.scalar(select(MailDomain).where(MailDomain.domain == domain_name))
@@ -227,6 +256,10 @@ def create_mailbox(params: dict) -> dict:
             )
         raise
 
+    if created_domain is not None:
+        # The first mailbox created the mail domain: report its SPF, DKIM
+        # and DMARC outcome, as mail.domain.create would have.
+        result = {**result, "mail_domain": {"created": True, "dkim": created_domain.get("dkim")}}
     return result
 
 
@@ -253,7 +286,9 @@ def delete_mailbox(params: dict) -> dict:
 
 def list_mailboxes(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
-    return {"domain": domain_name, "mailboxes": mail.list_mailboxes(domain_name)}
+    from daemon import mail_dns
+    return {"domain": domain_name, "mailboxes": mail.list_mailboxes(domain_name),
+            "client_settings": mail_dns.client_settings()}
 
 
 @serialized
@@ -297,6 +332,45 @@ def terminate_account_mail(account: Account) -> None:
     # Per-domain routing outlives a plain mail-domain delete on purpose (the
     # hosting domain keeps its MX choice), but not the account itself.
     handlers_email_routing.delete_routing_for_domains([*domains, *hosted])
+    # Launch rows of mail domains deleted before purge_domain existed.
+    webmail_sso.purge_account(account.id)
+
+
+def _account_mail_domains(account_id: int) -> list[str]:
+    with write_session() as session:
+        return list(session.scalars(select(MailDomain.domain).where(MailDomain.account_id == account_id)).all())
+
+
+def suspend_account_mail(account: Account) -> None:
+    """SUSPEND_HOOKS entry: no mailbox of the account can log in (IMAP, POP3,
+    SMTP AUTH, webmail) and open sessions end; incoming mail is still
+    accepted and delivered (daemon/mail.py, "Logins of suspended accounts")."""
+    domains = _account_mail_domains(account.id)
+    if domains:
+        mail.update_suspended_login_domains(add=domains)
+        # Also when the list already named them (an interrupted earlier
+        # suspension, say): sessions opened since must end as well.
+        mail.end_login_sessions(domains)
+
+
+def unsuspend_account_mail(account: Account) -> None:
+    """UNSUSPEND_HOOKS entry: the account's mailboxes can log in again."""
+    domains = _account_mail_domains(account.id)
+    if domains:
+        mail.update_suspended_login_domains(remove=domains)
+
+
+def reconcile_suspended_mail_logins() -> list[str]:
+    """Upgrade step: the deny list is exactly the mail domains of suspended
+    accounts, including accounts suspended by a release that kept their
+    mail logins working."""
+    with write_session() as session:
+        domains = sorted(session.scalars(
+            select(MailDomain.domain).join(Account, Account.id == MailDomain.account_id)
+            .where(Account.status == "suspended")
+        ).all())
+    mail.update_suspended_login_domains(replace=domains)
+    return domains
 
 
 # --- Forwarders (Phase 3 feature 4) -----------------------------------

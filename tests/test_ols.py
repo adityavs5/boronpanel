@@ -9,6 +9,14 @@ from daemon.procutil import ProcResult
 from shared.models import Account
 
 
+@pytest.fixture(autouse=True)
+def _rendered_vhosts_exist(monkeypatch):
+    """Most tests here render from Domain rows alone, without vhost files on
+    disk; _all_active_vhosts leaves out a vhost whose file is missing. The
+    tests of that rule restore the real check."""
+    monkeypatch.setattr(ols, "_vhost_conf_written", lambda vhost_name: True)
+
+
 def make_account(**overrides):
     defaults = dict(username="demo1", status="active", uid=2000, gid=2000, php_version="8.3")
     defaults.update(overrides)
@@ -1393,3 +1401,229 @@ def test_password_protected_directory_context_keeps_php_confinement():
     context = content.split("context /members/ {", 1)[1].split("\n}\n", 1)[0]
     assert "realm                   demo1_members" in context
     assert 'php_admin_value open_basedir "/home/demo1/public_html:/home/demo1/tmp"' in context
+
+
+# --- Round 2: unwritten vhosts, PHP pool budget, Force HTTPS, PHP display defaults ---
+
+
+def _two_account_fixture():
+    from shared.db import write_session
+    from shared.models import Account as AccountModel
+    from shared.models import Domain as DomainModel
+
+    with write_session() as session:
+        live = AccountModel(username="live1", uid=5001, gid=5001, status="active", php_version="8.3")
+        adding = AccountModel(username="adding1", uid=5002, gid=5002, status="active", php_version="8.3")
+        session.add_all([live, adding])
+        session.flush()
+        session.add(DomainModel(account_id=live.id, domain="live.example", docroot="/home/live1/public_html"))
+        # handlers_domain.add_domain commits this row before provision_vhost
+        # writes the domain's vhost configuration.
+        session.add(DomainModel(account_id=adding.id, domain="new.example", docroot="/home/adding1/public_html"))
+
+
+def test_domain_without_written_vhost_is_left_out_of_the_main_config(isolated_db, tmp_path, monkeypatch):
+    """Regression (round 1 core/acct): one account's in-flight add_domain
+    made every other account's config transaction reference a vhconf.conf
+    that did not exist yet, so the global openlitespeed -t failed for all."""
+    from shared.db import write_session
+
+    monkeypatch.setattr(ols, "_vhost_conf_written", lambda name: Path(ols._vhost_conf_path(name)).is_file())
+    monkeypatch.setattr(ols, "OLS_SERVER_BASE", str(tmp_path))
+    live_conf = Path(ols._vhost_conf_path("live_example"))
+    live_conf.parent.mkdir(parents=True)
+    live_conf.write_text("docRoot /home/live1/public_html\n")
+    _two_account_fixture()
+
+    with write_session() as session:
+        vhosts, procs = ols._all_active_vhosts(session)
+    assert [vhost["domain"] for vhost in vhosts] == ["live.example"]
+    assert [proc["username"] for proc in procs] == ["live1"]
+    # The transaction that writes the new vhost includes it.
+    with write_session() as session:
+        vhosts, procs = ols._all_active_vhosts(session, pending={"new_example"})
+    assert {vhost["domain"] for vhost in vhosts} == {"live.example", "new.example"}
+    assert {proc["username"] for proc in procs} == {"live1", "adding1"}
+
+
+def test_main_config_is_read_and_applied_under_one_lock(isolated_db, tmp_path, monkeypatch):
+    """A transaction must not install a main config read before another
+    account's newer transaction applied (that would drop the other account's
+    new vhost again), so the state is read, rendered and applied under one
+    lock -- and the account's own new vhost is written with it."""
+    from types import SimpleNamespace
+
+    from daemon import phpext
+    from shared.db import write_session
+
+    _two_account_fixture()
+    with write_session() as session:
+        account = session.scalar(ols.select(ols.Account).where(ols.Account.username == "adding1"))
+        session.expunge(account)
+    events = []
+    real_all_active = ols._all_active_vhosts
+
+    def recording_all_active(session, pending=frozenset()):
+        events.append(("read", ols._CONFIG_LOCK._is_owned(), sorted(pending)))
+        return real_all_active(session, pending)
+
+    class Writer:
+        def __init__(self, **kwargs):
+            self.targets = kwargs["targets"]
+
+        def apply(self, contents):
+            events.append(("apply", ols._CONFIG_LOCK._is_owned(), sorted(self.targets)))
+            return SimpleNamespace(ok=True, summary=lambda: "")
+
+    monkeypatch.setattr(ols, "_all_active_vhosts", recording_all_active)
+    monkeypatch.setattr(ols, "ConfigWriterMulti", Writer)
+    monkeypatch.setattr(ols, "_account_bubblewrap_enabled", lambda account: True)
+    monkeypatch.setattr(ols, "_error_pages_for_domain", lambda *args, **kwargs: {})
+    monkeypatch.setattr(ols, "_access_rules_by_domain", lambda account, domains: {d["domain"]: [] for d in domains})
+    monkeypatch.setattr(phpext, "materialize_disable_functions", lambda values: None)
+    monkeypatch.setattr(phpext, "prune_disable_functions", lambda values: None)
+    monkeypatch.setattr(ols.sysops, "vhost_log_dir", lambda username: str(tmp_path))
+
+    ols.provision_vhost(account)
+    ols.refresh_main_config()
+    assert events == [
+        ("read", True, ["new_example"]), ("apply", True, ["main", "new_example"]),
+        ("read", True, []), ("apply", True, ["main"]),
+    ]
+    assert not ols._CONFIG_LOCK._is_owned()
+
+
+def test_account_php_pools_share_its_entry_process_budget(isolated_db):
+    """Regression (round 1 web): every extra LSAPI pool (another PHP version,
+    an admin disable_functions variant) got the account's whole
+    entry_processes, so its PHP ceiling grew with the number of pools."""
+    from shared.db import write_session
+    from shared.models import Account as AccountModel
+    from shared.models import Domain as DomainModel
+    from shared.models import PhpFunctionOverride
+
+    with write_session() as session:
+        account = AccountModel(username="demo1", uid=5001, gid=5001, status="active", php_version="8.3")
+        session.add(account)
+        session.flush()
+        session.add(DomainModel(account_id=account.id, domain="a.example", docroot="/home/demo1/a"))
+        session.add(DomainModel(account_id=account.id, domain="b.example", docroot="/home/demo1/b", php_version="8.1"))
+        session.add(DomainModel(account_id=account.id, domain="c.example", docroot="/home/demo1/c"))
+        session.add(PhpFunctionOverride(account_id=account.id, domain="c.example", disable_functions="exec"))
+    with write_session() as session:
+        _vhosts, procs = ols._all_active_vhosts(session)
+    # Three pools share the account's default budget of 20.
+    assert [proc["entry_processes"] for proc in procs] == [6, 6, 6]
+    assert ols.render_httpd_config([], procs).count("PHP_LSAPI_CHILDREN=6") == 3
+    # A single pool keeps the whole budget (the template default).
+    with write_session() as session:
+        session.query(DomainModel).filter(DomainModel.domain.in_(["b.example", "c.example"])).delete()
+    with write_session() as session:
+        _vhosts, procs = ols._all_active_vhosts(session)
+    assert len(procs) == 1 and "entry_processes" not in procs[0]
+
+
+def _certificate(tmp_path, names, *, expired=False):
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    now = dt.datetime.now(dt.timezone.utc)
+    start, end = (now - dt.timedelta(days=60), now - dt.timedelta(days=1)) if expired else \
+        (now - dt.timedelta(days=1), now + dt.timedelta(days=60))
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, names[0])])
+    cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject).public_key(key.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(start).not_valid_after(end)
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName(name) for name in names]), critical=False)
+            .sign(key, hashes.SHA256()))
+    cert_path, key_path = tmp_path / "fullchain.pem", tmp_path / "privkey.pem"
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                           serialization.NoEncryption()))
+    return str(key_path), str(cert_path)
+
+
+@pytest.fixture
+def domain_certificate(tmp_path, monkeypatch):
+    def install(names, **kwargs):
+        paths = _certificate(tmp_path, names, **kwargs)
+        monkeypatch.setattr(ols, "letsencrypt_cert_paths", lambda cert_name: paths)
+        return paths
+    return install
+
+
+def _rewrite_rules(content: str) -> list[str]:
+    rules = content.split("rules                   <<<END_boron_rules", 1)[1].split("END_boron_rules", 1)[0]
+    return [line for line in rules.splitlines() if line]
+
+
+def test_force_https_redirects_only_names_the_certificate_covers(domain_certificate):
+    domain_certificate(["demo1.example"])
+    domain = make_domain(ssl_status="active", force_https=True)
+    context = ols._force_https_context(domain, {"www_alias": True, "wildcard": False})
+    assert context == {"host_pattern": "demo1\\.example"}
+    content = ols.render_vhost_conf(make_account(), domain, suspended=False, force_https=context)
+    assert _rewrite_rules(content) == [
+        "RewriteCond %{SERVER_PORT} ^80$",
+        "RewriteCond %{HTTPS} !^on$",
+        "RewriteCond %{HTTP:X-Forwarded-Proto} !^https$ [NC]",
+        "RewriteCond %{REQUEST_URI} !^/\\.well-known/acme-challenge/",
+        "RewriteCond %{HTTP_HOST} ^(demo1\\.example)(:[0-9]+)?$ [NC]",
+        "RewriteRule ^ https://%1%{REQUEST_URI} [R=301,L]",
+    ]
+    assert ols.force_https_hosts(domain, www_alias=True, wildcard=False) == {
+        "certificate_valid": True, "redirected_hosts": ["demo1.example"],
+        "unredirected_hosts": ["www.demo1.example"],
+    }
+
+
+def test_force_https_covers_www_and_wildcard_names_on_the_certificate(domain_certificate):
+    domain_certificate(["demo1.example", "*.demo1.example"])
+    domain = make_domain(ssl_status="active", force_https=True)
+    context = ols._force_https_context(domain, {"www_alias": True, "wildcard": True})
+    assert context == {"host_pattern": "demo1\\.example|www\\.demo1\\.example|[a-z0-9-]+\\.demo1\\.example"}
+
+
+def test_force_https_runs_first_and_yields_to_forwarding_and_suspension(domain_certificate):
+    domain_certificate(["demo1.example"])
+    domain = make_domain(ssl_status="active", force_https=True)
+    context = ols._force_https_context(domain, {"www_alias": False, "wildcard": False})
+    redirects = [{"regex_path": "/old", "target_url": "https://example.com/new", "status_code": 301}]
+    content = ols.render_vhost_conf(make_account(), domain, suspended=False, force_https=context, redirects=redirects)
+    assert content.index("https://%1%{REQUEST_URI}") < content.index("RewriteRule ^/old$")
+    forwarding = {"target_url": "https://example.org", "status_code": 301, "keep_path": False}
+    assert "https://%1" not in ols.render_vhost_conf(make_account(), domain, suspended=False,
+                                                      force_https=context, forwarding=forwarding)
+    assert "https://%1" not in ols.render_vhost_conf(make_account(), domain, suspended=True, force_https=context)
+
+
+@pytest.mark.parametrize("ssl_status,expired", [("none", False), ("active", True)])
+def test_force_https_needs_a_valid_installed_certificate(domain_certificate, ssl_status, expired):
+    """Never a redirect to a certificate warning: the setting stays stored,
+    but an inactive, missing or expired certificate renders no redirect."""
+    domain_certificate(["demo1.example"], expired=expired)
+    domain = make_domain(ssl_status=ssl_status, force_https=True)
+    assert ols._force_https_context(domain, {"www_alias": False, "wildcard": False}) is None
+
+
+def test_force_https_off_renders_nothing(domain_certificate):
+    domain_certificate(["demo1.example"])
+    domain = make_domain(ssl_status="active", force_https=False)
+    assert ols._force_https_context(domain, {"www_alias": False, "wildcard": False}) is None
+    assert "RewriteCond %{SERVER_PORT}" not in ols.render_vhost_conf(make_account(), domain, suspended=False)
+
+
+def test_customer_php_never_displays_errors_by_default():
+    """Regression (round 1 ops, Joomla path leak): without PHP settings of
+    its own an account renders display_errors Off (a site may still switch it
+    on while debugging), and the account's own setting replaces that line."""
+    content = ols.render_vhost_conf(make_account(), make_domain(), suspended=False)
+    assert 'php_value display_errors "Off"' in content
+    assert 'php_admin_value log_errors "On"' in content
+    assert 'php_admin_value error_log "/home/demo1/logs/php-error.log"' in content
+    php_ini = {**ols.phpdirectives.DEFAULTS, "display_errors": True, "extras": []}
+    content = ols.render_vhost_conf(make_account(), make_domain(), suspended=False, php_ini=php_ini)
+    assert 'php_admin_value display_errors "On"' in content
+    assert "php_value display_errors" not in content

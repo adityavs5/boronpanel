@@ -1,6 +1,7 @@
 """WordPress inventory and account-isolated management operations."""
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import pwd
@@ -9,13 +10,14 @@ import time
 import re
 import threading
 from sqlalchemy import select
-from daemon import account_exec, cmdjobs, wordpress, wpcli
+from daemon import account_exec, cmdjobs, domain_welcome, wordpress, wpcli
 from daemon.procutil import run
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain, WordPressInstall, WordPressJob, CommandRun, WordPressSiteState, DatabaseGrant, utcnow
 from shared.validation import ValidationError, validate_username, validate_domain
 
+logger = logging.getLogger("borond.wpmanager")
 _operation_lock = threading.RLock()
 
 WORKER = str(Path(__file__).resolve().parent.parent / 'scripts' / 'wordpress_manage.py')
@@ -41,8 +43,9 @@ def inventory(params):
     installs, errors = [], []
     from daemon import ssl
     for choice in choices:
-        certificate = ssl._cert_file_details(choice['domain'])
-        choice['https_ready'] = bool(certificate and certificate['cert_status'] in ('valid', 'expiring'))
+        # The certificate the domain's vhost actually serves (not just a
+        # lineage file on disk), the same test a clone's address uses.
+        choice['https_ready'] = ssl.https_ready(choice['domain'])
     for account_id, name in accounts:
         try:
             for item in wpcli.detect_installs({'username': name})['installs']:
@@ -66,7 +69,54 @@ def _site(p):
     return username, domain, root
 
 
-def _operation(p):
+def _clone_target(p, username, root):
+    """Validated clone destination: (target domain, real path, whether the
+    panel's unchanged welcome page is in it). A freshly provisioned site
+    root holds only what the panel put there -- the ACME challenge folder,
+    an empty error_pages folder and welcome.html (daemon/domain_welcome.py)
+    -- and still counts as empty."""
+    if p.get('target_path') and not re.fullmatch(r'[A-Za-z0-9_-]+', p['target_path']):
+        raise ValidationError('Use a single folder name for the clone')
+    target_domain = validate_domain(p['target_domain'])
+    _, docroot = wordpress._account_and_domain(username, target_domain)
+    target = wordpress._install_target(docroot, p.get('target_path',''))
+    real = os.path.realpath(target)
+    original = os.path.realpath(root)
+    if real == original or original.startswith(real + '/') or (real.startswith(original + '/') and os.path.dirname(real) != original):
+        raise ValidationError('Choose a separate destination, not inside the source site')
+    welcome = False
+    if os.path.exists(real):
+        welcome = domain_welcome.is_managed_welcome(username, real)
+        for name in os.listdir(real):
+            path = os.path.join(real, name)
+            if name == '.well-known' or (name == domain_welcome.NAME and welcome):
+                continue
+            if name == 'error_pages' and os.path.isdir(path) and not os.path.islink(path) and not os.listdir(path):
+                continue
+            raise ValidationError('The clone destination must be empty')
+    return target_domain, real, welcome
+
+
+def _clone_address(p, target_domain):
+    """The clone's protocol, and why https was not used. A WordPress site
+    configured with an https address its server cannot serve sends every
+    visitor to a certificate error, so https needs a certificate covering
+    the clone's host name: ssl.prepare_https uses the existing one or
+    issues one when the name resolves to this server."""
+    from daemon import ssl
+    protocol, use_www = p.get('target_protocol', 'https'), p.get('target_www', False)
+    wordpress.website_url(target_domain, p.get('target_path', ''), protocol, use_www)  # option checks first
+    if protocol != 'https':
+        return {'protocol': protocol, 'notice': None}
+    host = ('www.' if use_www else '') + target_domain
+    readiness = ssl.prepare_https(target_domain, host)
+    if readiness['https']:
+        return {'protocol': 'https', 'notice': None}
+    return {'protocol': 'http', 'notice': f"The clone uses http://{host} because {readiness['detail']}. "
+            f"Issue an SSL certificate for {target_domain}, then change the WordPress address to https."}
+
+
+def _operation(p, clone_address=None):
     username, domain, root = _site(p)
     action = p['action']
     if action not in ('backup','backups','restore','clone'): raise ValidationError('Unsupported WordPress operation')
@@ -78,21 +128,18 @@ def _operation(p):
     completed = None
     clone_files_ready = False
     if action == 'clone':
-        if p.get('target_path') and not re.fullmatch(r'[A-Za-z0-9_-]+', p['target_path']):
-            raise ValidationError('Use a single folder name for the clone')
-        target_domain = validate_domain(p['target_domain'])
-        _, docroot = wordpress._account_and_domain(username, target_domain)
-        target = wordpress._install_target(docroot, p.get('target_path',''))
-        real = os.path.realpath(target)
-        original = os.path.realpath(root)
-        if real == original or original.startswith(real + '/') or (real.startswith(original + '/') and os.path.dirname(real) != original):
-            raise ValidationError('Choose a separate destination, not inside the source site')
-        if os.path.exists(real) and any(name != '.well-known' and not (name == 'error_pages' and os.path.isdir(os.path.join(real,name)) and not os.listdir(os.path.join(real,name))) for name in os.listdir(real)): raise ValidationError('The clone destination must be empty')
-        target_url = wordpress.website_url(target_domain, p.get('target_path',''), p.get('target_protocol','https'), p.get('target_www',False))
+        target_domain, target, welcome = _clone_target(p, username, root)
+        address = clone_address or _clone_address(p, target_domain)
+        target_url = wordpress.website_url(target_domain, p.get('target_path',''), address['protocol'], p.get('target_www',False))
         grant, suffix = wordpress._allocate_database(username, p.get('target_path',''))
         def cleanup():
             if clone_files_ready: return
             wordpress.handlers_database.drop_database({'username': username, 'name': suffix})
+            if welcome:
+                try:
+                    domain_welcome.ensure_welcome(username, target_domain, target)
+                except Exception:
+                    logger.exception('could not restore the welcome page of %s', target_domain)
         c.update(target=target, database=grant, url=target_url)
         def completed():
             nonlocal clone_files_ready
@@ -103,12 +150,19 @@ def _operation(p):
                 state.hidden, state.site_url, state.scanned_at = False, target_url, utcnow()
     # The account worker owns every file operation; no customer PHP is run as root.
     try:
-        return cmdjobs.submit(username, 'wpmanager', root, ['/usr/bin/python3', WORKER],
-                              f'WordPress {action}: {domain}', input_text=json.dumps(c), timeout=1800,
-                              **({'on_failure': cleanup, 'on_success': completed} if cleanup else {}))
+        if cleanup and welcome:
+            # The worker copies only into an empty folder; the placeholder
+            # comes back (and the new database goes) if the clone fails.
+            domain_welcome.retire_welcome(username, target, installed=True)
+        job = cmdjobs.submit(username, 'wpmanager', root, ['/usr/bin/python3', WORKER],
+                             f'WordPress {action}: {domain}', input_text=json.dumps(c), timeout=1800,
+                             **({'on_failure': cleanup, 'on_success': completed} if cleanup else {}))
     except Exception:
         if cleanup: cleanup()
         raise
+    if action == 'clone':
+        job = {**job, 'url': target_url, **({'notice': address['notice']} if address['notice'] else {})}
+    return job
 
 
 
@@ -179,9 +233,17 @@ def ensure_idle(username):
 
 
 def operation(p):
+    clone_address = None
+    if p.get('action') == 'clone':
+        # Issuing the clone's certificate can take a minute: settle the
+        # address before taking the lock every WordPress operation shares.
+        username, _domain, root = _site(p)
+        ensure_idle(username)
+        target_domain, _target, _welcome = _clone_target(p, username, root)
+        clone_address = _clone_address(p, target_domain)
     with _operation_lock:
         ensure_idle(p['username'])
-        return _operation(p)
+        return _operation(p, clone_address)
 
 
 def _state(session, account_id, domain, path):

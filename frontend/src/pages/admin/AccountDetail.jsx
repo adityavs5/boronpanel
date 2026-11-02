@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Pause, Play, Trash2, Save, UserCog, FolderOpen, Ban, MoreHorizontal, UserRound } from 'lucide-react'
+import { AlertTriangle, Pause, Play, Trash2, Save, UserCog, FolderOpen, Ban, MoreHorizontal, UserRound, RotateCcw } from 'lucide-react'
 import { get, post, put, patch, del, impersonate as apiImpersonate } from '@/lib/api'
 import { formatBytes, formatDate } from '@/lib/utils'
 import { useAccountUsername } from '@/hooks/useAccount'
-import { PHP_VERSIONS } from '@/config/constants'
+import { PHP_VERSIONS, SUSPEND_EFFECTS } from '@/config/constants'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -33,6 +33,7 @@ import Apps from '@/pages/customer/Apps'
 import AccountIdentity from '@/pages/admin/AccountIdentity'
 import AccountNotes from '@/pages/admin/AccountNotes'
 import Processes from '@/pages/customer/Processes'
+import { DatabaseRecoveryCopies } from './DatabaseRecoveryCopies'
 
 const ACCOUNT_TABS = [
   ['overview', 'Overview'],
@@ -58,15 +59,15 @@ function AdminActions({ username, account, danger = false }) {
     qc.invalidateQueries({ queryKey: ['account', username] })
     qc.invalidateQueries({ queryKey: ['accounts'] })
   }
+  // Errors stay in the confirmation dialog: a toast behind a modal is hidden
+  // from assistive technology until the dialog closes.
   const suspendMut = useMutation({
     mutationFn: () => post(`/api/v1/accounts/${username}/suspend`),
     onSuccess: () => { toast.success('Account suspended'); invalidate() },
-    onError: (e) => toast.error('Could not suspend', e.message),
   })
   const unsuspendMut = useMutation({
     mutationFn: () => post(`/api/v1/accounts/${username}/unsuspend`),
     onSuccess: () => { toast.success('Account unsuspended'); invalidate() },
-    onError: (e) => toast.error('Could not unsuspend', e.message),
   })
   const terminateMut = useMutation({
     mutationFn: async () => {
@@ -76,6 +77,8 @@ function AdminActions({ username, account, danger = false }) {
     },
     onSuccess: () => { toast.success('Account terminated'); invalidate(); setConfirm(null); navigate('/accounts', { replace: true }) },
   })
+  // Each confirmation opens without the previous attempt's error.
+  const openConfirm = (kind) => { suspendMut.reset(); unsuspendMut.reset(); terminateMut.reset(); setConfirm(kind) }
   // Phase 8 feature 1: "Login as user" -> mint+redeem an impersonation token,
   // then hard-navigate to the customer view as that account.
   const impersonateMut = useMutation({
@@ -94,17 +97,17 @@ function AdminActions({ username, account, danger = false }) {
           <DropdownMenuTrigger asChild><Button variant="secondary"><MoreHorizontal className="h-4 w-4" />More</Button></DropdownMenuTrigger>
           <DropdownMenuContent>
             <DropdownMenuItem disabled={account.status !== 'active'} onSelect={() => window.open(`/api/v1/accounts/${username}/files/launch`, '_blank', 'noopener')}><FolderOpen className="h-4 w-4" /> File Manager</DropdownMenuItem>
-            {account.status === 'active' && <DropdownMenuItem onSelect={() => setConfirm('suspend')}><Pause className="h-4 w-4" /> Suspend</DropdownMenuItem>}
-            {account.status === 'suspended' && <DropdownMenuItem onSelect={() => setConfirm('unsuspend')}><Play className="h-4 w-4" /> Unsuspend</DropdownMenuItem>}
+            {account.status === 'active' && <DropdownMenuItem onSelect={() => openConfirm('suspend')}><Pause className="h-4 w-4" /> Suspend</DropdownMenuItem>}
+            {account.status === 'suspended' && <DropdownMenuItem onSelect={() => openConfirm('unsuspend')}><Play className="h-4 w-4" /> Unsuspend</DropdownMenuItem>}
             <DropdownMenuSeparator />
-            {['active', 'suspended', 'error'].includes(account.status) && <DropdownMenuItem destructive onSelect={() => setConfirm('terminate')}><Trash2 className="h-4 w-4" /> Terminate</DropdownMenuItem>}
+            {['active', 'suspended', 'error'].includes(account.status) && <DropdownMenuItem destructive onSelect={() => openConfirm('terminate')}><Trash2 className="h-4 w-4" /> Terminate</DropdownMenuItem>}
           </DropdownMenuContent>
         </DropdownMenu>
       </>}
-      {danger && account.status === 'active' && <Button variant="secondary" loading={suspendMut.isPending} onClick={() => setConfirm('suspend')}><Pause className="h-4 w-4" /> Suspend</Button>}
-      {danger && account.status === 'suspended' && <Button variant="secondary" loading={unsuspendMut.isPending} onClick={() => setConfirm('unsuspend')}><Play className="h-4 w-4" /> Unsuspend</Button>}
-      {danger && ['active', 'suspended', 'error'].includes(account.status) && <Button variant="danger" onClick={() => setConfirm('terminate')}><Trash2 className="h-4 w-4" /> Terminate</Button>}
-      <ConfirmDialog open={confirm === 'suspend' || confirm === 'unsuspend'} onOpenChange={open => !open && setConfirm(null)} title={`${confirm === 'suspend' ? 'Suspend' : 'Unsuspend'} ${username}?`} description={confirm === 'suspend' ? 'Hosting and customer access will be paused. Account files are retained.' : 'Hosting and customer access will resume.'} confirmationText={username} confirmLabel={confirm === 'suspend' ? 'Suspend account' : 'Unsuspend account'} loading={suspendMut.isPending || unsuspendMut.isPending} onConfirm={() => { (confirm === 'suspend' ? suspendMut : unsuspendMut).mutate(undefined, { onSuccess: () => setConfirm(null) }) }} />
+      {danger && account.status === 'active' && <Button variant="secondary" loading={suspendMut.isPending} onClick={() => openConfirm('suspend')}><Pause className="h-4 w-4" /> Suspend</Button>}
+      {danger && account.status === 'suspended' && <Button variant="secondary" loading={unsuspendMut.isPending} onClick={() => openConfirm('unsuspend')}><Play className="h-4 w-4" /> Unsuspend</Button>}
+      {danger && ['active', 'suspended', 'error'].includes(account.status) && <Button variant="danger" onClick={() => openConfirm('terminate')}><Trash2 className="h-4 w-4" /> Terminate</Button>}
+      <ConfirmDialog open={confirm === 'suspend' || confirm === 'unsuspend'} onOpenChange={open => !open && setConfirm(null)} title={`${confirm === 'suspend' ? 'Suspend' : 'Unsuspend'} ${username}?`} description={confirm === 'suspend' ? SUSPEND_EFFECTS : 'Hosting, email logins and customer access will resume.'} confirmationText={username} confirmLabel={confirm === 'suspend' ? 'Suspend account' : 'Unsuspend account'} loading={suspendMut.isPending || unsuspendMut.isPending} error={suspendMut.error || unsuspendMut.error} onConfirm={() => { (confirm === 'suspend' ? suspendMut : unsuspendMut).mutate(undefined, { onSuccess: () => setConfirm(null) }) }} />
       <ConfirmDialog
         open={confirm === 'terminate'}
         onOpenChange={(o) => !o && setConfirm(null)}
@@ -130,8 +133,67 @@ function DisabledReasonButton({ reason, children, ...props }) {
   return reason ? <Tooltip content={reason}><span className="inline-flex">{button}</span></Tooltip> : button
 }
 
-function resourcePayload(limits) {
-  return { cpu_pct: Math.round(Number(limits.cpu_cores) * 100), mem_mb: Math.round(Number(limits.memory_gb) * 1024), io_mb: Number(limits.io_mb), pids_max: Number(limits.pids_max) }
+// Form field -> PATCH /limits field, and the factor between their units.
+const LIMIT_FIELDS = {
+  cpu_cores: { api: 'cpu_pct', scale: 100 },
+  memory_gb: { api: 'mem_mb', scale: 1024 },
+  io_mb: { api: 'io_mb', scale: 1 },
+  pids_max: { api: 'pids_max', scale: 1 },
+}
+
+// The limits the account's slice enforces. A plan or server policy can make
+// any of them Unlimited (null): that stays an empty field, never a number.
+function enforcedLimits(account) {
+  return {
+    cpu_cores: account.cpu_cores ?? '',
+    memory_gb: account.mem_mb == null ? '' : account.mem_mb / 1024,
+    io_mb: account.io_mb ?? '',
+    pids_max: account.pids_max ?? '',
+  }
+}
+
+const blank = value => value === '' || value == null
+const sameLimit = (a, b) => blank(a) ? blank(b) : !blank(b) && Number(a) === Number(b)
+
+// The CPU allocation is stored above this host's core count: the form shows
+// the capped value, and any save stores it.
+const cpuCapped = account => account.configured_cpu_cores != null && account.host_cpu_cores != null && account.configured_cpu_cores > account.host_cpu_cores
+
+// Only what the operator changed. PATCH .../limits keeps every omitted field
+// at its enforced value -- including Unlimited plan values, which the
+// account's own columns cannot express -- so unchanged fields are not sent.
+function limitsPayload(limits, original, account) {
+  const body = {}
+  for (const [key, { api, scale }] of Object.entries(LIMIT_FIELDS)) {
+    if (!sameLimit(limits[key], original[key])) body[api] = Math.round(Number(limits[key]) * scale)
+  }
+  if (body.cpu_pct === undefined && cpuCapped(account) && !blank(limits.cpu_cores)) body.cpu_pct = Math.round(Number(limits.cpu_cores) * 100)
+  return body
+}
+
+function limitError(key, value, original, account) {
+  if (sameLimit(value, original)) return null
+  if (blank(value)) return 'This form cannot remove a limit. Enter a value, or set Unlimited in Resource manager.'
+  const number = Number(value)
+  if (key === 'cpu_cores') return number >= 0.01 && number <= (account.host_cpu_cores ?? Infinity) ? null : `Enter a core count from 0.01 to ${account.host_cpu_cores ?? 'the server maximum'}.`
+  if (key === 'memory_gb') return number >= 0.0625 && number <= 64 ? null : 'Memory must be between 0.0625 and 64 GB.'
+  if (key === 'io_mb') return Number.isInteger(number) && number >= 1 && number <= 10000 ? null : 'Enter a whole number of MB/s from 1 to 10000.'
+  return Number.isInteger(number) && number >= 10 && number <= 10000 ? null : 'Enter a whole process count from 10 to 10000.'
+}
+
+// The account row as it is after a limits save: the edited values are the
+// account's own (an account-scope override when a policy applied).
+function savedLimits(body) {
+  const saved = { limits_source: 'account' }
+  if (body.cpu_pct !== undefined) Object.assign(saved, { cpu_pct: body.cpu_pct, cpu_cores: body.cpu_pct / 100, configured_cpu_cores: body.cpu_pct / 100 })
+  for (const field of ['mem_mb', 'io_mb', 'pids_max']) if (body[field] !== undefined) saved[field] = body[field]
+  return saved
+}
+
+const LIMIT_SOURCES = {
+  plan: plan => `These limits come from the hosting plan${plan ? ` ${plan.name}` : ''}.`,
+  reseller_plan: () => "These limits come from the reseller's plan.",
+  server: () => 'These limits come from the server resource policy.',
 }
 
 function PhpAndLimits({ username, account, part = 'both' }) {
@@ -139,13 +201,14 @@ function PhpAndLimits({ username, account, part = 'both' }) {
   const [phpDraft, setPhpVersion] = useState(null)
   const phpVersion = phpDraft ?? account.php_version
   const [touchedLimits,setTouchedLimits] = useState({})
-  const originalLimits = {
-    cpu_cores: account.cpu_cores ?? account.cpu_pct / 100, memory_gb: account.mem_mb / 1024, io_mb: account.io_mb, pids_max: account.pids_max,
-  }
+  const [resetOpen, setResetOpen] = useState(false)
+  const originalLimits = enforcedLimits(account)
   const [limitsDraft, setLimitsDraft] = useState(null)
   const limits = limitsDraft ?? originalLimits
   const setLimits = update => setLimitsDraft(previous => typeof update === 'function' ? update(previous ?? originalLimits) : update)
   const invalidate = () => qc.invalidateQueries({ queryKey: ['account', username] })
+  const { data: plansData } = useQuery({ queryKey: ['plans'], queryFn: () => get('/api/v1/admin/plans'), enabled: part !== 'php', retry: false })
+  const plan = (plansData?.plans || []).find(row => row.id === account.plan_id)
 
   const phpMut = useMutation({
     mutationFn: version => patch(`/api/v1/accounts/${username}/php-version`, { php_version: version }),
@@ -153,17 +216,44 @@ function PhpAndLimits({ username, account, part = 'both' }) {
     onError: (e) => toast.error('Could not change PHP version', e.message),
   })
   const limitsMut = useMutation({
-    mutationFn: body => patch(`/api/v1/accounts/${username}/limits`, body),
-    onSuccess: (_, body) => { toast.success('Limits updated'); qc.setQueryData(['account', username], previous => ({ ...previous, ...body, cpu_cores: body.cpu_pct / 100 })); setLimitsDraft(current => current && JSON.stringify(resourcePayload(current)) !== JSON.stringify(body) ? current : null); setTouchedLimits({}); invalidate() },
+    mutationFn: ({ body }) => patch(`/api/v1/accounts/${username}/limits`, body),
+    onSuccess: (result, { body, draft }) => {
+      toast.success('Limits updated')
+      // The response is the updated account; older servers answer without it.
+      qc.setQueryData(['account', username], previous => ({ ...previous, ...savedLimits(body), ...(result?.username ? result : {}) }))
+      setLimitsDraft(current => current && current !== draft ? current : null)
+      setTouchedLimits({})
+      invalidate()
+    },
     onError: (e) => toast.error('Could not update resource limits', e.message),
   })
+  const resetMut = useMutation({
+    mutationFn: () => del(`/api/v1/admin/resources/accounts/${username}`),
+    onSuccess: () => {
+      toast.success('Limits reset to the plan', 'The per-account override was removed.')
+      setResetOpen(false)
+      setLimitsDraft(null)
+      setTouchedLimits({})
+      invalidate()
+      qc.invalidateQueries({ queryKey: ['resource-manager'] })
+    },
+  })
 
-  const limitsDirty = Object.keys(originalLimits).some(key=>Number(limits[key])!==Number(originalLimits[key]))
+  const limitsDirty = Object.keys(LIMIT_FIELDS).some(key => !sameLimit(limits[key], originalLimits[key]))
   const phpDirty = phpVersion !== account.php_version
-  const limitsValid = Number.isInteger(Number(limits.pids_max)) && Number(limits.cpu_cores)>=0.01 && Number(limits.cpu_cores)<=(account.host_cpu_cores??Infinity) && Number(limits.memory_gb)>=0.0625 && Number(limits.memory_gb)<=64 && Number(limits.io_mb)>=1 && Number(limits.pids_max)>=10
-  const saveLimits = () => limitsMut.mutateAsync(resourcePayload(limits))
+  const errors = Object.fromEntries(Object.keys(LIMIT_FIELDS).map(key => [key, limitError(key, limits[key], originalLimits[key], account)]))
+  const limitsValid = Object.values(errors).every(error => !error)
+  // A capped CPU allocation can be reconciled without another change, but
+  // it is not an unsaved draft of the operator's.
+  const canSaveLimits = limitsValid && (limitsDirty || cpuCapped(account))
+  const saveLimits = () => limitsMut.mutateAsync({ body: limitsPayload(limits, originalLimits, account), draft: limitsDraft })
+  const source = account.limits_source
+  const inherited = LIMIT_SOURCES[source]
+  // An account on a plan whose own limits win has a per-account override.
+  const overridesPlan = source === 'account' && account.plan_id != null
   useDraftSection(`account-php-${part}`, { dirty: part !== 'limits' && phpDirty, busy: phpMut.isPending, label: 'PHP version', onSave: () => phpMut.mutateAsync(phpVersion), onDiscard: () => setPhpVersion(null) })
   useDraftSection(`account-resources-${part}`, { dirty: part !== 'php' && limitsDirty, busy: limitsMut.isPending, disabled: !limitsValid, label: 'Resource limits', onSave: saveLimits, onDiscard: () => { setLimitsDraft(null); setTouchedLimits({}) } })
+  const limitField = (key, label, props) => <FormField label={label} error={touchedLimits[key] ? errors[key] : null} hint={props.hint}><Input aria-label={label} type="number" placeholder="Unlimited" value={limits[key]} onBlur={() => setTouchedLimits(t => ({ ...t, [key]: true }))} onChange={e => setLimits(l => ({ ...l, [key]: e.target.value }))} {...props.input} /></FormField>
 
   return (
     <>
@@ -179,16 +269,25 @@ function PhpAndLimits({ username, account, part = 'both' }) {
         </div>
       </SettingsSection>}
 
-      {part !== 'php' && <SettingsSection title="Resource limits" description="Limit compute resources for this account without changing its files or websites.">
+      {part !== 'php' && <SettingsSection title="Resource limits" description="Limit compute resources for this account without changing its files or websites. An empty field is Unlimited.">
         <div className="account-setting-fields">
-          <FormField label="CPU cores" error={touchedLimits.cpu_cores&&!(Number(limits.cpu_cores)>=0.01&&Number(limits.cpu_cores)<=(account.host_cpu_cores??Infinity))?`Enter a core count from 0.01 to ${account.host_cpu_cores??'the server maximum'}.`:null} hint={<>{`Maximum ${account.host_cpu_cores ?? 'server'} cores available.`}{account.configured_cpu_cores > account.host_cpu_cores && <span className="account-field-warning"><AlertTriangle aria-hidden="true" />Stored as {account.configured_cpu_cores} cores; effective use is capped at {account.host_cpu_cores}. Save to reconcile it.</span>}</>}><Input aria-label="CPU cores" type="number" min="0.01" max={account.host_cpu_cores} step="0.01" value={limits.cpu_cores} onBlur={()=>setTouchedLimits(t=>({...t,cpu_cores:true}))} onChange={e=>setLimits(l=>({...l,cpu_cores:e.target.value}))}/></FormField>
-          <FormField label="Memory (GB)" error={touchedLimits.memory_gb&&!(Number(limits.memory_gb)>=0.0625&&Number(limits.memory_gb)<=64)?'Memory must be between 0.0625 and 64 GB.':null} hint={`Server RAM: ${account.host_memory_gb?.toFixed(1) ?? 'n/a'} GB. Allocations can overcommit shared RAM.`}><Input aria-label="Memory (GB)" type="number" min="0.0625" step={1 / 1024} value={limits.memory_gb} onBlur={()=>setTouchedLimits(t=>({...t,memory_gb:true}))} onChange={e=>setLimits(l=>({...l,memory_gb:e.target.value}))}/></FormField>
-          <FormField label="Disk IO (MB/s)" error={touchedLimits.io_mb&&!(Number(limits.io_mb)>=1)?'Enter an IO limit of at least 1 MB/s.':null}><Input aria-label="Disk IO (MB/s)" type="number" min="1" value={limits.io_mb} onBlur={()=>setTouchedLimits(t=>({...t,io_mb:true}))} onChange={e=>setLimits(l=>({...l,io_mb:e.target.value}))}/></FormField>
-          <FormField label="Max processes" error={touchedLimits.pids_max&&!(Number.isInteger(Number(limits.pids_max))&&Number(limits.pids_max)>=10)?'Enter a whole process count of at least 10.':null}><Input aria-label="Max processes" type="number" min="10" value={limits.pids_max} onBlur={()=>setTouchedLimits(t=>({...t,pids_max:true}))} onChange={e=>setLimits(l=>({...l,pids_max:e.target.value}))}/></FormField>
-          {Number(limits.memory_gb) > account.host_memory_gb && <p className="text-sm text-warning">This allocation exceeds total server RAM. Simultaneous usage by accounts can exhaust memory.</p>}
-          <DisabledReasonButton reason={!limitsValid ? 'Correct the invalid values before updating limits.' : !limitsDirty ? 'Change a resource value to enable Update limits.' : null} loading={limitsMut.isPending} disabled={!limitsValid || !limitsDirty} onClick={() => saveLimits().catch(() => {})}>Update limits</DisabledReasonButton>
+          <div className="max-w-[65ch] text-sm" role="note" aria-label="Limit source">
+            {inherited
+              ? <p className="text-muted-foreground">{inherited(plan)} <span className="font-medium text-foreground">Saving creates a per-account override</span>, and later changes to that policy no longer change these limits.</p>
+              : overridesPlan
+                ? <p className="text-muted-foreground">This account has its own limits, which replace those of {plan ? `the plan ${plan.name}` : 'its plan'}.</p>
+                : <p className="text-muted-foreground">These limits are set on this account.</p>}
+            {overridesPlan && <Button className="mt-2" size="sm" variant="secondary" loading={resetMut.isPending} onClick={() => { resetMut.reset(); setResetOpen(true) }}><RotateCcw className="h-4 w-4" /> Reset to plan limits</Button>}
+          </div>
+          {limitField('cpu_cores', 'CPU cores', { hint: <>{`Maximum ${account.host_cpu_cores ?? 'server'} cores available.`}{cpuCapped(account) && <span className="account-field-warning"><AlertTriangle aria-hidden="true" />Stored as {account.configured_cpu_cores} cores; effective use is capped at {account.host_cpu_cores}. Update limits to store {account.host_cpu_cores}.</span>}</>, input: { min: '0.01', max: account.host_cpu_cores, step: '0.01' } })}
+          {limitField('memory_gb', 'Memory (GB)', { hint: `Server RAM: ${account.host_memory_gb?.toFixed(1) ?? 'n/a'} GB. Allocations can overcommit shared RAM.`, input: { min: '0.0625', max: '64', step: 1 / 1024 } })}
+          {limitField('io_mb', 'Disk IO (MB/s)', { input: { min: '1', max: '10000', step: '1' } })}
+          {limitField('pids_max', 'Max processes', { input: { min: '10', max: '10000', step: '1' } })}
+          {!blank(limits.memory_gb) && Number(limits.memory_gb) > account.host_memory_gb && <p className="text-sm text-warning">This allocation exceeds total server RAM. Simultaneous usage by accounts can exhaust memory.</p>}
+          <DisabledReasonButton reason={!limitsValid ? 'Correct the invalid values before updating limits.' : !canSaveLimits ? 'Change a resource value to enable Update limits.' : null} loading={limitsMut.isPending} disabled={!canSaveLimits} onClick={() => saveLimits().catch(() => {})}>Update limits</DisabledReasonButton>
           {limitsMut.isPending&&<p role="status" className="setting-row-description">Applying resource limits…</p>}
         </div>
+        <ConfirmDialog open={resetOpen} onOpenChange={open => { if (!open) setResetOpen(false) }} title={`Reset ${username} to plan limits?`} description={`The per-account override is removed and ${plan ? `the plan ${plan.name}` : 'the plan'} sets CPU, memory, disk IO and process limits again.`} confirmLabel="Reset to plan limits" variant="primary" loading={resetMut.isPending} error={resetMut.error} onConfirm={() => resetMut.mutate()} />
       </SettingsSection>}
     </>
   )
@@ -381,13 +480,13 @@ function PhpFunctionsTab({ username }) {
   const saveMut = useMutation({
     mutationFn: (disable_functions) =>
       put(`/api/v1/admin/accounts/${username}/php-functions`, { domain: selectedDomain || null, disable_functions }),
-    onSuccess: () => { toast.success('Override saved'); invalidate(); setDraft(null) },
+    onSuccess: () => { toast.success('Override saved', `PHP workers for ${username} were restarted to apply it.`); invalidate(); setDraft(null) },
     onError: (e) => toast.error('Could not save override', e.message),
   })
 
   const clearMut = useMutation({
     mutationFn: () => del(`/api/v1/admin/accounts/${username}/php-functions${selectedDomain ? `?domain=${encodeURIComponent(selectedDomain)}` : ''}`),
-    onSuccess: () => { toast.success('Override cleared — reverted to the scope above'); invalidate(); setDraft(null) },
+    onSuccess: () => { toast.success('Override cleared', `The scope above applies again. PHP workers for ${username} were restarted.`); invalidate(); setDraft(null) },
     onError: (e) => toast.error('Could not clear override', e.message),
   })
 
@@ -412,6 +511,13 @@ function PhpFunctionsTab({ username }) {
         <p className="text-sm text-muted-foreground">
           Hardened server default: <code className="font-mono text-xs">{(data?.default_disable_functions || []).join(', ') || '(none)'}</code>.
           Override it below for this account, or for one specific domain.
+        </p>
+        <p className="text-sm text-muted-foreground">
+          An override replaces the server default list; it is not added to it, so any function you leave out is allowed.
+          PHP enforces the list when a worker starts, so saving or clearing an override restarts this account's PHP workers.
+        </p>
+        <p className="text-sm text-muted-foreground">
+          Overrides saved before this version were merged once with the default list during the upgrade; saving now replaces the default list.
         </p>
         <FormField label="Scope">
           <Select value={selectedDomain} onChange={(e) => { setSelectedDomain(e.target.value); setDraft(null) }}>
@@ -466,6 +572,14 @@ function UsageRow({ label, value, percent }) {
   return <div className="account-usage-row"><span className="account-usage-label">{label}</span><strong>{value}</strong>{safePercent != null && <div className="account-usage-track" role="progressbar" aria-label={`${label} usage`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(safePercent)}><span style={{width:`${safePercent}%`}} /></div>}</div>
 }
 
+// Inode limits start after a warning period when a plan sets them.
+function inodeEnforcement(account) {
+  if (account.inode_enforcement_state === 'warning') return account.inode_enforce_at ? `Warning period, enforced from ${formatDate(account.inode_enforce_at)}` : 'Warning period'
+  if (account.inode_enforcement_state === 'due') return 'Inode limits are being applied'
+  if (account.inode_enforcement_state === 'enforced') return 'Enforced'
+  return account.inode_enforcement_state
+}
+
 function AccountOverview({ username, account }) {
   const {data:usage}=useQuery({queryKey:['usage',username],queryFn:()=>get(`/api/v1/accounts/${username}/usage`),refetchInterval:15000,retry:false})
   const {data:plans}=useQuery({queryKey:['plans'],queryFn:()=>get('/api/v1/admin/plans'),retry:false})
@@ -493,6 +607,7 @@ function AccountOverview({ username, account }) {
     ['PHP version',account.php_version?`PHP ${account.php_version}`:'n/a'],
     ['Created',account.created_at?formatDate(account.created_at):'n/a'],
     ['Namespace isolation',namespace?namespace.enabled?'Active':'Not active':'n/a'],
+    ...(account.inode_enforcement_state?[['Inode limits',inodeEnforcement(account)]]:[]),
   ]
   return <div className="account-overview">
     <section className="account-overview-card"><h2>Usage</h2><div className="account-usage-list">{rows.map(row=><UsageRow key={row.label} {...row}/>)}</div></section>
@@ -555,7 +670,7 @@ function AccountDetailContent() {
 
             <TabsContent value="overview"><AccountOverview username={username} account={account}/></TabsContent>
             <TabsContent value="domains" className="account-detail-tab"><Domains /></TabsContent>
-            <TabsContent value="databases" className="account-detail-tab"><Databases /></TabsContent>
+            <TabsContent value="databases" className="account-detail-tab"><Databases /><DatabaseRecoveryCopies username={username} /></TabsContent>
             <TabsContent value="email" className="account-detail-tab"><Email /></TabsContent>
             <TabsContent value="backups" className="account-detail-tab"><Backups /></TabsContent>
             <TabsContent value="security" className="account-detail-tab">{requestedTab==='ssl'?<><h2 className="sr-only">SSL/TLS</h2><Ssl/></>:requestedTab==='processes'?<Processes embedded/>:<SecurityLanding setSearchParams={setSearchParams}/>}</TabsContent>

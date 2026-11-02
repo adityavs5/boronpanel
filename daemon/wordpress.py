@@ -48,7 +48,7 @@ from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain, WordPressInstall, WordPressJob, WordPressSiteState, utcnow
 from shared.validation import (
-    ValidationError, generate_strong_password, validate_domain, validate_email_address,
+    ConflictError, NotFoundError, ValidationError, generate_strong_password, validate_domain, validate_email_address,
     validate_password_strength, validate_username,
 )
 
@@ -86,6 +86,14 @@ class WordPressError(Exception):
 
 class WordPressInputError(WordPressError, ValidationError):
     """A rejected install request: reported to the caller as a 400."""
+
+
+class WordPressNotFoundError(WordPressError, NotFoundError):
+    """The account, domain or job does not exist for this caller (404)."""
+
+
+class WordPressConflictError(WordPressError, ConflictError):
+    """The account cannot take a WordPress install in its state (409)."""
 
 
 def _generate_password(length: int = 20) -> str:
@@ -282,17 +290,18 @@ def _run_silent_install(
 
 
 def _account_and_domain(username: str, domain_name: str) -> tuple[int, str]:
+    # Caller input, so a 404/409 with its reason -- not an internal 502.
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise WordPressNotFoundError(f"account '{username}' not found")
         if account.status != "active":
-            raise RuntimeError(f"cannot install WordPress for an account in status '{account.status}'")
+            raise WordPressConflictError(f"cannot install WordPress for an account in status '{account.status}'")
         domain_row = session.scalar(
             select(Domain).where(Domain.domain == domain_name, Domain.account_id == account.id)
         )
         if domain_row is None:
-            raise RuntimeError(f"domain '{domain_name}' not found for account '{username}'")
+            raise WordPressNotFoundError(f"domain '{domain_name}' not found for account '{username}'")
         return account.id, domain_row.docroot
 
 
@@ -532,7 +541,7 @@ def _trigger_install(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise WordPressNotFoundError(f"account '{username}' not found")
         job = WordPressJob(account_id=account.id, domain=domain_name, status="pending", progress_message="queued")
         session.add(job)
         session.flush()
@@ -610,10 +619,10 @@ def get_job(params: dict) -> dict:
         session.connection().exec_driver_sql("BEGIN IMMEDIATE")
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise WordPressNotFoundError(f"account '{username}' not found")
         job = session.get(WordPressJob, job_id)
         if job is None or job.account_id != account.id:
-            raise WordPressError(f"WordPress install job {job_id} not found")
+            raise WordPressNotFoundError(f"WordPress install job {job_id} not found")
         reveal = job.status == "completed" and job.admin_password is not None
         result = _job_to_dict(job, reveal_password=reveal)
         # One-time reveal: the first successful read clears the persisted
@@ -632,7 +641,7 @@ def list_installs(params: dict) -> dict:
         if username:
             account = session.scalar(select(Account).where(Account.username == username))
             if account is None:
-                raise RuntimeError(f"account '{username}' not found")
+                raise WordPressNotFoundError(f"account '{username}' not found")
             query = query.where(WordPressInstall.account_id == account.id)
         rows = session.scalars(query).all()
         return {

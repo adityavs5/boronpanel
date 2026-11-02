@@ -17,6 +17,31 @@ from daemon.procutil import run
 from shared.config import settings
 from shared.validation import ValidationError, validate_db_identifier
 
+SQL_ERROR_MAX_CHARS=600
+# The mariadb client reports a rejected statement as "ERROR <code> (<state>)
+# at line N: ..."; client commands refused by --sandbox carry no code.
+_STATEMENT_ERROR=re.compile(r'ERROR(?: (\d+) \([0-9A-Za-z]{5}\))? at line \d+: ')
+
+
+class SqlImportError(ValidationError, RuntimeError):
+    """MariaDB rejected a statement of the SQL being loaded (HTTP 400).
+
+    The message is the client's first error line only: the diagnostics for
+    the SQL itself. A failure to run the load at all (connection, login,
+    lost server) stays an internal RuntimeError. Also a RuntimeError for
+    callers that already catch restore failures as one.
+    """
+
+
+def _statement_error(stderr):
+    for line in stderr.splitlines():
+        line=line.strip()
+        match=_STATEMENT_ERROR.match(line)
+        # 2000-2999 are client codes: lost or refused connections, not SQL.
+        if match and not (match.group(1) and 2000<=int(match.group(1))<3000):
+            return line[:SQL_ERROR_MAX_CHARS]
+    return None
+
 
 def _database_name(name):
     validate_db_identifier(name)
@@ -193,5 +218,8 @@ def restore_database(db_name,dump_path,work_directory,*,replace_tables=False):
                 f'--defaults-file={config}','--batch','--binary-mode','--sandbox','--local-infile=0',
                 '--skip-reconnect','--default-character-set=utf8mb4','--',db_name],
                 input_path=str(dump_path),discard_stdout=True,timeout=1800)
-            if not result.ok:raise RuntimeError(f'Database restore failed for {db_name}: {result.stderr.strip()}')
+            if not result.ok:
+                rejected=_statement_error(result.stderr)
+                if rejected:raise SqlImportError(rejected)
+                raise RuntimeError(f'Database restore failed for {db_name}: {result.stderr.strip()}')
     return {'database':db_name,'bytes_read':dump_path.stat().st_size}

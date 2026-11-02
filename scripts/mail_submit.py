@@ -8,6 +8,7 @@ import re
 import socket
 import struct
 import sys
+import traceback
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from daemon import mail_submission  # noqa: E402
@@ -91,8 +92,15 @@ def main() -> int:
             try:
                 prepared, sender = mail_submission.prepare_account_message(uid, bytes(body), envelope)
                 mail_submission.submit_via_postfix(prepared, sender, recipients)
+            except mail_submission.MailSubmissionUnavailable as exc:
+                # A key, key-table or queue outage: sendmail, PHP mail() and
+                # cron report a temporary failure instead of a final refusal.
+                reply(451, f"4.3.0 {str(exc)[:300]}")
             except mail_submission.MailSubmissionError as exc:
                 reply(550, str(exc)[:300])
+            except Exception:  # noqa: BLE001 - an unexpected fault must defer, not drop the client
+                traceback.print_exc(file=sys.stderr)  # the unit's journal, never the client
+                reply(451, "4.3.0 Local mail submission failed; try again later")
             else:
                 reply(250, "Queued")
             envelope, recipients = None, []

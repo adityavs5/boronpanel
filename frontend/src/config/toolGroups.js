@@ -8,7 +8,7 @@ const customerGroups = [
   ['Domains', ['/domains', '/subdomains', '/ftp', '/ssl', '/databases', '/dns', '/php']],
   ['Email', ['/email', '/email?webmail=1', '/email/settings', '/email/dns', '/email/spam', '/email/migration']],
   ['Software', ['/wordpress', '/node-apps', '/python-apps', '/redis', '/git', '/cron']],
-  ['Site tools', ['/files', '/redirects', '/forwarding', '/cache', '/website-maintenance', '/error-pages', '/backups']],
+  ['Site tools', ['/files', '/files?tool=permissions', '/redirects', '/forwarding', '/cache', '/website-maintenance', '/error-pages', '/backups']],
   ['Advanced tools', ['/ssh', '/terminal', '/logs', '/devtools', '/appearance']],
   ['Usage & security', ['/disk-usage', '/website-statistics', '/processes', '/malware', '/website-security', '/security', '/site-health']],
 ]

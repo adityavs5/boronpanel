@@ -105,7 +105,10 @@ def _identity_from_session_cookie(cookie_value: str) -> Identity | None:
         )
         if imp is not None:
             account = db.get(Account, imp.account_id)
-            if account is None or user.role != "admin" or imp.admin_panel_user_id != user.id:
+            # Termination ends these sessions (impersonation.end_account_sessions);
+            # the status check is the second layer, matching redeem_token.
+            if (account is None or account.status not in ("active", "suspended")
+                    or user.role != "admin" or imp.admin_panel_user_id != user.id):
                 return None
             return Identity(
                 panel_user_id=user.id, username=imp.admin_username, role="customer",
@@ -298,14 +301,16 @@ def require_account_access(identity: Identity, username: str) -> None:
 def require_domain_access(identity: Identity, domain: str) -> None:
     """Same as require_account_access, but for endpoints keyed by domain
     name (DNS/mail/SSL) rather than account username -- a customer must own
-    the domain's account, not just any account."""
+    the domain's account, not just any account. A malformed name is a 400
+    for everyone, as in daemon.rpc_authority: its syntax reveals nothing
+    about other tenants, while "not authorized" misdirected the user."""
     if identity.role == "admin":
         return
     if identity.role == "reseller":
         try:
             normalized_domain = validate_domain(domain)
         except ValidationError as exc:
-            raise HTTPException(status_code=403, detail="not authorized for this domain") from exc
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         with read_session() as db:
             account_id = db.scalar(select(Domain.account_id).where(Domain.domain == normalized_domain))
             if account_id is not None and _reseller_owns_account(db, identity, account_id):
@@ -320,7 +325,7 @@ def require_domain_access(identity: Identity, domain: str) -> None:
         # merely because the browser supplied a different DNS spelling.
         normalized_domain = validate_domain(domain)
     except ValidationError as exc:
-        raise HTTPException(status_code=403, detail="not authorized for this domain") from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     with read_session() as db:
         domain_row = db.scalar(
             select(Domain).where(

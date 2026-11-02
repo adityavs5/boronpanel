@@ -27,8 +27,10 @@ def stub_sysops(monkeypatch):
     def set_initial_password(username, password):
         calls.append(("set_initial_password", username, password))
 
-    def set_quota(username, soft, hard):
+    def set_quota(username, soft, hard, *, inode_soft=0, inode_hard=0):
         calls.append(("set_quota", username, soft, hard))
+        if inode_hard:
+            calls.append(("inode_quota", username, inode_soft, inode_hard))
 
     def lock_user(username):
         calls.append(("lock_user", username))
@@ -60,6 +62,10 @@ def stub_sysops(monkeypatch):
         return _Result()
 
     monkeypatch.setattr(ha.sysops, "run", run)
+    monkeypatch.setattr(ha.cgroups, "end_account_processes",
+                        lambda username, uid=None: calls.append(("end_processes", username, uid)))
+    monkeypatch.setattr(ha.cgroups, "resume_user_manager",
+                        lambda username, uid=None: calls.append(("resume_user_manager", username, uid)))
     monkeypatch.setattr(ha.sysops, "ensure_web_logs", lambda username: calls.append(("ensure_web_logs", username)))
     monkeypatch.setattr(ha.handlers_domain, "ensure_docroot", lambda username, docroot, domain_name=None, **kwargs: None)
     monkeypatch.setattr(ha.ols, "provision_vhost", lambda account: None)
@@ -651,12 +657,14 @@ def test_termination_waits_for_live_account_worker(isolated_db, stub_sysops):
     assert ha.terminate_account({'username': 'demo1'})['status'] == 'terminated'
 
 
+@pytest.mark.parametrize('home_existed', [False, True])
 @pytest.mark.parametrize('reactivate', [False, True])
-def test_quota_failure_never_activates_account(isolated_db, stub_sysops, monkeypatch, reactivate):
+def test_quota_failure_never_activates_account(isolated_db, stub_sysops, monkeypatch, reactivate, home_existed):
     if reactivate:
         with write_session() as session:
             session.add(Account(username='demo1', status='terminated', uid=5001, gid=5001))
-    def fail(*args):
+    monkeypatch.setattr(ha, '_home_exists', lambda username: home_existed)
+    def fail(*args, **kwargs):
         raise RuntimeError('quota unavailable')
     monkeypatch.setattr(ha.sysops, 'set_quota', fail)
     with pytest.raises(RuntimeError, match='quota unavailable'):
@@ -664,9 +672,13 @@ def test_quota_failure_never_activates_account(isolated_db, stub_sysops, monkeyp
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == 'demo1'))
         assert account is None or account.status == 'terminated'
+        if reactivate:  # the rolled-back identity is not left on the row
+            assert (account.uid, account.gid) == (5001, 5001)
     assert ('delete_linux_user', 'demo1') in stub_sysops
-
-    assert ('preserve_home', 'demo1') in stub_sysops
+    # A home useradd created goes with the identity: left behind it would be
+    # owned by a released uid that the next account receives. One that
+    # existed before (an older tenant's or restored data) is kept.
+    assert (('preserve_home', 'demo1') in stub_sysops) is home_existed
 
 
 def test_generated_credentials_authenticate_customer(isolated_db, stub_sysops):
@@ -937,7 +949,7 @@ def test_termination_drops_settings_through_the_domain_removal_list(isolated_db,
     """One list (domain.remove's) covers every name-keyed setting, staging included."""
     from daemon import handlers_domain
     purged = []
-    monkeypatch.setattr(handlers_domain, "_purge_domain_settings", lambda name: purged.append(name) or [])
+    monkeypatch.setattr(handlers_domain, "purge_domain_settings", lambda name: purged.append(name) or [])
     ha.create_account({"username": "demo1", "primary_domain": "purge.example"})
     ha.terminate_account({"username": "demo1"})
     assert purged == ["purge.example"]
@@ -949,3 +961,194 @@ def test_reactivation_drops_the_released_primary_domain_label(isolated_db, stub_
     ha.create_account({"username": "demo2", "primary_domain": "label.example"})
     result = ha.reactivate_account({"username": "demo1"})
     assert result["status"] == "active" and result["primary_domain"] is None
+
+
+# --- round 2: identity, suspension processes, inode limits, recovery catalog --
+
+
+def test_reactivation_records_the_new_identity_before_cgroup_setup(isolated_db, stub_sysops, monkeypatch):
+    """The uid a terminated row kept belongs to a released identity; the cgroup
+    resolver cross-checks the row against the Linux user, so a direct
+    account.reactivate failed whenever useradd picked another uid."""
+    from types import SimpleNamespace
+    from daemon import cgroups
+    with write_session() as session:  # a tombstone left by an older release
+        session.add(Account(username="demo1", status="terminated", uid=5001, gid=5001))
+    monkeypatch.setattr(ha.sysops, "create_linux_user", lambda username: (6001, 6001))
+    monkeypatch.setattr(cgroups, "_getpwnam", lambda username: SimpleNamespace(pw_uid=6001))
+    monkeypatch.setattr(ha.cgroups, "apply_limits",
+                        lambda username, *limits, uid=None: cgroups.account_slice_name(username, uid))
+
+    result = ha.reactivate_account({"username": "demo1"})
+
+    assert (result["status"], result["uid"], result["gid"]) == ("active", 6001, 6001)
+
+
+def test_failed_reactivation_puts_the_previous_identity_back(isolated_db, stub_sysops, monkeypatch):
+    with write_session() as session:
+        session.add(Account(username="demo1", status="terminated", uid=5001, gid=5001))
+    monkeypatch.setattr(ha.sysops, "create_linux_user", lambda username: (6001, 6001))
+
+    def no_slice(*args, **kwargs):
+        raise ha.cgroups.CgroupError("no slice")
+
+    monkeypatch.setattr(ha.cgroups, "apply_limits", no_slice)
+    with pytest.raises(ha.cgroups.CgroupError, match="no slice"):
+        ha.reactivate_account({"username": "demo1"})
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == "demo1"))
+        # A retry against a surviving home still needs the released identity.
+        assert (account.status, account.uid, account.gid) == ("terminated", 5001, 5001)
+
+
+def test_termination_clears_the_released_linux_identity(isolated_db, stub_sysops, monkeypatch):
+    ha.create_account({"username": "demo1"})
+    result = ha.terminate_account({"username": "demo1"})
+    assert (result["status"], result["uid"], result["gid"]) == ("terminated", None, None)
+
+    # A failed termination keeps the identity reserved for the retry.
+    ha.create_account({"username": "demo2"})
+    monkeypatch.setattr(ha, "TERMINATE_HOOKS", [_raise("dns down")])
+    result = ha.terminate_account({"username": "demo2"})
+    assert (result["status"], result["uid"]) == ("error", 5001)
+
+
+def test_suspension_ends_processes_left_running_after_logins_are_blocked(isolated_db, stub_sysops):
+    """nohup, tmux and screen processes outlived the ended SSH sessions."""
+    ha.create_account({"username": "demo1"})
+    stub_sysops.clear()
+    ha.suspend_account({"username": "demo1"})
+    names = [call[0] for call in stub_sysops]
+    assert ("end_processes", "demo1", 5001) in stub_sysops
+    # Logins are blocked before anything is killed, so nothing new can start.
+    assert names.index("lock_user") < names.index("end_processes")
+
+    stub_sysops.clear()
+    ha.unsuspend_account({"username": "demo1"})
+    assert ("resume_user_manager", "demo1", 5001) in stub_sysops
+    assert not any(call[0] == "end_processes" for call in stub_sysops)
+
+
+def test_rolled_back_suspension_ends_no_process(isolated_db, stub_sysops, monkeypatch):
+    ha.create_account({"username": "demo1"})
+    monkeypatch.setattr(ha, "SUSPEND_HOOKS", [_raise("ols down")])
+    with pytest.raises(RuntimeError, match="ols down"):
+        ha.suspend_account({"username": "demo1"})
+    assert not any(call[0] == "end_processes" for call in stub_sysops)
+
+
+def test_process_cleanup_failure_does_not_undo_the_suspension(isolated_db, stub_sysops, monkeypatch):
+    ha.create_account({"username": "demo1"})
+
+    def cgroupfs_gone(*args, **kwargs):
+        raise OSError("cgroupfs gone")
+
+    monkeypatch.setattr(ha.cgroups, "end_account_processes", cgroupfs_gone)
+    assert ha.suspend_account({"username": "demo1"})["status"] == "suspended"
+
+
+def test_upgrade_reconcile_also_ends_processes_of_suspended_accounts(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    with write_session() as session:
+        session.scalar(select(Account).where(Account.username == "demo1")).status = "suspended"
+    stub_sysops.clear()
+    assert ha.reconcile_suspended_logins() == 1
+    assert ("end_processes", "demo1", 5001) in stub_sysops
+
+
+def test_new_account_starts_with_its_inode_limits_enforced(isolated_db, stub_sysops):
+    """New accounts reported "warning" for a week with no inode limit applied."""
+    result = ha.create_account({"username": "demo1"})
+    assert result["inode_enforcement_state"] == "enforced" and result["inode_enforce_at"] is None
+    assert ("inode_quota", "demo1", 450_000, 500_000) in stub_sysops
+    assert ha.get_account({"username": "demo1"})["inode_enforcement_state"] == "enforced"
+
+
+def test_failed_inode_enforcement_stays_due_for_the_reconciler(isolated_db, stub_sysops, monkeypatch):
+    def set_quota(username, soft, hard, *, inode_soft=0, inode_hard=0):
+        if inode_hard:
+            raise RuntimeError("setquota failed")
+
+    monkeypatch.setattr(ha.sysops, "set_quota", set_quota)
+    result = ha.create_account({"username": "demo1"})
+    assert result["status"] == "active"
+    assert ha.get_account({"username": "demo1"})["inode_enforcement_state"] == "due"
+
+
+def test_inode_enforcement_error_never_aborts_a_committed_account(isolated_db, stub_sysops, monkeypatch):
+    """The account row is committed; the primary domain must still be provisioned."""
+    def broken(params=None):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(ha.inode_quotas, "enforce_due", broken)
+    result = ha.create_account({"username": "demo1"})
+    assert result["status"] == "active"
+    assert ha.get_account({"username": "demo1"})["inode_enforcement_state"] == "due"
+
+
+def test_imported_accounts_get_the_inode_warning_period(isolated_db, stub_sysops):
+    result = ha.create_account({"username": "demo1", "stage_inode_limits": True})
+    assert result["inode_enforcement_state"] == "warning"
+    assert not any(call[0] == "inode_quota" for call in stub_sysops)
+
+
+def test_account_on_a_plan_starts_with_the_plan_inode_limits(isolated_db, stub_sysops):
+    from daemon import plans
+    plan = plans.create_plan({"name": "Files", "inode_soft_limit": 90_000, "inode_hard_limit": 100_000})
+    result = ha.create_account({"username": "demo1", "plan_id": plan["id"]})
+    assert (result["inode_soft_limit"], result["inode_hard_limit"]) == (90_000, 100_000)
+    assert ("inode_quota", "demo1", 90_000, 100_000) in stub_sysops
+
+
+def test_reactivated_account_inode_limits_go_through_the_warning_period(isolated_db, stub_sysops):
+    """The new uid's quota starts without them; "enforced" was a false claim."""
+    ha.create_account({"username": "demo1"})
+    ha.terminate_account({"username": "demo1"})
+    result = ha.reactivate_account({"username": "demo1"})
+    assert result["inode_enforcement_state"] == "warning"
+
+
+def test_new_account_on_a_plan_starts_on_the_cpu_the_plan_enforces(isolated_db, stub_sysops, monkeypatch):
+    """[UW L10] cpu_cores 1.0 was stored on the account as cpu_pct 25 (0.25 cores)."""
+    from daemon import plans
+    from shared.models import Plan
+    monkeypatch.setattr("daemon.resource_manager.available_cpu_cores", lambda: 4)
+    applied = []
+    monkeypatch.setattr(ha.cgroups, "apply_limits",
+                        lambda username, cpu_pct, *rest, **kwargs: applied.append(cpu_pct))
+    plan = plans.create_plan({"name": "Core", "cpu_cores": 1.0})
+    with write_session() as session:  # a plan row saved by an older release
+        session.get(Plan, plan["id"]).cpu_pct = 25
+
+    ha.create_account({"username": "demo1", "plan_id": plan["id"]})
+
+    assert applied == [100]
+    with write_session() as session:
+        assert session.scalar(select(Account).where(Account.username == "demo1")).cpu_pct == 100
+
+
+def test_recovery_catalog_leaves_out_tombstones_of_reused_names(isolated_db, stub_sysops):
+    """'name~id' cannot be addressed by any restore, so it is not offered."""
+    from daemon import snapshot_jobs
+    from shared import models
+    first = ha.create_account({"username": "demo1"})
+    second = ha.create_account({"username": "demo2"})
+    with write_session() as session:
+        destination = models.SnapshotDestination(name="snapshots", kind="local", path="/tmp/fixture",
+                                                 namespace="fixture")
+        session.add(destination)
+        session.flush()
+        policy = models.SnapshotPolicy(name="nightly", destination_id=destination.id)
+        session.add(policy)
+        session.flush()
+        for account_id in (first["id"], second["id"]):
+            session.add(models.SnapshotRun(account_id=account_id, destination_id=destination.id,
+                                           policy_id=policy.id, status="completed"))
+    ha.terminate_account({"username": "demo1"})
+    ha.terminate_account({"username": "demo2"})
+    ha.create_account({"username": "demo1"})  # the old row becomes demo1~<id>
+
+    catalog = snapshot_jobs.account_catalog({})
+
+    former = [row["username"] for row in catalog["accounts"] if row["account_group"] == "former"]
+    assert former == ["demo2"] and catalog["counts"]["former"] == 1

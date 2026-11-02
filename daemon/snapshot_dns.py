@@ -6,7 +6,20 @@ from sqlalchemy import select, text
 from shared.db import write_session
 from shared.models import Account, DnsZone, CloudflareZone
 from shared.validation import ValidationError
-from daemon import cloudflare, cloudflare_accounts, powerdns
+from daemon import cloudflare, cloudflare_accounts, dnsprovider, powerdns
+
+
+def _content(type_name, content):
+    """Saved record content in the form the panel writes today.
+
+    Before TXT values were split into 255-octet strings, PowerDNS stored a
+    long value (a DKIM key) as one string, which dnspython rejects. Reading
+    TXT through the same normalization as every panel write keeps recovery
+    points taken before that change restorable.
+    """
+    if type_name in ('TXT', 'SPF'):
+        return dnsprovider.normalize_txt(content)
+    return content
 
 
 def _bindings(account):
@@ -181,7 +194,8 @@ def validate_for_restore(account, payload, selected_zones=None):
                         or '\x00' in value['content']):
                     raise ValidationError('Invalid saved DNS record content or disabled flag')
                 try:
-                    parsed = dns.rdata.from_text('IN', rtype, value['content'], origin=origin, relativize=False)
+                    parsed = dns.rdata.from_text('IN', rtype, _content(type_name, value['content']),
+                                                 origin=origin, relativize=False)
                 except Exception:
                     raise ValidationError('Saved DNS record content is not valid for its type') from None
                 normalized.append(dict(content=parsed.to_text(origin=origin, relativize=False), disabled=value['disabled']))
@@ -209,7 +223,7 @@ def _record_state(records):
     import dns.rdata
     result = {}
     for row in records:
-        values = sorted((dns.rdata.from_text('IN', row['type'], value['content'],
+        values = sorted((dns.rdata.from_text('IN', row['type'], _content(row['type'], value['content']),
                          relativize=False).to_digestable().hex(), value['disabled']) for value in row['records'])
         comments = sorted((comment['content'], comment['account'], comment['modified_at']) for comment in row['comments'])
         result[(dns.name.from_text(row['name']).canonicalize().to_text(), row['type'])] = (row['ttl'], values, comments)

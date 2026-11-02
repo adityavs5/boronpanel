@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 from pathlib import Path
 import sys
 
 # The filter deliberately has no access to Boron's root-only configuration or
 # secrets. Its only authority is the OpenDKIM-owned KeyTable/key files.
+# Postfix copies the filter's stderr into bounce text; loading these empty
+# placeholders logs nothing (shared/config.py).
 os.environ["BORON_CONFIG"] = "/dev/null"
 os.environ["BORON_SECRETS"] = "/dev/null"
 os.environ["BORON_API_SECRETS"] = "/dev/null"
-# Postfix copies the filter's stderr into the bounce text. Loading the empty
-# placeholder configuration logs a schema-migration warning, which must not
-# end up in every bounce sent to a mailbox owner.
-logging.getLogger().addHandler(logging.NullHandler())
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from daemon import mail_submission  # noqa: E402
 

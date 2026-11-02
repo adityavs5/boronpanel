@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Form
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 from starlette.requests import Request
 
 from api.rpc import call_daemon
 from api.security import Identity, get_identity, require_account_access
 from api.templates import templates
+
+logger = logging.getLogger(__name__)
 
 # Self-service, not admin-only: triggering/browsing/restoring one's own
 # backups matches JetBackup's own customer-facing restore feature, same
@@ -144,6 +149,29 @@ def get_job(username: str, job_id: int, identity: Identity = Depends(get_identit
 def browse_backup(username: str, job_id: int, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
     return call_daemon("backup.job.browse", identity, username=username, job_id=job_id)
+
+
+def _cleanup_download(identity: Identity, username: str, cleanup_id: str) -> None:
+    try:
+        call_daemon("backup.job.download.cleanup", identity, username=username, cleanup_id=cleanup_id)
+    except Exception:
+        logger.exception("Could not clean backup download %s", cleanup_id)
+
+
+@api_router.get("/{job_id}/download")
+def download_backup(username: str, job_id: int, identity: Identity = Depends(get_identity)):
+    """Stream one of the account's own completed backups.
+
+    Same handoff and cleanup as the administrator's portable-archive
+    download; borond allows one download at a time per account.
+    """
+    require_account_access(identity, username)
+    prepared = call_daemon("backup.job.download", identity, username=username, job_id=job_id)
+    return FileResponse(
+        prepared["path"], filename=prepared["filename"], media_type="application/octet-stream",
+        headers={"Cache-Control": "private, no-store"},
+        background=BackgroundTask(_cleanup_download, identity, username, prepared["cleanup_id"]),
+    )
 
 
 class TriggerRestoreBody(BaseModel):

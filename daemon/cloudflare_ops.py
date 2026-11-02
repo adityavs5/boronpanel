@@ -30,7 +30,7 @@ from sqlalchemy import select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, CloudflareAccount, CloudflareSettings, CloudflareZone, DnsZone, Domain
-from shared.validation import validate_domain
+from shared.validation import ConflictError, NotFoundError, ValidationError, validate_domain
 
 from daemon import cloudflare, cloudflare_accounts, dnsprovider, events, powerdns
 from daemon.dns_zone_lookup import label_within_zone
@@ -204,15 +204,15 @@ def lockdown(params: dict) -> dict:
 
     if enabled:
         if not params.get("confirm"):
-            raise RuntimeError("enabling Cloudflare-only lockdown requires confirm=true")
+            raise ValidationError("enabling Cloudflare-only lockdown requires confirm=true")
         if not cf_ranges:
-            raise RuntimeError(
+            raise ConflictError(
                 "the Cloudflare ranges file is empty/missing -- run cf.refresh_ranges first "
                 "(the ranges must exist before UFW is scoped to them)"
             )
         unsafe = _lockdown_unsafe_domains()
         if unsafe and not params.get("force"):
-            raise RuntimeError(
+            raise ConflictError(
                 "refusing lockdown -- these domains are not on an active Cloudflare zone and would become "
                 f"unreachable: {', '.join(sorted(unsafe)[:10])}"
                 + (" ..." if len(unsafe) > 10 else "")
@@ -399,7 +399,7 @@ def _require_row(zone: str) -> CloudflareZone:
     with write_session() as session:
         row = session.scalar(select(CloudflareZone).where(CloudflareZone.zone == zone))
         if row is None:
-            raise RuntimeError(f"zone '{zone}' is not on Cloudflare")
+            raise NotFoundError(f"zone '{zone}' is not on Cloudflare")
         session.expunge(row)
         return row
 
@@ -497,15 +497,15 @@ def zone_enable(params: dict) -> dict:
     with write_session() as session:
         dns_zone = session.scalar(select(DnsZone).where(DnsZone.zone == domain))
         if dns_zone is None:
-            raise RuntimeError(f"no Boron-managed DNS zone for '{domain}' -- create one first")
+            raise NotFoundError(f"no Boron-managed DNS zone for '{domain}' -- create one first")
         account_id = dns_zone.account_id
         if session.scalar(select(CloudflareZone).where(CloudflareZone.zone == domain)) is not None:
-            raise RuntimeError(f"zone '{domain}' is already on Cloudflare")
+            raise ConflictError(f"zone '{domain}' is already on Cloudflare")
 
     # Phase 2+3 feature 1: pick a pool account (or the legacy single token).
     assignment, reason = cloudflare_accounts.assign_for_new_zone()
     if reason:
-        raise RuntimeError(reason)
+        raise ConflictError(reason)
     token = assignment["token"] if assignment else None
     cf_account_pk = assignment["id"] if assignment else None
     cf_account_id = assignment["account_id"] if assignment else None
@@ -517,7 +517,7 @@ def zone_enable(params: dict) -> dict:
             # 1061/1097: the domain already exists under some other Cloudflare
             # account -- nothing we can fix from here (plan SS2).
             if exc.cf_code in (1061, 1097):
-                raise RuntimeError(
+                raise ConflictError(
                     f"Cloudflare refused the zone: {exc.detail} -- the domain is already registered on "
                     "another Cloudflare account. Remove it there first, or keep local DNS."
                 ) from exc
@@ -613,7 +613,7 @@ def zone_disable(params: dict) -> dict:
                 _resync_cloudflare_to_powerdns(domain, row.cf_zone_id)
             except cloudflare.CloudflareError:
                 if not params.get("force"):
-                    raise RuntimeError(
+                    raise ConflictError(
                         f"could not sync '{domain}' records back from Cloudflare -- reverting now could lose "
                         "edits made while Cloudflare was active. Retry later, or pass force=true to revert "
                         "with the last-known local records."
@@ -635,7 +635,7 @@ def zone_disable(params: dict) -> dict:
             session.flush()
             cloudflare_accounts._sync_zone_count(session, cf_account_pk)
 
-    nameservers = [f"ns1.{domain}", f"ns2.{domain}"]
+    nameservers = _local_apex_nameservers(domain)
     return {
         "zone": domain,
         "status": "reverted",
@@ -643,16 +643,34 @@ def zone_disable(params: dict) -> dict:
         "nameservers": nameservers,
         "message": (
             "Local DNS is authoritative again. Point the domain's registrar nameservers back to "
-            f"{nameservers[0]} and {nameservers[1]}."
+            f"{', '.join(nameservers)}."
         ),
     }
+
+
+def _local_apex_nameservers(domain: str) -> list[str]:
+    """The delegation local DNS now serves: the local zone's own apex NS,
+    which no resync touches, else the default delegation
+    (dnssetup.local_nameservers) -- not a hard-coded ns1/ns2.<domain>, which
+    the zone may not use and which may have no address at all."""
+    try:
+        values = [value.rstrip(".") for rrset in powerdns.list_records(domain)
+                  if rrset["type"] == "NS" and rrset["name"].rstrip(".") == domain for value in rrset["values"]]
+    except Exception:  # noqa: BLE001 -- the revert is done; only this hint falls back
+        logger.exception("Could not read the local nameservers of %s", domain)
+        values = []
+    if values:
+        return values
+    from daemon import dnssetup  # lazy: dnssetup imports this module
+
+    return dnssetup.local_nameservers(domain)
 
 
 def purge_cache(params: dict) -> dict:
     domain = validate_domain(params["domain"])
     row = _require_row(domain)
     if row.status != "active":
-        raise RuntimeError(f"zone '{domain}' is not active on Cloudflare yet")
+        raise ConflictError(f"zone '{domain}' is not active on Cloudflare yet")
     with cloudflare.use_token(_zone_token(row)):
         cloudflare.purge_cache(domain, zone_id=row.cf_zone_id)
     with write_session() as session:
@@ -679,12 +697,12 @@ def enable_proxy(params: dict) -> dict:
 
     domain = validate_domain(params["domain"])
     if not dnsprovider.proxied_allowed():
-        raise RuntimeError(
+        raise ConflictError(
             "the Cloudflare real-IP rails are not ready yet (see cf.rails_status) -- refusing to enable proxy"
         )
     row = _require_row(domain)
     if row.status != "active":
-        raise RuntimeError(f"zone '{domain}' is not active on Cloudflare yet")
+        raise ConflictError(f"zone '{domain}' is not active on Cloudflare yet")
     changed = 0
     with cloudflare.use_token(_zone_token(row)):
         for rrset in cloudflare.list_records(domain, zone_id=row.cf_zone_id):

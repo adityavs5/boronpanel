@@ -573,7 +573,8 @@ def test_destination_visibility_disable_and_safe_delete(environment):
     changed = jobs.set_destination({'id':destination['id'],'enabled':False,'customer_visible':False})
     assert changed['enabled'] is False and changed['customer_visible'] is False
     result = jobs.delete_destination({'id':destination['id']})
-    assert result == {'id':destination['id'],'status':'configuration_removed','remote_data_deleted':False}
+    assert result == {'id':destination['id'],'status':'configuration_removed','remote_data_deleted':False,
+                      'jobs_deleted':[],'jobs_updated':[]}
     assert jobs.destinations({})['destinations'] == []
 
 

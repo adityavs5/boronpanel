@@ -41,8 +41,6 @@ def bootstrap_challenge():
     with write_session() as session:
         if session.scalar(select(Domain.id).where(Domain.domain==hostname)):
             raise ValidationError('Panel hostname is already registered as a customer site')
-        vhosts,processes=ols._all_active_vhosts(session)
-        waf=ols.waf_template_context(session)
     challenge=webroot/'.well-known/acme-challenge'
     if challenge.resolve()!=challenge:raise ValidationError('Panel challenge directory contains a symbolic link')
     challenge.mkdir(parents=True,exist_ok=True,mode=0o755)
@@ -55,7 +53,16 @@ def bootstrap_challenge():
     content=ols._env.get_template('panel_acme_vhost.conf.j2').render(webroot=str(webroot))
     writer=ConfigWriterMulti(targets={'main':ols.HTTPD_CONFIG_PATH,'panel':str(Path(settings.vhost_conf_dir)/'boron-panel-acme/vhconf.conf')},
         validate=ols._validate_multi,reload=ols._reload,verify=ols._verify,backup_dir=settings.backup_dir,subsystem='ols')
-    result=writer.apply({'main':ols.render_httpd_config(vhosts,processes,waf=waf),'panel':content})
+    # One OLS read-render-apply transaction, like every other main-config
+    # writer: a concurrent vhost change cannot be lost between the read
+    # and the write, and the main config keeps the tuned server settings.
+    with ols._CONFIG_LOCK:
+        with write_session() as session:
+            vhosts,processes=ols._all_active_vhosts(session)
+            waf=ols.waf_template_context(session)
+            ols_settings=ols._ols_settings_from_session(session)
+        result=writer.apply({'main':ols.render_httpd_config(vhosts,processes,waf=waf,ols_settings=ols_settings,
+            infrastructure=ols.infrastructure_in_place(('panel',))),'panel':content})
     if not result.ok:raise RuntimeError('Panel challenge routing failed: '+result.summary())
     return {'hostname':hostname,'webroot':str(webroot)}
 
@@ -86,6 +93,12 @@ def issue_certificate(email):
         '--email',email,'--cert-name',route['hostname'],'-d',route['hostname'],
         *challenge_args, '--keep-until-expiring','--deploy-hook',hook],timeout=1200)
     result.raise_if_failed('Issue panel certificate')
+    # Without a webmail or mail hostname the panel hostname is the mail
+    # hostname. certbot skips the deploy hook when it keeps an unexpired
+    # certificate, so deploy the mail-service copy here too, as ssl.py does.
+    if route['hostname']==(settings.mail_hostname or settings.webmail_hostname or settings.panel_hostname):
+        from scripts.ssl_deploy_hook import _deploy_mail_service_certificate
+        _deploy_mail_service_certificate(route['hostname'])
     return {'hostname':route['hostname'],'status':'issued','challenge':challenge_mode}
 
 

@@ -72,10 +72,34 @@ class PlanUpdateBody(BaseModel):
     entry_processes: int | None = None
 
 
+# Each limit has a legacy field and policy fields with their own defaults.
+_LIMIT_GROUPS = (
+    {"cpu_pct", "cpu_cores"},
+    {"mem_mb", "memory_max_mb", "memory_high_mb"},
+    {"io_mb", "io_read_bps", "io_write_bps"},
+    {"pids_max", "nproc"},
+)
+
+
+def _create_fields(body: PlanBody) -> dict:
+    """The plan.create parameters for a request body.
+
+    When a request sets one form of a limit (say cpu_cores 1.0), the other
+    form's default (cpu_pct 25) is left out so the daemon derives it, rather
+    than storing a plan whose two forms disagree.
+    """
+    fields = body.model_dump()
+    for group in _LIMIT_GROUPS:
+        if group & body.model_fields_set:
+            for name in group - body.model_fields_set:
+                fields.pop(name)
+    return fields
+
+
 @api_router.post("")
 def create_plan(body: PlanBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
-    return call_daemon("plan.create", identity, **body.model_dump())
+    return call_daemon("plan.create", identity, **_create_fields(body))
 
 
 @api_router.get("")

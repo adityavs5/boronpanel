@@ -235,3 +235,6 @@ def test_filter_import_does_not_leak_config_warnings_into_bounces(tmp_path):
                             env=env, cwd=tmp_path, timeout=60, check=False)
     assert result.returncode == 0, result.stderr
     assert "schema was migrated" not in result.stderr
+    assert result.stderr == ""
+    # Fixed at the source (shared/config.py), not hidden by a logging shim.
+    assert "NullHandler" not in (REPO / "scripts" / "mail_sign_filter.py").read_text()

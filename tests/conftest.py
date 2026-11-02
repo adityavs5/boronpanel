@@ -233,6 +233,7 @@ def _offline_mail_mx_check(monkeypatch, request):
 
     monkeypatch.setattr(mail_local_delivery, "public_mx_status",
                         lambda domain, local_addresses=None: mail_local_delivery.HERE)
+    monkeypatch.setattr(mail_local_delivery, "public_lookup", lambda name, rtype, deadline=None: ("error", []))
 
 
 @pytest.fixture()

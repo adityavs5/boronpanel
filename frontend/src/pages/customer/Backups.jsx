@@ -4,8 +4,9 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Archive, Plus, RotateCcw, RefreshCw, FolderOpen, Download, Mail, MoreHorizontal } from 'lucide-react'
+import { AlertTriangle, Archive, Plus, RotateCcw, RefreshCw, FolderOpen, Download, Mail, MoreHorizontal } from 'lucide-react'
 import { get, patch, post } from '@/lib/api'
+import { startDownload } from '@/lib/download'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { formatBytes, formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -47,9 +48,14 @@ function BackupEmailPreferences({ username }) {
 // Poll while any job is still working so progress + status stay live.
 const isActive = (rows) => rows.some((j) => j.status === 'running' || j.status === 'pending')
 
-function ProgressCell({ row }) {
+// A completed restore with error set finished with warnings (items skipped,
+// new passwords to set): shown as a warning, not as a failure.
+export function ProgressCell({ row }) {
   if (row.status === 'failed' && row.error) {
     return <span className="text-sm text-danger">{row.error}</span>
+  }
+  if (row.status === 'completed' && row.error) {
+    return <span className="text-sm"><span className="block text-muted-foreground">{row.progress_message}</span><span className="mt-1 flex items-start gap-1.5 break-words text-foreground"><AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" aria-hidden="true" />{row.error}</span></span>
   }
   return <span className="text-sm text-muted-foreground">{row.progress_message || '—'}</span>
 }
@@ -164,7 +170,8 @@ function BrowseDialog({ username, job, onOpenChange }) {
 
 export default function Backups() {
   const username = useAccountUsername()
-  const isAdmin = useAuth(state => state.role === 'admin')
+  const role = useAuth(state => state.role)
+  const isAdmin = role === 'admin'
   const qc = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
   const [section, setSection] = useState(searchParams.get('view') === 'restores' ? 'history' : 'inventory')
@@ -244,6 +251,18 @@ export default function Backups() {
   })
 
   const needsItemRef = !['full', 'databases'].includes(form.kind)
+  // A terminated account can only come back from a full backup, and only an
+  // administrator may recreate it (the API refuses everything else with 400).
+  const account = useQuery({
+    queryKey: ['account', username],
+    queryFn: () => get(`/api/v1/accounts/${username}`),
+    enabled: !!username && role !== 'customer',
+  })
+  const terminated = ['terminated', 'error'].includes(account.data?.status)
+  const canRestore = row => !terminated || (isAdmin && row.kind === 'full')
+  const download = row => startDownload(`/api/v1/accounts/${encodeURIComponent(username)}/backups/${row.id}/download`, {
+    onError: error => toast.error('Could not download backup', error.message),
+  })
 
   const inventory = [
     ...(snapshots.data?.runs || []).map(row => ({ ...row, _source: 'snapshot', _key: `snapshot-${row.id}`, kind: (row.options?.components || []).map(value => ({files: 'Files', databases: 'Databases', mail: 'Email', config: 'Configuration'})[value] || value).join(', ') || 'Recovery point' })),
@@ -273,8 +292,11 @@ export default function Backups() {
       render: (r) =>
         r._source === 'snapshot' ? <Button size="sm" variant="secondary" onClick={() => setSnapshot(r)}>View details</Button> : r.status === 'completed' ? (
           <div className="flex justify-end gap-1">
-            <Button variant="outline" size="sm" onClick={() => setToRestore(r)}>
+            {canRestore(r) && <Button variant="outline" size="sm" onClick={() => setToRestore(r)}>
               <RotateCcw className="h-4 w-4" /> Restore
+            </Button>}
+            <Button asChild variant="outline" size="sm">
+              <a href={`/api/v1/accounts/${encodeURIComponent(username)}/backups/${r.id}/download`} aria-label={`Download archive ${r.id}`} onClick={event => { event.preventDefault(); download(r) }}><Download className="h-4 w-4" /> Download</a>
             </Button>
             <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={`Actions for backup ${r.id}`}><MoreHorizontal className="h-4 w-4"/></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => setToBrowse(r)}><FolderOpen className="h-4 w-4"/>Browse</DropdownMenuItem>{isAdmin && r.kind === 'full' && <DropdownMenuItem onSelect={() => window.open(`/api/v1/admin/account-archives/${r.id}/download`, '_blank', 'noopener')}><Download className="h-4 w-4"/>Portable archive</DropdownMenuItem>}</DropdownMenuContent></DropdownMenu>
           </div>
@@ -442,7 +464,7 @@ export default function Backups() {
         open={!!toRestore}
         onOpenChange={(v) => { if (!v) setToRestore(null) }}
         title={toRestore ? `Restore ${toRestore.kind} backup?` : 'Restore backup?'}
-        description="This overwrites the current data with the contents of this backup point. This cannot be undone."
+        description={terminated ? `${username} is terminated. Restoring this full backup recreates the account with its files, databases, mail and DNS.` : 'This overwrites the current data with the contents of this backup point. This cannot be undone.'}
         confirmLabel="Restore"
         loading={restoreMut.isPending}
         loadingDescription="Starting the restore… this can take up to 30 seconds. Do not close this page."

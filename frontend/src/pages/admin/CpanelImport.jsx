@@ -1,7 +1,7 @@
 import DirectAdminMigration from './DirectAdminMigration'
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Copy, DownloadCloud, FileArchive, Link2, Plus, Upload, Loader2, RefreshCw } from 'lucide-react'
+import { AlertTriangle, Copy, DownloadCloud, FileArchive, Link2, Plus, Upload, Loader2, RefreshCw } from 'lucide-react'
 import { get, post } from '@/lib/api'
 import { formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -16,10 +16,12 @@ import { toast } from '@/components/ui/Toast'
 const active = rows => rows.some(job => job.status === 'running' || job.status === 'pending')
 const panelLabels = { cpanel: 'cPanel', directadmin: 'DirectAdmin', boron: 'Boron archive' }
 
+// A completed import with error set finished with warnings ("restored with
+// warnings": skipped names, new passwords to set), so it is not shown in red.
 function Progress({ row }) {
-  return row.status === 'failed' && row.error
-    ? <span className="text-sm text-danger">{row.error}</span>
-    : <span className="text-sm text-muted-foreground">{row.progress_message || '—'}</span>
+  if (row.status === 'failed' && row.error) return <span className="text-sm text-danger">{row.error}</span>
+  if (row.status === 'completed' && row.error) return <span className="text-sm"><span className="block text-muted-foreground">{row.progress_message}</span><span className="mt-1 flex items-start gap-1.5 break-words text-foreground"><AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" aria-hidden="true" />{row.error}</span></span>
+  return <span className="text-sm text-muted-foreground">{row.progress_message || '—'}</span>
 }
 
 export default function AccountImports() {
@@ -146,7 +148,9 @@ export default function AccountImports() {
             {detail.error && <div role="alert" className="text-danger text-sm">Could not refresh progress: {detail.error.message}. Retrying automatically; last known status is shown.</div>}
             {accountPassword && <div className="rounded-panel border border-warning/40 bg-warning/10 p-4"><p className="font-semibold">New account password</p><p className="mt-1 text-sm text-muted-foreground">Save this now. It is displayed only once.</p><div className="mt-3 flex gap-2"><code className="min-w-0 flex-1 select-all break-all rounded-btn border border-border bg-card p-2 font-mono" data-bwignore="true">{accountPassword}</code><Button variant="secondary" onClick={() => copy(accountPassword)}><Copy className="h-4 w-4" />Copy</Button></div></div>}
             {shown.panel === 'boron' && <div className="grid gap-3 sm:grid-cols-2"><div className="rounded-btn border border-border p-3"><p className="text-xs text-muted-foreground">Archive version</p><p className="font-semibold">{shown.archive_version || '—'}</p></div><div className="rounded-btn border border-border p-3"><p className="text-xs text-muted-foreground">Verified components</p><p className="font-semibold">{shown.components_verified ?? '—'}</p></div></div>}
-            {shown.error && <div className="rounded-btn border border-danger/30 bg-danger/10 p-3 text-sm text-danger">{shown.error}</div>}
+            {shown.error && (shown.status === 'completed'
+              ? <div role="status" className="flex items-start gap-2 break-words rounded-btn border border-warning/40 bg-warning/10 p-3 text-sm text-foreground"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden="true" />{shown.error}</div>
+              : <div className="break-words rounded-btn border border-danger/30 bg-danger/10 p-3 text-sm text-danger">{shown.error}</div>)}
             {shown.panel !== 'boron' && <div><h3 className="mb-2 text-sm font-semibold">Per-item report</h3>{shown.results?.length ? <div className="max-h-80 overflow-auto rounded-btn border border-border"><Table><THead><TR><TH>Item</TH><TH>Status</TH><TH>Detail</TH></TR></THead><TBody>{shown.results.map((result, index) => <TR key={index}><TD className="whitespace-nowrap font-mono text-xs">{result.item}</TD><TD><StatusBadge status={result.status} /></TD><TD className="text-sm text-muted-foreground">{result.detail || '—'}</TD></TR>)}</TBody></Table></div> : <p className="text-sm text-muted-foreground">{running ? 'Preparing the source archive. No restoration items have completed yet.' : 'This older migration has no item details. Review the original error above. Retry with the source credentials or archive to obtain a new detailed report.'}</p>}</div>}
           </>}
         </DialogBody><DialogFooter>{shown?.status === 'failed' && <Button variant="secondary" onClick={() => { const job = shown; setSelected(null); setAccountPassword(null); if (job.source === 'directadmin_remote') setRemoteOpen(true); else {setForm({username:job.username,panel:job.panel,source:'upload',url:''});setOpen(true)} }}>Retry migration</Button>}<Button variant="secondary" onClick={() => { setSelected(null); setAccountPassword(null) }}>Close</Button></DialogFooter>

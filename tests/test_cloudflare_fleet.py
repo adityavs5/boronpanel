@@ -14,6 +14,7 @@ from daemon import cloudflare, cloudflare_accounts, cloudflare_ops, firewall, ha
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, CloudflareSettings, CloudflareZone, DnsZone, Domain
+from shared.validation import ConflictError, ValidationError
 
 from tests.test_cloudflare import FakeCF
 from tests.test_cloudflare_zones import FakePDNS
@@ -260,19 +261,20 @@ def fake_ufw(monkeypatch):
 
 
 def test_lockdown_requires_confirm(cf, fake_ufw):
-    with pytest.raises(RuntimeError, match="confirm"):
+    # User errors are 400/409 with their message, never an opaque 502.
+    with pytest.raises(ValidationError, match="confirm"):
         cloudflare_ops.lockdown({"enabled": True})
 
 
 def test_lockdown_refuses_without_ranges(cf, fake_ufw):
-    with pytest.raises(RuntimeError, match="ranges"):
+    with pytest.raises(ConflictError, match="ranges"):
         cloudflare_ops.lockdown({"enabled": True, "confirm": True})
 
 
 def test_lockdown_refuses_with_unproxied_domain(cf, fake_ufw, monkeypatch):
     _write_ranges()
     _account_and_domain()  # a Domain with no active CF zone
-    with pytest.raises(RuntimeError, match="unreachable"):
+    with pytest.raises(ConflictError, match="unreachable"):
         cloudflare_ops.lockdown({"enabled": True, "confirm": True})
 
 

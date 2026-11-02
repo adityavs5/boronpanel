@@ -10,6 +10,7 @@ import { Input, FormField } from '@/components/ui/Input'
 import { AccountPasswordInput, AccountUsernameInput, PlanLimits } from '@/components/ui/AccountFields'
 import { FormActions } from '@/components/ui/FormActions'
 import { Select } from '@/components/ui/Select'
+import { ErrorReference } from '@/components/ui/ErrorReference'
 import { toast } from '@/components/ui/Toast'
 import { waitForControlTask } from '@/lib/control-tasks'
 
@@ -121,7 +122,7 @@ export default function CreateAccount() {
       <FormActions className="account-create-actions">
         <div className="mr-auto min-w-0 text-sm">
           {create.isPending && <p role="status" className="text-muted-foreground">{taskProgress?.progress_message || `Creating ${form.username || 'hosting account'}… this can take up to 30 seconds. Do not close this page.`}</p>}
-          {!create.isPending && create.error && <p role="alert" className="text-danger">{create.error.message}</p>}
+          {!create.isPending && create.error && <div role="alert"><p className="text-danger">{create.error.reason ? `Account not created: ${create.error.reason}` : create.error.message}</p><ErrorReference reference={create.error.reference} /></div>}
         </div>
         {create.isPending ? <Button type="button" variant="secondary" disabled>Cancel</Button> : <Button type="button" variant="secondary" asChild><Link to="/accounts">Cancel</Link></Button>}
         <Button type="submit" size="lg" loading={create.isPending} disabled={!!usernameError || !!domainError || !!passwordError || !!emailError}>Create account</Button>

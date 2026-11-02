@@ -162,12 +162,28 @@ def test_disabled_redis_preserves_files_limit_and_reenables_same_instance(accoun
 
 
 def test_redis_change_refuses_concurrent_account_rename_or_restore(account_with_home):
+    import threading
     from daemon.snapshot_jobs import lock
     with write_session() as db:
         account_id = db.scalar(select(Account.id).where(Account.username == 'demo1'))
-    with lock(f'account-{account_id}', blocking=False):
+    held, release = threading.Event(), threading.Event()
+
+    def rename_or_restore():
+        # The account lock is re-entrant within the thread holding it, so the
+        # concurrent operation has to hold it from another thread.
+        with lock(f'account-{account_id}', blocking=False):
+            held.set()
+            release.wait(5)
+
+    holder = threading.Thread(target=rename_or_restore)
+    holder.start()
+    try:
+        assert held.wait(5)
         with pytest.raises(ValidationError, match='settings change is in progress'):
             redisacct.enable_redis({'username': 'demo1'})
+    finally:
+        release.set()
+        holder.join(5)
 
 
 def test_flush_calls_redis_cli_flushall(account_with_home, fake_redis_cli):

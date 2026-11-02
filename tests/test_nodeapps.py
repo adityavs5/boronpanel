@@ -403,3 +403,32 @@ def test_update_of_running_app_reports_crash_loop(account_with_domain, monkeypat
     with write_session() as session:
         row = session.get(NodeApp, created["id"])
         assert row.enabled is False and row.entry_point == "index.js"
+
+
+@pytest.mark.parametrize("failure", ["exit", "timeout"])
+def test_npm_install_failure_is_a_short_error_without_npm_output(account_with_domain, monkeypatch, caplog, failure):
+    """Regression (round 1 core): 'npm install failed: <stderr>' became an
+    opaque 502; npm's own output is tenant text and stays in the log."""
+    import logging
+    import subprocess
+
+    created = nodeapps.create_app({"username": "demo1", "domain": "demo1.example", "name": "my-api", "entry_point": "server.js"})
+    secret_path = "/home/demo1/nodeapps/my-api/node_modules/.staging/\x1b[31mERR"
+
+    def failing_npm(args, timeout=30, **kwargs):
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(args, timeout)
+        return ProcResult(args=args, returncode=1, stdout="", stderr="npm ERR! code E404\n" + secret_path)
+
+    monkeypatch.setattr(nodeapps, "run", failing_npm)
+    with caplog.at_level(logging.WARNING, logger="borond.nodeapps"):
+        with pytest.raises(ValidationError) as excinfo:
+            nodeapps.npm_install({"username": "demo1", "id": created["id"]})
+    message = str(excinfo.value)
+    assert "npm ERR" not in message and secret_path not in message and len(message) < 300
+    if failure == "exit":
+        assert message.startswith("npm install failed (exit status 1)")
+        assert "nodeapps/my-api/.npm/_logs" in message
+        assert "E404" in caplog.text
+    else:
+        assert "did not finish within five minutes" in message

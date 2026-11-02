@@ -55,7 +55,7 @@ def call_daemon(op: str, identity: "Identity", **params) -> dict:
     try:
         credential = {"type": identity.auth_method, "value": identity.rpc_credential or ""}
         client = (_python_provision_client if op == "apps.python.create"
-                  else _database_import_client if op == "db.import" else _client)
+                  else _database_import_client if op in ("db.import", "db.recovery.restore") else _client)
         return client.call(op, rpc_credential=credential, **_request_kwargs(),
                            _ip=getattr(identity, "ip", None), **params)
     except RpcError as exc:

@@ -4,12 +4,14 @@ from __future__ import annotations
 import ctypes
 import errno
 import ipaddress
+import json
 import logging
 import os
 import re
 import stat
 import select as io_select
 import struct
+import threading
 import time
 from pathlib import Path
 
@@ -36,10 +38,10 @@ WATCH_MASK = IN_CLOSE_WRITE | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE | IN_DELET
 EVENT = struct.Struct("iIII")
 
 
-def _owned_domain(username: str, domain_name: str) -> tuple[str, str]:
+def _owned_domain(username: str, domain_name: str) -> tuple[str, str, int]:
     with write_session() as session:
         row = session.execute(
-            select(Domain.docroot, Account.username)
+            select(Domain.docroot, Account.username, Account.id)
             .join(Account, Domain.account_id == Account.id)
             .where(Domain.domain == domain_name, Account.username == username)
         ).first()
@@ -51,7 +53,7 @@ def _owned_domain(username: str, domain_name: str) -> tuple[str, str]:
         raise ValidationError("Domain document root is outside its account home")
     if not os.path.isdir(docroot) or os.path.islink(row.docroot):
         raise ValidationError("Domain document root is unavailable or unsafe")
-    return domain_name, docroot
+    return domain_name, docroot, row.id
 
 
 def reload_domain(params: dict) -> dict:
@@ -60,12 +62,12 @@ def reload_domain(params: dict) -> dict:
     reloaded through the normal transaction) rather than only reloaded."""
     username = validate_username(params["username"])
     domain_name = validate_domain(params["domain"])
-    domain_name, docroot = _owned_domain(username, domain_name)
+    domain_name, docroot, account_id = _owned_domain(username, domain_name)
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         session.expunge(account)
     ols.refresh_vhost(account)
-    rules = scan_access_rules(docroot)
+    rules = account_access_scans(account_id, [docroot])[docroot]
     watcher.access_signatures[domain_name] = _access_signature(rules)
     return {"domain": domain_name, "docroot": docroot, "reloaded": True, "config_valid": True,
             **_public_access_report(rules)}
@@ -78,8 +80,8 @@ def access_status(params: dict) -> dict:
     believing a directory is protected when it is not)."""
     username = validate_username(params["username"])
     domain_name = validate_domain(params["domain"])
-    domain_name, docroot = _owned_domain(username, domain_name)
-    return {"domain": domain_name, **_public_access_report(scan_access_rules(docroot))}
+    domain_name, docroot, account_id = _owned_domain(username, domain_name)
+    return {"domain": domain_name, **_public_access_report(account_access_scans(account_id, [docroot])[docroot])}
 
 
 # --- Apache access-control directives ---------------------------------------
@@ -91,6 +93,14 @@ def access_status(params: dict) -> dict:
 # for deny-all, accessControl for IP allow/deny lists) by daemon/ols.py; every
 # other access directive is reported as unsupported rather than ignored.
 # Boron's own protections never rely on these directives.
+#
+# Access rules inside <Files>, <FilesMatch>, <Limit> and similar sections
+# apply to some files or methods only, which a directory context cannot
+# express. A section that grants access ("Deny from all" plus "<FilesMatch
+# \.(css|js|png)$> Allow from all") must never turn into a 403 for the files
+# it allows, so such grants relax the directory's rule -- and every rule in
+# its subtree, where Apache applies them too -- to the least restrictive
+# combination (_union). Sections that only restrict stay reported only.
 
 ACCESS_SCAN_MAX_DIRECTORIES = 20000
 ACCESS_SCAN_MAX_SECONDS = 2.0
@@ -111,6 +121,17 @@ _PRESENT_MODULES = frozenset({
 })
 _TRANSPARENT_BLOCKS = frozenset({"ifmodule", "ifdefine", "ifversion", "ifdirective", "ifsection", "iffile"})
 _AUTHZ_BLOCKS = frozenset({"requireall", "requireany", "requirenone"})
+# Unlike <Files>, whose directives replace the directory's for matching
+# files, <Limit> directives join the surrounding ones for the methods named.
+_PER_METHOD_BLOCKS = frozenset({"limit", "limitexcept"})
+_SECTION_NOTE = ("access rules inside <Files>, <FilesMatch> or <Limit> cannot be enforced per file or "
+                 "per method; this directory's restriction is relaxed so the files they allow stay reachable")
+# Reported on each directory whose own restriction such a grant relaxed (the
+# grant may sit in a parent's .htaccess): the report must never let a
+# customer believe a directory is protected when it is not.
+_RELAXED_NOTE = ("this directory's access restriction is not enforced: a <Files>, <FilesMatch> or <Limit> "
+                 "section here or in a parent folder allows some files, and OpenLiteSpeed cannot limit "
+                 "that to those files")
 _ACCESS_DIRECTIVES = frozenset({"require", "order", "allow", "deny", "satisfy"})
 _BLOCK_RE = re.compile(r"\A<\s*(/?)\s*([A-Za-z]+)(.*)>\s*\Z")
 _HOST_RE = re.compile(r"\A[0-9a-fA-F:.]+(/[0-9a-fA-F:.]+)?\Z")
@@ -167,20 +188,33 @@ def _logical_lines(text: str):
 
 
 def parse_access_directives(text: str) -> tuple[dict | None, list[dict]]:
-    """Return (rule, unsupported) for one .htaccess file.
+    """Return (rule, unsupported) for one .htaccess file; see
+    parse_access_file, which also returns the per-file/per-method grants."""
+    parsed = parse_access_file(text)
+    return parsed["rule"], parsed["unsupported"]
 
-    rule is None (no access directives), {"mode": "deny"},
-    {"mode": "allow"} or {"mode": "ip", "allow": [...], "deny": [...]}
-    where "*" means every address. unsupported lists directives that
-    cannot be enforced, each {"line", "directive"}.
+
+def _directives() -> dict:
+    return {"requires": [], "order": None, "allow_from": [], "deny_from": [], "legacy": False}
+
+
+def parse_access_file(text: str) -> dict:
+    """Parse one .htaccess file into {"rule", "grants", "unsupported"}.
+
+    rule is the directory-wide access rule: None (no access directives),
+    {"mode": "deny"}, {"mode": "allow"} or {"mode": "ip", "allow": [...],
+    "deny": [...]} where "*" means every address. grants are the rules of
+    <Files>/<FilesMatch>/<Limit>/... sections that admit someone (mode
+    "allow" or "ip"): they cannot be enforced per file or method, so
+    effective_access_contexts keeps what they allow reachable. unsupported
+    lists directives that cannot be enforced as written, each
+    {"line", "directive"}.
     """
     unsupported: list[dict] = []
-    stack: list[tuple[str, bool]] = []
-    requires: list[tuple[str, list[str], int, str]] = []
-    order = None
-    allow_from: list[str] = []
-    deny_from: list[str] = []
-    seen_legacy = False
+    # (block name, active, index into sections of the enclosing scoped section)
+    stack: list[tuple[str, bool, int | None]] = []
+    top = _directives()
+    sections: list[tuple[bool, dict]] = []  # (per-method, directives)
 
     def flag(number: int, directive: str) -> None:
         unsupported.append({"line": number, "directive": directive[:200]})
@@ -196,7 +230,13 @@ def parse_access_directives(text: str) -> tuple[dict | None, list[dict]]:
                     stack.pop()
                 continue
             active = (not stack or stack[-1][1]) and (name != "ifmodule" or _module_present(argument))
-            stack.append((name, active))
+            section = stack[-1][2] if stack else None
+            if section is None and name not in _TRANSPARENT_BLOCKS and name not in _AUTHZ_BLOCKS:
+                # <Files>, <FilesMatch>, <Limit>, <If>, ...: the directives
+                # inside apply to some files or methods only.
+                sections.append((name in _PER_METHOD_BLOCKS, _directives()))
+                section = len(sections) - 1
+            stack.append((name, active, section))
             continue
         if stack and not stack[-1][1]:
             continue
@@ -204,57 +244,86 @@ def parse_access_directives(text: str) -> tuple[dict | None, list[dict]]:
         directive = words[0].lower()
         if directive not in _ACCESS_DIRECTIVES:
             continue
-        scopes = [name for name, _active in stack if name not in _TRANSPARENT_BLOCKS]
-        authz = [name for name in scopes if name in _AUTHZ_BLOCKS]
-        if any(name not in _AUTHZ_BLOCKS for name in scopes):
-            # <Files>, <FilesMatch>, <Limit>, <If>, ...: per-file or
-            # per-method scope has no per-directory OLS equivalent.
+        authz = [name for name, _active, _section in stack if name in _AUTHZ_BLOCKS]
+        section = stack[-1][2] if stack else None
+        if section is not None:
+            # No per-file or per-method OLS equivalent: always reported.
             flag(number, line)
-            continue
+        target = top if section is None else sections[section][1]
+
+        def problem() -> None:
+            if section is None:  # section lines are reported already
+                flag(number, line)
+
         arguments = words[1:]
         if directive == "require":
             if not arguments:
-                flag(number, line)
+                problem()
                 continue
-            requires.append((authz[-1] if authz else "requireany", arguments, number, line))
+            target["requires"].append((authz[-1] if authz else "requireany", arguments, number, line))
         elif directive == "order":
-            seen_legacy = True
+            target["legacy"] = True
             value = "".join(arguments).lower()
             if value not in ("deny,allow", "allow,deny"):
-                flag(number, line)
+                problem()
                 continue
-            order = value
+            target["order"] = value
         elif directive in ("allow", "deny"):
-            seen_legacy = True
+            target["legacy"] = True
             if len(arguments) < 2 or arguments[0].lower() != "from":
-                flag(number, line)
+                problem()
                 continue
-            target = allow_from if directive == "allow" else deny_from
+            values = target["allow_from"] if directive == "allow" else target["deny_from"]
             for value in arguments[1:]:
                 if value.lower() == "all":
-                    target.append("*")
+                    values.append("*")
                     continue
                 address = _address(value)
                 if address is None:
-                    flag(number, line)
+                    problem()
                     continue
-                target.append(address)
+                values.append(address)
         elif directive == "satisfy":
             if "".join(arguments).lower() != "all":
-                flag(number, line)
+                problem()
 
-    modern = _require_rule(requires, unsupported)
-    legacy = _legacy_rule(order, allow_from, deny_from) if seen_legacy else None
-    rule = _stricter(modern, legacy)
+    rule = _directives_rule(top, unsupported)
     if rule and rule["mode"] == "ip":
         for key in ("allow", "deny"):
             values = list(dict.fromkeys(rule[key]))
             if len(values) > MAX_ACCESS_ADDRESSES:
                 # Too many entries to render safely; fail closed.
                 unsupported.append({"line": 0, "directive": f"more than {MAX_ACCESS_ADDRESSES} addresses"})
-                return {"mode": "deny"}, unsupported
+                rule = {"mode": "deny"}
+                break
             rule[key] = values
-    return rule, unsupported
+    grants = []
+    for per_method, directives in sections:
+        if not directives["requires"] and not directives["legacy"]:
+            continue
+        if per_method:
+            directives = {
+                "requires": top["requires"] + directives["requires"],
+                "order": directives["order"] or top["order"],
+                "allow_from": top["allow_from"] + directives["allow_from"],
+                "deny_from": top["deny_from"] + directives["deny_from"],
+                "legacy": top["legacy"] or directives["legacy"],
+            }
+        # Its lines are reported above; a section that only refuses access
+        # is not applied (that never blocks a file Apache would serve).
+        section_rule = _directives_rule(directives, [])
+        if section_rule is not None and section_rule["mode"] != "deny":
+            grants.append(section_rule)
+    if grants:
+        unsupported.append({"line": 0, "directive": _SECTION_NOTE})
+    return {"rule": rule, "grants": grants, "unsupported": unsupported}
+
+
+def _directives_rule(directives: dict, unsupported: list[dict]) -> dict | None:
+    modern = _require_rule(directives["requires"], unsupported)
+    legacy = (_legacy_rule(directives["order"], directives["allow_from"], directives["deny_from"])
+              if directives["legacy"] else None)
+    return _stricter(modern, legacy)
 
 
 def _require_rule(requires, unsupported) -> dict | None:
@@ -341,6 +410,32 @@ def _stricter(first: dict | None, second: dict | None) -> dict | None:
     return first if _STRICTNESS[first["mode"]] >= _STRICTNESS[second["mode"]] else second
 
 
+def _union(first: dict | None, second: dict | None) -> dict | None:
+    """The least restrictive combination of two rules: it admits every
+    address either one admits (None means unrestricted). Shapes that cannot
+    be combined exactly become "allow", never a refusal."""
+    if first is None or second is None:
+        return None
+    if first["mode"] == "deny":
+        result = second
+    elif second["mode"] == "deny":
+        result = first
+    elif "allow" in (first["mode"], second["mode"]):
+        return {"mode": "allow"}
+    elif first["deny"] == ["*"] and second["deny"] == ["*"]:
+        # Two allow lists: either list's addresses.
+        result = {"mode": "ip", "allow": list(dict.fromkeys(first["allow"] + second["allow"])), "deny": ["*"]}
+    elif first["allow"] == ["*"] and second["allow"] == ["*"]:
+        # Two block lists: only addresses both block stay blocked.
+        deny = [value for value in first["deny"] if value in second["deny"]]
+        result = {"mode": "ip", "allow": ["*"], "deny": deny} if deny else {"mode": "allow"}
+    else:
+        return {"mode": "allow"}
+    if result["mode"] == "ip" and max(len(result["allow"]), len(result["deny"])) > MAX_ACCESS_ADDRESSES:
+        return {"mode": "allow"}
+    return result
+
+
 def _read_htaccess(directory_fd: int) -> str | None:
     try:
         fd = os.open(".htaccess", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory_fd)
@@ -356,18 +451,36 @@ def _read_htaccess(directory_fd: int) -> str | None:
     return data[:HTACCESS_MAX_BYTES].decode("utf-8", errors="replace")
 
 
+def _expressible_ancestor(relative: str) -> str:
+    """The nearest enclosing directory an OLS context can name ("" is the
+    document root, always expressible)."""
+    parts = relative.split("/")
+    for depth in range(len(parts) - 1, 0, -1):
+        ancestor = "/".join(parts[:depth])
+        if PROTECTED_DIR_RE.match(ancestor):
+            return ancestor
+    return ""
+
+
 def scan_access_rules(docroot: str) -> dict:
     """Walk one document root (bounded, never following symlinks) and parse
-    every .htaccess. Returns {"rules": {relative_dir: rule}, "unsupported":
-    [{"path", "line", "directive"}], "complete": bool}; relative_dir is ""
-    for the document root itself."""
+    every .htaccess. Returns {"rules": {relative_dir: rule}, "grants":
+    {relative_dir: [rule, ...]}, "unsupported": [{"path", "line",
+    "directive"}], "complete": bool, "read": {relative_dir, ...}};
+    relative_dir is "" for the document root itself, and grants are keyed
+    by the directory whose .htaccess holds them (also one an OLS context
+    cannot name). "read" holds the directories whose .htaccess (or its
+    absence) this scan saw; a scan that ran out of budget has not seen the
+    others (see account_access_scans)."""
     rules: dict[str, dict] = {}
+    grants: dict[str, list[dict]] = {}
     unsupported: list[dict] = []
+    read: set[str] = set()
     complete = True
     try:
         root_fd = safeio.open_dir_beneath(docroot)
     except (OSError, safeio.UnsafePathError):
-        return {"rules": rules, "unsupported": unsupported, "complete": True}
+        return {"rules": rules, "grants": grants, "unsupported": unsupported, "complete": True, "read": read}
     deadline = time.monotonic() + ACCESS_SCAN_MAX_SECONDS
     visited = 0
     files = 0
@@ -386,18 +499,27 @@ def scan_access_rules(docroot: str) -> dict:
                     if files > ACCESS_SCAN_MAX_FILES:
                         complete = False
                         continue
-                    rule, issues = parse_access_directives(text)
+                    parsed = parse_access_file(text)
+                    rule, issues, file_grants = parsed["rule"], parsed["unsupported"], parsed["grants"]
                     path = f"{relative}/.htaccess" if relative else ".htaccess"
-                    if rule is not None and relative and not PROTECTED_DIR_RE.match(relative):
-                        # Not expressible as an OLS context path.
+                    if (rule is not None or file_grants) and relative and not PROTECTED_DIR_RE.match(relative):
+                        # Not expressible as an OLS context path. What it
+                        # allows stays a grant (applied at the nearest
+                        # directory that is, see effective_access_contexts),
+                        # so an enclosing deny cannot block those files.
                         issues.append({"line": 0, "directive": "directory name prevents OpenLiteSpeed "
                                        "from enforcing these rules; rename it using letters, digits, '.', '_' or '-'"})
+                        if rule is not None and rule["mode"] != "deny":
+                            file_grants = [*file_grants, rule]
                         rule = None
                     for issue in issues:
                         if len(unsupported) < MAX_REPORTED_ISSUES:
                             unsupported.append({"path": path, **issue})
                     if rule is not None:
                         rules[relative] = rule
+                    if file_grants:
+                        grants.setdefault(relative, []).extend(file_grants)
+                read.add(relative)
                 try:
                     with os.scandir(directory_fd) as entries:
                         names = [entry.name for entry in entries
@@ -416,29 +538,49 @@ def scan_access_rules(docroot: str) -> dict:
     finally:
         for directory_fd, _relative in pending:
             os.close(directory_fd)
-    return {"rules": rules, "unsupported": unsupported, "complete": complete}
+    return {"rules": rules, "grants": grants, "unsupported": unsupported, "complete": complete, "read": read}
 
 
 def effective_access_contexts(scan: dict) -> list[dict]:
     """Directories needing their own OLS context, outermost first. A
     directory whose own rule is "allow" only needs a context when an
     ancestor restricts access (a child's directives replace the parent's,
-    as with Apache's default AuthMerging Off)."""
+    as with Apache's default AuthMerging Off). Grants from <Files>/<Limit>
+    sections in a directory or any ancestor apply to its files too, so they
+    are combined (_union) into the rule of every directory they cover."""
+    return _resolve_access(scan)[0]
+
+
+def _resolve_access(scan: dict) -> tuple[list[dict], list[str]]:
+    """(effective_access_contexts, directories whose own restriction a
+    grant relaxed). The second list lets the report name every directory
+    that is less protected than its .htaccess says, not only the one whose
+    <Files>/<Limit> section caused it."""
     rules = scan["rules"]
+    grants: dict[str, list[dict]] = {}
+    for source, values in (scan.get("grants") or {}).items():
+        target = source if not source or PROTECTED_DIR_RE.match(source) else _expressible_ancestor(source)
+        grants.setdefault(target, []).extend(values)
+    effective: dict[str, dict | None] = {}
     contexts = []
-    for relative in sorted(rules, key=lambda value: (value.count("/"), value)):
-        rule = rules[relative]
-        restricted_ancestor = False
+    relaxed: list[str] = []
+    for relative in sorted(set(rules) | set(grants), key=lambda value: (value.count("/"), value)):
         parts = relative.split("/") if relative else []
-        for depth in range(len(parts) - 1, -1, -1):
-            ancestor = "/".join(parts[:depth])
-            if ancestor in rules:
-                restricted_ancestor = rules[ancestor]["mode"] != "allow"
-                break
-        if rule["mode"] == "allow" and not restricted_ancestor:
+        ancestors = ["/".join(parts[:depth]) for depth in range(len(parts) - 1, -1, -1)]
+        inherited = next((effective[ancestor] for ancestor in ancestors if ancestor in effective), None)
+        rule = rules.get(relative, inherited)
+        for source in (relative, *ancestors):
+            for grant in grants.get(source, ()):
+                rule = _union(rule, grant)
+        effective[relative] = rule
+        own = rules.get(relative)
+        if own is not None and own["mode"] != "allow" and rule != own:
+            relaxed.append(relative)
+        restricted_ancestor = inherited is not None and inherited["mode"] != "allow"
+        if rule is None or (rule["mode"] == "allow" and not restricted_ancestor):
             continue
         contexts.append({"relative_path": relative, **rule})
-    return contexts
+    return contexts, relaxed
 
 
 def _access_signature(scan: dict) -> tuple:
@@ -449,15 +591,145 @@ def _access_signature(scan: dict) -> tuple:
 
 
 def _public_access_report(scan: dict) -> dict:
+    contexts, relaxed = _resolve_access(scan)
     return {
         "access_rules": [
             {"directory": "/" + context["relative_path"], "mode": context["mode"],
              "allow": context.get("allow", []), "deny": context.get("deny", [])}
-            for context in effective_access_contexts(scan)
+            for context in contexts
         ],
-        "unsupported_access_directives": scan["unsupported"],
+        "unsupported_access_directives": scan["unsupported"] + [
+            {"path": f"{relative}/.htaccess" if relative else ".htaccess", "line": 0, "directive": _RELAXED_NOTE}
+            for relative in relaxed
+        ],
         "access_scan_complete": scan["complete"],
+        # The scan stopped at its bound and the folders it did not re-read
+        # keep the rules found by the last complete scan.
+        "access_scan_reused_previous": bool(scan.get("reused_previous")),
     }
+
+
+# --- Last complete scan ------------------------------------------------------
+#
+# The scan above is bounded (ACCESS_SCAN_MAX_*) and runs on every vhost
+# render. A scan that runs out of budget has not read every .htaccess;
+# dropping the rules it did not reach would make enforcement depend on disk
+# speed and tree size from one render to the next. So the last complete scan
+# of each document root is kept, per account (by id, which a rename keeps),
+# in a root-only file beside the control-plane database, and fills in the
+# directories a later bounded scan did not read. A complete scan always
+# replaces it, so rules a customer removed disappear at the next one.
+
+_SCAN_CACHE_LOCK = threading.Lock()
+_SCAN_CACHE_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _scan_cache_path(account_id: int) -> Path:
+    return Path(settings.db_path).parent / "htaccess-scans" / f"{int(account_id)}.json"
+
+
+def _load_scan_cache(account_id: int) -> dict:
+    try:
+        fd = os.open(_scan_cache_path(account_id), os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        logger.warning("could not read the last .htaccess scan of account %s", account_id, exc_info=True)
+        return {}
+    try:
+        with os.fdopen(fd, "rb") as stream:
+            data = json.loads(stream.read(_SCAN_CACHE_MAX_BYTES + 1))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("docroots"), dict):
+        return {}
+    return data["docroots"]
+
+
+def _store_scan_cache(account_id: int, docroots: dict) -> None:
+    path = _scan_cache_path(account_id)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}")
+    try:
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        if not docroots:
+            path.unlink(missing_ok=True)
+            return
+        payload = json.dumps({"version": 1, "docroots": docroots}, separators=(",", ":")).encode()
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except OSError:
+        # Best effort: losing it only means a later bounded scan cannot be
+        # completed, never a failed render.
+        logger.warning("could not keep the .htaccess scan of account %s", account_id, exc_info=True)
+        temporary.unlink(missing_ok=True)
+
+
+def _directory_exists(docroot: str, relative: str) -> bool:
+    try:
+        fd = safeio.open_dir_beneath(docroot, relative or ".")
+    except (OSError, safeio.UnsafePathError):
+        return False
+    os.close(fd)
+    return True
+
+
+def _fill_from_previous(scan: dict, previous: dict, docroot: str) -> None:
+    """Complete a bounded scan from the last complete one: directories it did
+    not read (and that still exist) keep the rules and grants found then."""
+    filled: set[str] = set()
+    for key in ("rules", "grants"):
+        for relative, value in (previous.get(key) or {}).items():
+            if relative in scan["read"] or relative in scan[key] or not _directory_exists(docroot, relative):
+                continue
+            scan[key][relative] = value
+            filled.add(relative)
+    for issue in previous.get("unsupported") or []:
+        directory = issue.get("path", "").removesuffix(".htaccess").rstrip("/")
+        if directory in filled and len(scan["unsupported"]) < MAX_REPORTED_ISSUES:
+            scan["unsupported"].append(issue)
+    scan["reused_previous"] = bool(filled)
+
+
+def account_access_scans(account_id: int, docroots: list[str], *, prune: bool = False) -> dict[str, dict]:
+    """scan_access_rules for each of one account's document roots, with a
+    bounded scan that ran out of budget completed from the last complete
+    scan of that root. prune (every document root of the account passed)
+    forgets roots the account no longer has."""
+    scans: dict[str, dict] = {}
+    for docroot in dict.fromkeys(docroots):
+        try:
+            scans[docroot] = scan_access_rules(docroot)
+        except Exception:
+            logger.exception("could not read .htaccess access rules under %s", docroot)
+            scans[docroot] = {"rules": {}, "grants": {}, "unsupported": [], "complete": False, "read": set()}
+    with _SCAN_CACHE_LOCK:
+        cache = _load_scan_cache(account_id)
+        updated = dict(cache)
+        for docroot, scan in scans.items():
+            key = os.path.realpath(docroot)
+            if scan["complete"]:
+                updated[key] = {"rules": scan["rules"], "grants": scan["grants"], "unsupported": scan["unsupported"]}
+            elif isinstance(cache.get(key), dict):
+                _fill_from_previous(scan, cache[key], docroot)
+        if prune:
+            keep = {os.path.realpath(docroot) for docroot in scans}
+            updated = {key: value for key, value in updated.items() if key in keep}
+        if updated != cache:
+            _store_scan_cache(account_id, updated)
+    return scans
+
+
+def forget_account_scans(account_id: int) -> None:
+    """Account termination: drop its kept scans."""
+    with _SCAN_CACHE_LOCK:
+        try:
+            _scan_cache_path(account_id).unlink(missing_ok=True)
+        except OSError:
+            logger.warning("could not remove the .htaccess scans of account %s", account_id, exc_info=True)
 
 
 class HtaccessWatcher:
@@ -585,7 +857,7 @@ class HtaccessWatcher:
         stale_accounts = set()
         new_signatures = {}
         for domain_name, docroot, account_id in rows:
-            signature = _access_signature(scan_access_rules(docroot))
+            signature = _access_signature(account_access_scans(account_id, [docroot])[docroot])
             if self.access_signatures.get(domain_name) != signature:
                 stale_accounts.add(account_id)
                 new_signatures[domain_name] = signature

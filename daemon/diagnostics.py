@@ -17,7 +17,7 @@ from typing import Callable
 from cryptography import x509
 from sqlalchemy import select
 
-from daemon import filebrowser, mailqueue, nsisolation, servicemgr
+from daemon import filebrowser, mail_identity, mailqueue, nsisolation, pma, servicemgr
 from daemon.procutil import run
 from shared.config import settings
 from shared.db import write_session
@@ -136,13 +136,29 @@ def _proc_ports(path: str, tcp: bool) -> set[int]:
     return ports
 
 
+POSTFIX_MASTER_CONFIG = Path("/etc/postfix/master.cf")
+
+
+def _postfix_offers_smtps() -> bool:
+    """Whether Postfix runs implicit-TLS submission (465); dkim.configure_signer
+    adds it only where OpenDKIM is installed."""
+    import re
+    try:
+        return re.search(r"(?m)^(submissions|smtps|465)\s+inet\s", POSTFIX_MASTER_CONFIG.read_text()) is not None
+    except OSError:
+        return False
+
+
 def _ports() -> dict:
     tcp = _proc_ports("/proc/net/tcp", True) | _proc_ports("/proc/net/tcp6", True)
     udp = _proc_ports("/proc/net/udp", False) | _proc_ports("/proc/net/udp6", False)
     expected_tcp = {
         int(settings.api_bind_port): "panel", 80: "HTTP", 443: "HTTPS",
-        25: "SMTP", 143: "IMAP", 993: "IMAPS", 53: "DNS TCP",
+        25: "SMTP", 587: "Submission", 110: "POP3", 143: "IMAP", 993: "IMAPS", 995: "POP3S",
+        53: "DNS TCP",
     }
+    if _postfix_offers_smtps():
+        expected_tcp[465] = "SMTPS"
     missing = [f"{label} ({port}/tcp)" for port, label in expected_tcp.items() if port not in tcp]
     if 53 not in udp:
         missing.append("DNS (53/udp)")
@@ -297,6 +313,8 @@ def check_registry() -> list[tuple[str, Callable[[], dict]]]:
         ("certificates", _certificates), ("mail_queue", _mail_queue),
         ("backup_destinations", _backup_destinations), ("isolation", _isolation),
         ("file_manager", _file_manager), ("notification_sender", _notification_sender),
+        ("phpmyadmin", pma.readiness_check),
+        ("mail_identity", mail_identity.readiness_check),
     ])
     return checks
 

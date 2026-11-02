@@ -166,7 +166,7 @@ def test_installer_covers_runtime_dependencies_and_firewall_policy():
     # always admitted; mail, DNS and FTP are opened only when that component
     # is installed.  Existing UFW policy must never be reset on a rerun.
     assert "ports=(80 443 2222 7080)" in source
-    assert "profile_has mail && ports+=(25 110 143 587 993 995)" in source
+    assert "profile_has mail && ports+=(25 110 143 465 587 993 995)" in source
     assert "profile_has dns && ports+=(53)" in source
     assert "profile_has ftp && ports+=(21)" in source
     assert 'run ufw allow "${p}/tcp"' in source

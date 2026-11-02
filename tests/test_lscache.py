@@ -306,3 +306,31 @@ def test_purge_stays_anchored_after_cache_directory_swap(account_with_domain, tm
     lscache.purge({'domain':'demo1.example'})
     assert marker.read_text()=='outside canary'
     assert not list(storage.with_name('retained').iterdir())
+
+
+def test_lscache_user_errors_have_their_own_status_and_wording(account_with_domain):
+    """Round 1 web cross_group: these were RuntimeErrors (an opaque 502)."""
+    from shared.validation import ConflictError, NotFoundError
+
+    with pytest.raises(ConflictError, match="LSCache is not enabled for demo1.example, so there is no cache to purge"):
+        lscache.purge({"domain": "demo1.example"})
+    with pytest.raises(NotFoundError):
+        lscache.get_settings({"domain": "missing.example"})
+
+
+def test_get_stats_reports_a_capped_count_instead_of_failing(account_with_domain, monkeypatch):
+    storage_dir = lscache.cache_storage_path("demo1.example")
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    for index in range(5):
+        (storage_dir / f"entry{index}").write_text("x")
+    result = lscache.get_stats({"domain": "demo1.example"})
+    assert result["cached_object_count"] == 5 and result["cached_object_count_complete"] is True
+    real_walk = os.fwalk
+
+    def oversized_walk(*args, **kwargs):
+        for relative, directories, files, fd in real_walk(*args, **kwargs):
+            yield relative, directories, files + [f"phantom{i}" for i in range(200_001)], fd
+
+    monkeypatch.setattr(lscache.os, "fwalk", oversized_walk)
+    result = lscache.get_stats({"domain": "demo1.example"})
+    assert result["cached_object_count_complete"] is False

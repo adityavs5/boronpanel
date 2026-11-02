@@ -16,8 +16,13 @@ Dovecot's own config files, per RESEARCH.md SS6.
 """
 from __future__ import annotations
 
+import fcntl
+import grp
+import logging
 import os
+from pathlib import Path
 import pwd
+import shutil
 
 import pymysql
 
@@ -26,6 +31,8 @@ from shared.validation import ConflictError, ValidationError, validate_domain, v
 
 from daemon.procutil import run
 from daemon.mail_mutation import serialized
+
+logger = logging.getLogger("borond.mail")
 
 # A low *system* uid/gid (SYS_UID_MAX on this distro is 999), matching
 # convention for service accounts (mysql/postfix/dovecot are all in this
@@ -145,6 +152,86 @@ def set_domain_active(domain: str, active: bool) -> bool:
             return cur.rowcount > 0
     finally:
         conn.close()
+
+
+# --- Logins of suspended hosting accounts -------------------------------
+#
+# A suspended account keeps receiving mail, but its mailboxes may not log in.
+# Dovecot's first passdb (scripts/upgrade_runtime.DOVECOT_SUSPENDED_PASSDB)
+# is a deny list keyed by the login's domain, so it refuses IMAP, POP3,
+# webmail and SMTP AUTH (Postfix authenticates through Dovecot) alike. LMTP
+# delivery reads only the userdb. Dovecot re-reads the list when it changes,
+# so a change applies to the next login and survives restarts. The list is
+# managed only where that passdb is installed: Dovecot treats a missing list
+# as an internal failure and would then refuse every login.
+SUSPENDED_PASSDB_CONFIG = Path("/etc/dovecot/conf.d/08-boron-suspended-auth.conf")
+SUSPENDED_DOMAINS_FILE = Path("/etc/dovecot/boron-suspended-mail-domains")
+
+
+def suspended_login_domains() -> set[str]:
+    try:
+        text = SUSPENDED_DOMAINS_FILE.read_text()
+    except FileNotFoundError:
+        return set()
+    return {line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#")}
+
+
+def _store_suspended_login_domains(domains: set[str]) -> None:
+    path = SUSPENDED_DOMAINS_FILE
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o640)
+        with os.fdopen(fd, "w") as handle:
+            handle.write("".join(f"{item}\n" for item in sorted(domains)))
+            handle.flush()
+            os.fsync(handle.fileno())
+            if os.geteuid() == 0:
+                try:
+                    gid = grp.getgrnam("dovecot").gr_gid
+                except KeyError:
+                    gid = 0
+                os.fchown(handle.fileno(), 0, gid)
+            os.fchmod(handle.fileno(), 0o640)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def update_suspended_login_domains(add=(), remove=(), *, replace=None) -> bool:
+    """Change the deny list under a cross-process lock; True if it changed.
+
+    ``replace`` rewrites the whole list (the upgrade reconcile); otherwise
+    ``add``/``remove`` are applied to the current list, so concurrent
+    suspensions of different accounts never lose each other's domains.
+    """
+    if not SUSPENDED_PASSDB_CONFIG.is_file():
+        return False
+    add = {validate_domain(item) for item in add}
+    remove = {validate_domain(item) for item in remove}
+    lock_path = SUSPENDED_DOMAINS_FILE.with_name(f".{SUSPENDED_DOMAINS_FILE.name}.lock")
+    with open(lock_path, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = suspended_login_domains()
+        base = {validate_domain(item) for item in replace} if replace is not None else current
+        updated = (base | add) - remove
+        if updated == current and SUSPENDED_DOMAINS_FILE.is_file():
+            return False
+        _store_suspended_login_domains(updated)
+    return True
+
+
+def end_login_sessions(domains) -> None:
+    """Disconnect open IMAP/POP3 sessions of these domains (best effort)."""
+    if shutil.which("doveadm") is None:
+        return
+    for domain in domains:
+        try:
+            result = run(["doveadm", "kick", f"*@{validate_domain(domain)}"], timeout=15)
+        except Exception:  # noqa: BLE001 - new logins are already refused by the deny list
+            logger.exception("could not end open mail sessions for %s", domain)
+            continue
+        if result.returncode not in (0, 68):  # 68: nobody from the domain was logged in
+            logger.warning("could not end open mail sessions for %s: %s", domain, result.stderr.strip()[:200])
 
 
 def set_mailbox_quota(domain: str, local_part: str, quota_mb: int) -> None:
@@ -325,18 +412,29 @@ def create_forward(domain: str, local_part: str, destination: str) -> dict:
     validate_domain(domain)
     validate_mailbox_local_part(local_part)
     domain_id = _domain_id(domain)
+    duplicate = f"forwarder '{local_part}@{domain}' -> '{destination}' already exists"
     conn = _connect()
     try:
         with conn.cursor() as cur:
+            # Same comparison (column collation) as uq_forward (domain_id,
+            # source_local_part, destination).
+            cur.execute(
+                "SELECT id FROM mail_forward WHERE domain_id = %s AND source_local_part = %s AND destination = %s",
+                (domain_id, local_part, destination),
+            )
+            if cur.fetchone() is not None:
+                raise ConflictError(duplicate)
             try:
                 cur.execute(
                     "INSERT INTO mail_forward (domain_id, source_local_part, destination, active) VALUES (%s, %s, %s, 1)",
                     (domain_id, local_part, destination),
                 )
             except pymysql.err.IntegrityError as exc:
-                # uq_forward (domain_id, source_local_part, destination)
-                raise ConflictError(
-                    f"forwarder '{local_part}@{domain}' -> '{destination}' already exists") from exc
+                # A concurrent duplicate insert; any other constraint failure
+                # (the domain vanished) is not a conflict.
+                if exc.args and exc.args[0] == 1062:  # ER_DUP_ENTRY
+                    raise ConflictError(duplicate) from exc
+                raise
             forward_id = cur.lastrowid
     finally:
         conn.close()
@@ -477,9 +575,19 @@ def get_autoresponder(domain: str, local_part: str) -> dict | None:
                 "SELECT subject, body, start_date, end_date, active FROM mail_autoresponder WHERE mail_user_id = %s",
                 (mail_user_id,),
             )
-            return cur.fetchone()
+            row = cur.fetchone()
     finally:
         conn.close()
+    if row is None:
+        return None
+    # pymysql decodes DATE columns to datetime.date, which the RPC frame
+    # (plain json.dumps) cannot carry; the API and the form use ISO dates.
+    row = dict(row)
+    for key in ("start_date", "end_date"):
+        value = row.get(key)
+        if value is not None and hasattr(value, "isoformat"):
+            row[key] = value.isoformat()
+    return row
 
 
 @serialized

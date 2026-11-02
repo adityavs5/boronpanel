@@ -41,7 +41,8 @@ def importer(isolated_db, tmp_path, monkeypatch):
 
     def dump(name, output, work, **kwargs):
         calls.append(("dump", name))
-        Path(output).write_text("-- tables: " + ",".join(sorted(state["tables"])))
+        # mariadb-dump's own last line; recovery copies without it are incomplete.
+        Path(output).write_text("-- tables: " + ",".join(sorted(state["tables"])) + "\n-- Dump completed\n")
 
     def restore(name, dump_path, work, *, replace_tables=False):
         calls.append(("restore", Path(dump_path).name, replace_tables))
@@ -106,7 +107,7 @@ def test_repeated_failed_rollbacks_never_delete_a_recovery_copy(importer):
         assert not (directory / "uploaded.sql").exists()
     # The first copy (the original contents) must survive later attempts.
     dumps = [directory.joinpath("alpha_blog.sql").read_text() for directory in kept]
-    assert "-- tables: keepme" in dumps
+    assert "-- tables: keepme\n-- Dump completed\n" in dumps
     with pytest.raises(ConflictError, match="administrator"):
         hdb.import_database({"username": "alpha", "name": "alpha_blog", "path": "/x.sql"})
     assert len(_safety_dirs(importer["account_id"])) == hdb.IMPORT_RECOVERY_MAX

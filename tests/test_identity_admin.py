@@ -128,6 +128,7 @@ def _patch_system(monkeypatch, fail_on=None):
     monkeypatch.setattr(identity_admin.sysops, "rename_login", rec("rename_login"))
     monkeypatch.setattr(identity_admin.sysops, "rename_group", rec("rename_group"))
     monkeypatch.setattr(identity_admin.sysops, "move_home", rec("move_home"))
+    monkeypatch.setattr(identity_admin.sysops, "rename_vhost_log_dir", rec("rename_vhost_log_dir"))
     monkeypatch.setattr(identity_admin.sysops, "recycle_php_workers", rec("recycle"))
     monkeypatch.setattr(identity_admin.cgroups, "remove_slice", rec("remove_slice"))
     monkeypatch.setattr(identity_admin.cgroups, "apply_limits", rec("apply_limits"))
@@ -155,6 +156,9 @@ def test_rename_happy_path(isolated_db, monkeypatch):
     names = [c[0] for c in log]
     # Linux rename before home move before OLS refresh
     assert names.index("rename_login") < names.index("move_home") < names.index("refresh_vhost")
+    # The root-owned vhost log directory moves with the account (round 2).
+    assert [c for c in log if c[0] == "rename_vhost_log_dir"] == [("rename_vhost_log_dir", ("oldname", "newname"))]
+    assert names.index("rename_vhost_log_dir") < names.index("refresh_vhost")
 
 
 def test_rename_rejects_duplicate(isolated_db, monkeypatch):
@@ -213,6 +217,10 @@ def test_rename_rolls_back_on_ols_failure(isolated_db, monkeypatch):
     assert len(rename_login_calls) == 2
     assert rename_login_calls[0][1] == ("oldname", "newname")
     assert rename_login_calls[1][1] == ("newname", "oldname")
+    # The log directory comes back too, after the login is `oldname` again
+    # (its undo re-grants read access by Linux name).
+    assert [c[1] for c in log if c[0] == "rename_vhost_log_dir"] == [("oldname", "newname"), ("newname", "oldname")]
+    assert log.index(("rename_vhost_log_dir", ("newname", "oldname"))) > log.index(("rename_login", ("newname", "oldname")))
 
 
 def test_promote_owned_addon_preserves_sites(isolated_db, monkeypatch):

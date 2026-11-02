@@ -543,7 +543,11 @@ def migrate_config_mapping(raw: dict) -> tuple[dict, list[str]]:
         )
     if version == 0:
         migrated["config_schema_version"] = 1
-        warnings.append("configuration schema was migrated from v0 to v1")
+        # An empty document (a missing file, or the /dev/null placeholder an
+        # unprivileged helper such as the mail signing filter loads) holds no
+        # v0 settings, so nothing was migrated and nothing is reported.
+        if raw:
+            warnings.append("configuration schema was migrated from v0 to v1")
     return migrated, warnings
 
 

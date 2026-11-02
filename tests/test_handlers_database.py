@@ -372,3 +372,17 @@ def test_missing_and_duplicate_databases_are_caller_errors(isolated_db, stub_sys
         hdb.drop_database({"username": "demo1", "name": "nosuch"})
     with pytest.raises(NotFoundError):
         hdb.change_user_password({"username": "demo1", "user": "demo1_nosuch"})
+
+
+def test_renaming_onto_an_existing_name_is_a_conflict(isolated_db, stub_sysops, stub_mariadb):
+    # uptimeways QA L2: a duplicate name is a 409 for renames too, not a 400.
+    from shared.validation import ConflictError
+    ha.create_account({"username": "demo1"})
+    hdb.create_database({"username": "demo1", "name": "shop"})
+    hdb.create_database({"username": "demo1", "name": "blog"})
+    with pytest.raises(ConflictError, match="database 'demo1_blog' already exists"):
+        hdb.rename_database({"username": "demo1", "name": "shop", "new_name": "blog"})
+    hdb.create_user({"username": "demo1", "name": "app"})
+    hdb.create_user({"username": "demo1", "name": "worker"})
+    with pytest.raises(ConflictError, match="database user 'demo1_worker' already exists"):
+        hdb.rename_user({"username": "demo1", "user": "demo1_app", "new_name": "worker"})

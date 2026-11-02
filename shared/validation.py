@@ -70,6 +70,13 @@ class BusyError(ConflictError):
     (HTTP 409; retrying later is expected to succeed)."""
 
 
+def _shown(value: object, limit: int = 80) -> str:
+    """Rejected input as an error message may echo it: printable and short."""
+    text = value if isinstance(value, str) else repr(value)
+    text = "".join(character if character.isprintable() else "?" for character in text)
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
 def validate_username(username: str) -> str:
     if not isinstance(username, str) or not USERNAME_RE.match(username):
         raise ValidationError(
@@ -87,9 +94,9 @@ def validate_domain(domain: str) -> str:
     try:
         candidate.encode("idna")
     except UnicodeError as exc:
-        raise ValidationError(f"domain '{domain}' is not valid IDNA") from exc
+        raise ValidationError(f"domain '{_shown(domain)}' is not valid IDNA") from exc
     if not DOMAIN_RE.match(candidate):
-        raise ValidationError(f"domain '{domain}' is not a syntactically valid hostname")
+        raise ValidationError(f"domain '{_shown(domain)}' is not a syntactically valid hostname")
     return candidate
 
 
@@ -239,29 +246,75 @@ def validate_php_timezone(value: str) -> str:
 # -- validation only decides what's a legal *path*, escaping for the
 # regex context it will be embedded in is the renderer's job.
 REDIRECT_PATH_RE = re.compile(r"\A/[A-Za-z0-9._/~%-]*\Z")
+MAX_REDIRECT_PATH_LENGTH = 500
 REDIRECT_STATUS_CODES = (301, 302)
 
 
-def validate_redirect_path(path: str) -> str:
-    if not isinstance(path, str) or not REDIRECT_PATH_RE.match(path) or len(path) > 500:
-        raise ValidationError(f"'{path}' is not a valid redirect path (must start with '/', safe URL characters only)")
+def _url_path(path: str, what: str, *, dot_segments: bool = False) -> str:
+    """A bare URL path rendered into an OLS vhost (redirect pattern, cache
+    exclusion). Clients remove '.' and '..' segments before they send a
+    request (RFC 3986), so a rule such as '/../../x' can never match; it only
+    looks like a traversal, and is refused unless ``dot_segments``."""
+    if not isinstance(path, str) or not REDIRECT_PATH_RE.match(path):
+        raise ValidationError(
+            f"'{_shown(path)}' is not a valid {what}: it must start with '/' and use only "
+            "letters, digits and . _ ~ % - /")
+    if len(path) > MAX_REDIRECT_PATH_LENGTH:
+        raise ValidationError(f"{what[:1].upper()}{what[1:]} must be at most {MAX_REDIRECT_PATH_LENGTH} characters")
+    if not dot_segments and any(segment in (".", "..") for segment in path.split("/")):
+        raise ValidationError(f"'{_shown(path)}' is not a valid {what}: '.' and '..' segments are not allowed")
     return path
 
 
-def validate_redirect_target(url: str) -> str:
+def validate_redirect_path(path: str, *, existing: bool = False) -> str:
+    """``existing`` names a stored rule (to delete it), which may predate the
+    refusal of '.' and '..' segments."""
+    return _url_path(path, "redirect path", dot_segments=existing)
+
+
+def validate_http_url(url: str, label: str = "URL") -> str:
+    """An absolute http(s) URL without credentials, whitespace, control
+    characters or brackets, safe to store and show as a link. Redirect
+    targets are written into a vhost rewrite rule, where any control
+    character (NUL, vertical tab, form feed, not only a newline) could end
+    or split the rule, as a bracket could add flags."""
     import urllib.parse
 
-    if not isinstance(url, str) or len(url) > 2000 or any(c in url for c in ("\n", "\r", "\t", "[", "]", " ")):
-        raise ValidationError(f"'{url}' is not a valid redirect target URL")
+    sentence = label[:1].upper() + label[1:]
+    if (not isinstance(url, str) or len(url) > 2000
+            or any(ord(c) <= 32 or ord(c) == 127 or c in "[]" for c in url)):
+        raise ValidationError(f"'{_shown(url)}' is not a valid {label}")
     try:
         parsed = urllib.parse.urlparse(url)
         port = parsed.port
     except ValueError:
-        raise ValidationError('Redirect target URL has an invalid port') from None
+        raise ValidationError(f'{sentence} has an invalid port') from None
     if (parsed.scheme not in ("http", "https") or not parsed.hostname
             or parsed.username is not None or parsed.password is not None
             or (port is not None and not 1 <= port <= 65535)):
-        raise ValidationError('Redirect target URL must be an absolute HTTP(S) URL without embedded credentials')
+        raise ValidationError(f'{sentence} must be an absolute HTTP(S) URL without embedded credentials')
+    return url
+
+
+# A RewriteRule substitution is not literal text: $N / ${...} are rule
+# back-references and maps, %N / %{VAR} condition back-references and server
+# variables (%{HTTP_COOKIE} would copy visitors' cookies into the Location
+# sent to another site), and a backslash escapes. OpenLiteSpeed has no escape
+# for any of them. Redirect and domain-forwarding targets are rendered as
+# substitutions, so they are refused when saved; daemon/ols.py
+# (literal_rewrite_target) re-checks rows stored by older releases.
+REWRITE_EXPANSION_RE = re.compile(r"[$\\]|%(?:[0-9]|\{)")
+REWRITE_EXPANSION_MESSAGE = (
+    "Redirect target URL cannot contain '$', a backslash, '%{', or a percent escape that starts "
+    "with a digit (such as %20 for a space): the web server reads these as rewrite variables and "
+    "there is no way to escape them. Percent escapes that start with a letter, such as %C3%A9, work."
+)
+
+
+def validate_redirect_target(url: str) -> str:
+    url = validate_http_url(url, "redirect target URL")
+    if REWRITE_EXPANSION_RE.search(url):
+        raise ValidationError(REWRITE_EXPANSION_MESSAGE)
     return url
 
 
@@ -558,7 +611,7 @@ def validate_lscache_exclude_paths(values) -> list[str]:
     for value in values:
         # Same charset/shape as a redirect path -- both are rendered
         # directly into an OLS vhost config as a bare path value.
-        path = validate_redirect_path(value)
+        path = _url_path(value, "cache exclusion path")
         if path not in seen:
             seen.add(path)
             result.append(path)

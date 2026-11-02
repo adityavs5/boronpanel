@@ -39,7 +39,7 @@ from sqlalchemy import delete, select
 
 from shared.db import write_session
 from shared.config import settings
-from shared.validation import ValidationError, validate_domain
+from shared.validation import NotFoundError, ValidationError, validate_domain
 
 from daemon import ols
 from daemon.ols import WAF_AUDIT_LOG, WAF_RULES_FILE
@@ -422,7 +422,7 @@ def delete_custom_rule(params: dict) -> dict:
     with write_session() as session:
         row = session.get(WafCustomRule, rule_id)
         if row is None:
-            raise ValidationError(f"custom rule {rule_id} not found")
+            raise NotFoundError(f"custom rule {rule_id} not found")
         deleted = {"id": row.id, "domain": row.domain, "target": row.target, "pattern": row.pattern, "created_at": row.created_at}
         session.delete(row)
     def restore():
@@ -431,6 +431,21 @@ def delete_custom_rule(params: dict) -> dict:
                 session.add(WafCustomRule(**deleted))
     _refresh_with_rollback(restore)
     return {"id": rule_id, "status": "deleted"}
+
+
+def delete_for_domain(domain_name: str) -> int:
+    """Name-keyed cleanup (handlers_domain.purge_domain_settings): the WAF
+    policy, custom rules and exceptions of a removed domain. They are keyed
+    by the name only, so a later owner of the name -- this account or
+    another -- would otherwise inherit them. Returns how many rows went; the
+    caller re-renders httpd_config.conf when that matters before the next
+    vhost change does it anyway."""
+    domain_name = validate_domain(domain_name)
+    removed = 0
+    with write_session() as session:
+        for model in (WafDomainOverride, WafCustomRule, WafException):
+            removed += session.execute(delete(model).where(model.domain == domain_name)).rowcount or 0
+    return removed
 
 
 def _exception_dict(row: WafException) -> dict:
@@ -492,7 +507,7 @@ def delete_exception(params: dict) -> dict:
     with write_session() as session:
         row = session.get(WafException, exception_id)
         if row is None:
-            raise ValidationError(f"WAF exception {exception_id} not found")
+            raise NotFoundError(f"WAF exception {exception_id} not found")
         deleted = {
             "id": row.id, "domain": row.domain, "rule_id": row.rule_id,
             "category": row.category, "uri_prefix": row.uri_prefix,

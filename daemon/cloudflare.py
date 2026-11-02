@@ -18,7 +18,7 @@ idempotent and retryable -- re-running a half-applied upsert converges.
 """
 from __future__ import annotations
 
-from daemon import dns_operations
+from daemon import dns_operations, dns_txt
 
 import contextlib
 import contextvars
@@ -277,24 +277,20 @@ def _record_name(zone: str, subdomain: str) -> str:
     return f"{subdomain}.{zone}"
 
 
-def _unescape(inner: str) -> str:
-    out: list[str] = []
-    i = 0
-    while i < len(inner):
-        if inner[i] == "\\" and i + 1 < len(inner):
-            out.append(inner[i + 1])
-            i += 2
-        else:
-            out.append(inner[i])
-            i += 1
-    return "".join(out)
+def _txt_data(value: str) -> bytes:
+    """The bytes of one TXT value. Quoted presentation -- PowerDNS content,
+    or what Cloudflare returns for a record entered quoted -- can hold
+    several character-strings and \\X or \\DDD escapes; they are resolved
+    and joined, as resolvers join them. Unquoted content is one literal
+    string, the way Cloudflare stores TXT."""
+    v = value.strip()
+    if len(v) >= 2 and v.startswith('"') and v.endswith('"'):
+        return dns_txt.txt_bytes(v)
+    return value.encode("utf-8")
 
 
 def _unquote_txt(value: str) -> str:
-    v = value.strip()
-    if len(v) >= 2 and v.startswith('"') and v.endswith('"'):
-        return _unescape(v[1:-1])
-    return value
+    return _txt_data(value).decode("utf-8", "replace")
 
 
 def _quote_txt(value: str) -> str:
@@ -312,7 +308,10 @@ def _to_cf_payload(rtype: str, name: str, value: str, ttl: int, proxied: bool) -
     if rtype in ("CNAME", "NS", "PTR"):
         payload["content"] = value.rstrip(".")
     elif rtype == "TXT":
-        payload["content"] = _unquote_txt(value)
+        try:
+            payload["content"] = _txt_data(value).decode("utf-8")
+        except UnicodeDecodeError:
+            raise CloudflareError(400, "Cloudflare TXT records must contain UTF-8 text", None) from None
     elif rtype == "MX":
         parts = value.split()
         if len(parts) != 2 or not parts[0].isdigit():
@@ -347,7 +346,10 @@ def _from_cf_record(rec: dict) -> str:
     if rtype in ("CNAME", "NS", "PTR"):
         return content.rstrip(".") + "."
     if rtype == "TXT":
-        return _quote_txt(_unquote_txt(content))
+        # The same canonical form PowerDNS stores (escaped strings of at most
+        # 255 octets), so zone-file readers such as the snapshot validator
+        # and the advanced editor accept a long DKIM key from either provider.
+        return dns_txt.txt_presentation(_txt_data(content))
     if rtype == "MX":
         return f"{rec.get('priority', 0)} {content.rstrip('.')}."
     if rtype == "SRV":

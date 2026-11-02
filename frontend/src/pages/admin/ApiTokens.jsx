@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { KeyRound, Plus, Trash2, Copy, Check, AlertTriangle } from 'lucide-react'
 import { get, post, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
-import { copyToClipboard } from '@/lib/utils'
+import { copyToClipboard, formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
@@ -39,6 +39,9 @@ export default function ApiTokens() {
   const accountQuery = useQuery({ queryKey: ['accounts'], queryFn: () => get('/api/v1/accounts'), enabled: createOpen })
   const activeAccounts = (Array.isArray(accountQuery.data) ? accountQuery.data : []).filter(account => account.status === 'active')
 
+  // Creating or revoking a token needs a signed-in administrator session (not
+  // an API token, not an impersonated session): the server answers 403 with
+  // its reason otherwise, which each dialog shows in place.
   const createMut = useMutation({
     mutationFn: (body) => post('/api/v1/tokens', body),
     onSuccess: (res) => {
@@ -49,7 +52,6 @@ export default function ApiTokens() {
       setCopied(false)
       setNewToken(res?.token || null)
     },
-    onError: (e) => toast.error('Could not create token', e.message),
   })
 
   const revokeMut = useMutation({
@@ -59,8 +61,8 @@ export default function ApiTokens() {
       invalidate()
       setToRevoke(null)
     },
-    onError: (e) => toast.error('Could not revoke token', e.message),
   })
+  const openCreate = () => { createMut.reset(); setCreateOpen(true) }
 
   const handleCopy = async () => {
     if (!newToken) return
@@ -110,7 +112,7 @@ export default function ApiTokens() {
         ),
     },
     { key: 'scope', header: 'Permissions', render: row => row.scope === 'read-only' ? 'Read only' : 'Read and manage' },
-    { key: 'expires_at', header: 'Expires', render: row => new Date(row.expires_at).toLocaleString() },
+    { key: 'expires_at', header: 'Expires', render: row => formatDate(row.expires_at) },
     {
       key: 'revoked',
       header: 'Status',
@@ -131,7 +133,7 @@ export default function ApiTokens() {
             <Button
               variant="danger"
               size="sm"
-              onClick={() => setToRevoke(r)}
+              onClick={() => { revokeMut.reset(); setToRevoke(r) }}
             >
               <Trash2 className="h-4 w-4" /> Revoke
             </Button>
@@ -146,7 +148,7 @@ export default function ApiTokens() {
         title="API tokens"
         description="Bearer tokens for machine-to-machine REST API access — e.g. a billing system. Send as an Authorization: Bearer <token> header."
         icon={KeyRound}
-        primaryAction={<Button onClick={() => setCreateOpen(true)}>
+        primaryAction={<Button onClick={openCreate}>
           <Plus className="h-4 w-4" /> Create token
         </Button>}
       />
@@ -165,7 +167,7 @@ export default function ApiTokens() {
         emptyTitle="No API tokens yet"
         emptyDescription="Create a token to grant a machine or external system programmatic access to the API."
         emptyIcon={KeyRound}
-        emptyAction={<Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> Create token</Button>}
+        emptyAction={<Button onClick={openCreate}><Plus className="h-4 w-4" /> Create token</Button>}
       />
 
       {/* Create token dialog */}
@@ -174,7 +176,7 @@ export default function ApiTokens() {
           <DialogHeader>
             <DialogTitle>Create API token</DialogTitle>
             <DialogDescription>
-              The plaintext token is shown once, immediately after creation. It cannot be retrieved later.
+              The plaintext token is shown once, immediately after creation. It cannot be retrieved later. Only a signed-in administrator can create or revoke tokens; another token cannot.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={submitCreate}>
@@ -200,6 +202,7 @@ export default function ApiTokens() {
               {form.role === 'customer' && <FormField label="Hosting account" required hint="Customer tokens must belong to an active account."><Select required value={form.account_id} onChange={event => setForm(current => ({ ...current, account_id: event.target.value }))}><option value="">Choose an account…</option>{activeAccounts.map(account => <option key={account.id} value={account.id}>{account.username} {account.primary_domain ? `· ${account.primary_domain}` : ''}</option>)}</Select></FormField>}
               <FormField label="Permissions"><Select value={form.scope} onChange={event => setForm(current => ({ ...current, scope: event.target.value }))}><option value="read-only">Read only</option><option value="full">Read and manage</option></Select></FormField>
               <FormField label="Expires after"><Select value={form.expires_in_days} onChange={event => setForm(current => ({ ...current, expires_in_days: event.target.value }))}>{[1,7,30,60,90].map(days => <option key={days} value={days}>{days} days</option>)}</Select></FormField>
+              {createMut.error && <p role="alert" className="rounded-control border border-danger/35 bg-danger/10 px-3 py-2 text-sm text-danger">Could not create the token: {createMut.error.message}</p>}
             </DialogBody>
             <DialogFooter>
               <Button type="button" variant="secondary" onClick={() => setCreateOpen(false)}>Cancel</Button>
@@ -247,6 +250,7 @@ export default function ApiTokens() {
         description="Any client using this token will immediately lose API access. This cannot be undone — you will need to create a new token to restore access."
         confirmLabel="Revoke token"
         loading={revokeMut.isPending}
+        error={revokeMut.error}
         onConfirm={() => toRevoke && revokeMut.mutate(toRevoke)}
       />
     </div>

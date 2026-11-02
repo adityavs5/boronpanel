@@ -53,6 +53,14 @@ docRoot                   {{ docroot }}
        side is ever raw user text. #}
     php_admin_value {{ e.name }} "{{ e.value }}"
 {% endfor %}
+{% else %}
+    {# No PHP settings of the account's own: errors go to the log above and
+       are never shown to visitors (they print file system paths and
+       queries), whatever the lsphp php.ini says. php_value, not
+       php_admin_value, so a site can still turn display on while debugging
+       (ini_set, WP_DEBUG_DISPLAY), and the account's own display_errors
+       setting replaces this line. #}
+    php_value display_errors "Off"
 {% endif %}
   }
 {% endmacro %}
@@ -363,13 +371,29 @@ RewriteRule ^/?(.*)$ {{ forwarding.target_url }}/$1 [R={{ forwarding.status_code
 RewriteRule ^/?(.*)$ {{ forwarding.target_url }} [R={{ forwarding.status_code }},L]
 {% endif %}
 END_boron_rules
-{% elif hotlink or redirects %}
+{% elif force_https or hotlink or redirects %}
   {# Phase 4 feature 2 (hotlink) and Phase 3 feature 7 (redirects) are
      independent, both may be active at once -- unlike "suspended",
      which wins exclusively over everything else. Hotlink rules run
      first (a blocked hotlinked image should never fall through to a
      redirect rule). #}
   rules                   <<<END_boron_rules
+{% if force_https %}
+{# Per-domain "Force HTTPS" (daemon/handlers_force_https.py): a plain-HTTP
+   request for a name the installed certificate covers is sent to the same
+   URL over HTTPS before any other rule runs (ols.force_https_hosts; names
+   outside the certificate are left on HTTP). The listener port and the
+   HTTPS flag are both checked, so the rule can never fire over TLS; a
+   request a proxy already received over HTTPS (Cloudflare "Flexible" sends
+   X-Forwarded-Proto) is left alone instead of looping; ACME HTTP-01 stays
+   reachable for renewals. %1 is the host without any :port. #}
+RewriteCond %{SERVER_PORT} ^80$
+RewriteCond %{HTTPS} !^on$
+RewriteCond %{HTTP:X-Forwarded-Proto} !^https$ [NC]
+RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
+RewriteCond %{HTTP_HOST} ^({{ force_https.host_pattern }})(:[0-9]+)?$ [NC]
+RewriteRule ^ https://%1%{REQUEST_URI} [R=301,L]
+{% endif %}
 {% if hotlink %}
   {# Standard mod_rewrite hotlink-protection recipe: block only when
      Referer is present (empty Referer always allowed -- direct nav,
@@ -397,7 +421,11 @@ END_boron_rules
    They live in a root-owned per-account directory (sysops.ensure_web_logs),
    never under the tenant's home: OLS opens these as the shared "nobody"
    user and follows symlinks, so a tenant-writable log directory let one
-   account redirect its log writes into another account's files. #}
+   account redirect its log writes into another account's files. That
+   directory is on /var, so the footprint is bounded: OLS rolls each log at
+   rollingSize and deletes archives older than keepDays, and
+   sysops.prune_vhost_logs keeps only the newest archives per log (count
+   and size, sysops.VHOST_LOG_KEEP_*). #}
 errorlog {{ vhost_log_dir }}/{{ vhost_name }}-error.log {
   useServer               0
   logLevel                {{ domain_log_level }}

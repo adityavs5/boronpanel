@@ -579,6 +579,29 @@ def create_session(params: dict) -> dict:
     return {"session_id": session_id, "expires_at": expires_at.isoformat()}
 
 
+def _account_unavailable(db, role: str, account_id: int | None, panel_user_id: int | None = None) -> str | None:
+    """Why a login whose credentials checked out gets no session, or None.
+
+    Both resolvers refuse a customer session whose account is not active, so
+    admitting the login only produced a cookie that answered 401 everywhere
+    with no explanation (suspended or terminated accounts). A suspended
+    reseller (reseller.update status=suspended disables its login) is told
+    the same way.
+    """
+    if role == "reseller":
+        from shared.models import ResellerProfile
+
+        status = db.scalar(select(ResellerProfile.status).where(ResellerProfile.panel_user_id == panel_user_id))
+        if status == "suspended":
+            return "This reseller login is suspended. Contact your hosting provider."
+        return None
+    if role != "customer":
+        return None
+    from daemon.handlers_account import customer_login_refusal
+
+    return customer_login_refusal(db, account_id)
+
+
 def login_begin(params: dict) -> dict:
     """The only unauthenticated session path: root checks the password first."""
     username = params.get("username")
@@ -604,14 +627,20 @@ def login_begin(params: dict) -> dict:
     source_key = gate["source_key"]
     with write_session() as db:
         user = db.scalar(select(PanelUser).where(PanelUser.username == username))
-        if user is None or user.disabled:
+        # Termination disables the account's customer logins, and reseller
+        # suspension the reseller's login. Their password is still checked,
+        # so the owner -- and only someone who knows the password -- is told
+        # why below. Every other disabled login looks exactly like an
+        # unknown one.
+        if user is None or (user.disabled and user.role not in ("customer", "reseller")):
             # Spend the same bcrypt work as a real check so latency does not
             # tell an attacker which login names exist or are enabled.
             verify_password(password, _dummy_password_hash())
             valid = False
         else:
             valid = verify_password(password, user.password_hash)
-        if not valid:
+        unavailable = _account_unavailable(db, user.role, user.account_id, user.id) if valid else None
+        if not valid or (user.disabled and unavailable is None):
             db.add(LoginFailureEvent(
                 bucket=login_bucket, source_ip=_source_ip(params.get("source_ip"))
             ))
@@ -629,11 +658,16 @@ def login_begin(params: dict) -> dict:
             if policy.require_admin_2fa and policy_started else None
         )
         admin_setup_required = role == "admin" and policy.require_admin_2fa and not has_totp
-        if has_totp:
+        if has_totp and unavailable is None:
             raw = secrets.token_urlsafe(32)
             db.add(LoginChallenge(token_hash=hashlib.sha256(raw.encode()).hexdigest(),
                                   panel_user_id=user_id, password_hash=password_hash,
                                   expires_at=utcnow() + dt.timedelta(minutes=5)))
+    if unavailable is not None:
+        # A right password is no guess, so it costs no attempt; but an
+        # unusable account gets neither a second-factor challenge nor a session.
+        record_login_result({"username": source_key, "success": True})
+        return {"valid": False, "account_unavailable": unavailable}
     if has_totp:
         return {"needs_2fa": True, "pending_token": raw,
                 "role": role, "account_id": account_id, "panel_user_id": user_id}
@@ -666,9 +700,13 @@ def login_finish(params: dict) -> dict:
         if challenge is None or challenge.used_at is not None or challenge.expires_at.replace(tzinfo=dt.timezone.utc) <= now:
             return {"valid": False}
         user = db.get(PanelUser, challenge.panel_user_id)
-        if user is None or user.disabled or user.password_hash != challenge.password_hash:
+        # As in login_begin, a customer login that termination disabled
+        # since the password step is told why (after the second factor).
+        if (user is None or (user.disabled and user.role not in ("customer", "reseller"))
+                or user.password_hash != challenge.password_hash):
             return {"valid": False}
         username, user_id, role, account_id = user.username, user.id, user.role, user.account_id
+        disabled = user.disabled
     login_bucket = _login_bucket(username, known_user=True)
     gate = _reserve_login_attempt(
         login_bucket, params.get("source_ip"),
@@ -690,7 +728,15 @@ def login_finish(params: dict) -> dict:
         ).values(used_at=utcnow()))
         if consumed.rowcount != 1:
             return {"valid": False}
+        # The account may have been suspended or terminated since the
+        # password step.
+        unavailable = _account_unavailable(db, role, account_id, user_id)
+    if disabled and unavailable is None:
+        _record_login_failure(login_bucket, params.get("source_ip"))
+        return {"valid": False}
     record_login_result({"username": source_key, "success": True})
+    if unavailable is not None:
+        return {"valid": False, "account_unavailable": unavailable}
     result = create_session({
         "panel_user_id": user_id, "source_ip": params.get("source_ip"),
         "user_agent": params.get("user_agent"),

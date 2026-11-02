@@ -21,8 +21,10 @@ reverse-proxying to whatever local port that systemd unit is listening on.
 """
 from __future__ import annotations
 
+import logging
 import os
 import pwd
+import subprocess
 from pathlib import Path
 
 from sqlalchemy import select
@@ -45,6 +47,7 @@ from daemon.portalloc import allocate_port
 from daemon.procutil import run
 
 KIND = "node"
+logger = logging.getLogger("borond.nodeapps")
 
 
 def _node_bin(version: str) -> str:
@@ -376,9 +379,21 @@ def npm_install(params: dict) -> dict:
         token=f"npm-{app_id}", cwd=app_dir, home=app_dir,
         env={"PATH": f"{node_bin_dir}:/usr/bin:/bin"},
     )
-    result = run(command, timeout=300)
+    try:
+        result = run(command, timeout=300)
+    except subprocess.TimeoutExpired:
+        raise ValidationError("npm install did not finish within five minutes. Check the app's dependencies "
+                              "and outbound package access, then retry.") from None
     if not result.ok:
-        raise RuntimeError(f"npm install failed: {result.stderr.strip()[:2000] or result.stdout.strip()[:2000]}")
+        # npm's output is the tenant's own and can be large or carry escape
+        # sequences: it goes to the daemon log (bounded), and npm keeps its
+        # full log in the app folder (HOME is the app directory).
+        logger.warning("npm install failed for Node.js app %d of account '%s' (exit status %d): %r",
+                       app_id, username, result.returncode, (result.stderr.strip() or result.stdout.strip())[-2000:])
+        raise ValidationError(
+            f"npm install failed (exit status {result.returncode}). Check package.json; npm's full log is in "
+            f"nodeapps/{name}/.npm/_logs."
+        )
     return {"id": app_id, "status": "installed", "output": result.stdout[-4000:]}
 
 

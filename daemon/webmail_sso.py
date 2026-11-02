@@ -21,7 +21,7 @@ from daemon.appcrypto import decrypt_secret, encrypt_secret
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, MailDomain, MailUser, WebmailLaunch
-from shared.validation import ValidationError, validate_email_address, validate_username
+from shared.validation import ValidationError, validate_domain, validate_email_address, validate_username
 
 logger = logging.getLogger("borond.webmail_sso")
 
@@ -271,6 +271,45 @@ def revoke_account(account_id: int) -> None:
     try:
         with connection.cursor() as cursor:
             cursor.executemany("UPDATE webmail_session SET revoked=1 WHERE launch_id=%s", [(item,) for item in ids])
+    finally:
+        connection.close()
+
+
+# Revocation keeps the rows (an audit trail while the mailbox exists). Once
+# the mail domain or the account is gone they are only orphans, so purge
+# them together with their temporary Dovecot credentials.
+
+
+def purge_domain(domain: str) -> None:
+    """Delete the launch records and credentials of a removed mail domain."""
+    suffix = "%@" + validate_domain(domain)
+    with write_session() as db:
+        found = db.scalar(select(WebmailLaunch.id).where(WebmailLaunch.mailbox.like(suffix)).limit(1))
+        db.execute(delete(WebmailLaunch).where(WebmailLaunch.mailbox.like(suffix)))
+    if found is None:
+        return
+    ensure_schema()
+    connection = mail._connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("DELETE FROM webmail_session WHERE mailbox LIKE %s", (suffix,))
+    finally:
+        connection.close()
+
+
+def purge_account(account_id: int) -> None:
+    """Delete every launch record and credential left by a terminated account,
+    including rows of mail domains removed before purge_domain existed."""
+    with write_session() as db:
+        ids = list(db.scalars(select(WebmailLaunch.id).where(WebmailLaunch.account_id == account_id)).all())
+        db.execute(delete(WebmailLaunch).where(WebmailLaunch.account_id == account_id))
+    if not ids:
+        return
+    ensure_schema()
+    connection = mail._connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.executemany("DELETE FROM webmail_session WHERE launch_id=%s", [(item,) for item in ids])
     finally:
         connection.close()
 

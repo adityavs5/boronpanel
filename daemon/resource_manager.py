@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import os
 from pathlib import Path
 
@@ -14,7 +15,9 @@ from shared.models import (
     Account, Plan, ResellerAccount, ResellerProfile, ResourceFault,
     ResourcePolicy, ResourceSample,
 )
-from shared.validation import ValidationError, validate_username
+from shared.validation import NotFoundError, ValidationError, validate_username
+
+logger = logging.getLogger("borond.resource_manager")
 
 POLICY_FIELDS = (
     "cpu_cores", "cpu_weight", "memory_high_mb", "memory_max_mb",
@@ -195,7 +198,7 @@ def save_account_policy(params: dict) -> dict:
     with write_session() as db:
         account = db.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise ValidationError("Account not found")
+            raise NotFoundError("Account not found")
         account_id = account.id
     return save_policy({**params, "scope_type": "account", "scope_id": account_id})
 
@@ -220,11 +223,34 @@ def _reconcile_scope(scope_type: str, scope_id: int) -> None:
         apply_account(account_id)
 
 
+def reapply_all() -> int:
+    """Upgrade step: re-apply every live account's effective limits.
+
+    A slice keeps the properties it was given when its limits last changed,
+    so a release that changes how they are written (I/O bandwidth in plain
+    bytes, the I/O device named as the whole disk) reached existing accounts
+    only at their next limits change. Idempotent; returns how many accounts
+    were applied. One account failing is logged and does not stop the rest.
+    """
+    with write_session() as db:
+        ids = list(db.scalars(select(Account.id).where(
+            Account.status.in_(["active", "suspended"]), Account.uid.is_not(None),
+        ).order_by(Account.id)).all())
+    applied = 0
+    for account_id in ids:
+        try:
+            apply_account(account_id)
+            applied += 1
+        except Exception:  # noqa: BLE001 - one account must not stop the upgrade
+            logger.exception("could not re-apply the resource limits of account %s", account_id)
+    return applied
+
+
 def apply_account(account_id: int) -> dict:
     with write_session() as db:
         account = db.get(Account, account_id)
         if account is None:
-            raise ValidationError("Account not found")
+            raise NotFoundError("Account not found")
         effective = effective_for_account(db, account)
         username = account.username
         policy_id = effective["policy"]["id"] if effective["policy"] else None
@@ -250,7 +276,7 @@ def reset_account(params: dict) -> dict:
     with write_session() as db:
         account = db.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise ValidationError("Account not found")
+            raise NotFoundError("Account not found")
         row = db.scalar(select(ResourcePolicy).where(
             ResourcePolicy.scope_type == "account", ResourcePolicy.scope_id == account.id,
         ))

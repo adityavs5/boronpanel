@@ -57,9 +57,14 @@ def main() -> int:
 
     non_wildcard_domains = [d for d in renewed_domains if not d.startswith("*.")]
     wildcard_bases = {d[2:] for d in renewed_domains if d.startswith("*.")}
+    # daemon/ssl.py adds a site's www.<domain> listener alias to the site's
+    # own certificate; that name is not a Domain row of its own.
+    aliases = {d for d in non_wildcard_domains if d.startswith("www.") and d[4:] in non_wildcard_domains}
 
     exit_code = 0
     for domain_name in non_wildcard_domains:
+        if domain_name in aliases:
+            continue
         try:
             _apply_for_domain(domain_name, is_wildcard=domain_name in wildcard_bases)
         except Exception:

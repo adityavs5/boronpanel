@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer, CartesianGrid,
@@ -32,11 +32,24 @@ import { ProgressBar } from '@/components/ui/Progress'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { useDomainContext } from '@/hooks/useDomainContext'
+import { InlineError, InlineWarning } from './InlineFeedback'
+import { HtaccessReport, htaccessNeedsAttention } from './HtaccessReport'
+import { ForceHttpsSetting } from './ForceHttps'
+import { StagingCard } from './Staging'
 
 const DNS_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SRV', 'CAA']
 // Record types Cloudflare can proxy (orange cloud).
 const PROXYABLE_TYPES = new Set(['A', 'AAAA', 'CNAME'])
 const linesToList = (text) => (text || '').split('\n').map((s) => s.trim()).filter(Boolean)
+
+// Redirect and forwarding targets are emitted by the rewrite engine, which
+// would expand $1, %1, %{VAR} and backslash escapes; the server refuses them
+// (ols.literal_rewrite_target), so say so before the request.
+const REWRITE_EXPANSION = /[$\\]|%(?:[0-9]|\{)/
+const TARGET_URL_HINT = 'A full http:// or https:// address. It cannot contain $, a backslash, %{ or a percent escape that starts with a digit, so encoded characters such as %20 cannot be used. Escapes that start with a letter, such as %C3%A9, work.'
+const literalTargetError = (value) => REWRITE_EXPANSION.test(value || '')
+  ? 'Remove $, backslashes, %{ and percent escapes that start with a digit (such as %20). The web server would read them as rewrite variables.'
+  : undefined
 
 // ---------------------------------------------------------------------------
 // DNS — Cloudflare provider card (docs/PLAN-cloudflare.md Phase 1)
@@ -260,6 +273,9 @@ export function DnsTab({ domain }) {
     onSuccess: () => { toast.success('DNS record saved'); invalidate(); setDialog(null) },
     onError: (e) => toast.error('Could not save record', e.message),
   })
+  const resetSave = saveMut.reset
+  const dialogOpen = !!dialog
+  useEffect(() => { if (!dialogOpen) resetSave() }, [dialogOpen, resetSave])
 
   const deleteMut = useMutation({
     mutationFn: (row) => del(`/api/v1/dns/zones/${domain}/records`, { params: { subdomain: row.subdomain, type: row.type } }),
@@ -405,7 +421,8 @@ export function DnsTab({ domain }) {
                   <FormField label="Type">
                     <Select value={dialog.type} disabled={isEdit}
                       onChange={(e) => setDialog((d) => ({ ...d, type: e.target.value }))}>
-                      {DNS_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                      {/* The apex NS set is edited in the Nameservers section. */}
+                      {DNS_TYPES.filter((t) => t !== 'NS' || dialog.type === 'NS' || !['', '@', zone].includes((dialog.subdomain || '').trim().toLowerCase().replace(/\.$/, ''))).map((t) => <option key={t} value={t}>{t}</option>)}
                     </Select>
                   </FormField>
                 </div>
@@ -417,6 +434,7 @@ export function DnsTab({ domain }) {
                   <Textarea required rows={3} value={dialog.values}
                     onChange={(e) => setDialog((d) => ({ ...d, values: e.target.value }))} placeholder="1.2.3.4" />
                 </FormField>
+                <InlineError error={saveMut.error} />
               </DialogBody>
               <DialogFooter>
                 <Button type="button" variant="secondary" onClick={() => setDialog(null)}>Cancel</Button>
@@ -443,7 +461,21 @@ export function DnsTab({ domain }) {
 // ---------------------------------------------------------------------------
 // Nameservers
 // ---------------------------------------------------------------------------
-function NameserversForm({ username, domain, nameservers, glue }) {
+// Set and reset report the glue they changed: removed_glue lists
+// "host TYPE" strings deleted from the zone; kept_glue lists {name, types,
+// reason} for addresses that are still in use and were left in place.
+function GlueChanges({ result }) {
+  const removed = result?.removed_glue || [], kept = result?.kept_glue || []
+  if (!removed.length && !kept.length) return null
+  return (
+    <div className="settings-notice space-y-2" role="status">
+      {removed.length > 0 && <div><p className="font-medium">Removed glue records</p><ul className="mt-1 space-y-0.5">{removed.map(item => <li key={item} className="break-all font-mono text-xs">{item}</li>)}</ul></div>}
+      {kept.length > 0 && <div><p className="font-medium">Kept address records</p><p className="text-muted-foreground">These hosts are no longer nameservers, but their addresses are still used, so they were not removed.</p><ul className="mt-1 space-y-0.5">{kept.map(item => <li key={item.name} className="break-words text-xs"><span className="break-all font-mono">{item.name} {(item.types || []).join('/')}</span>: {item.reason}</li>)}</ul></div>}
+    </div>
+  )
+}
+
+function NameserversForm({ username, domain, nameservers, glue, onResult }) {
   const qc = useQueryClient()
   const base = `/api/v1/accounts/${username}/domains/${domain}/nameservers`
   const [nsText, setNsText] = useState(nameservers.join('\n'))
@@ -471,13 +503,13 @@ function NameserversForm({ username, domain, nameservers, glue }) {
       }
       return put(base, { nameservers: linesToList(nsText), glue: glueMap })
     },
-    onSuccess: () => { toast.success('Nameservers saved'); invalidate() },
+    onSuccess: (result) => { toast.success('Nameservers saved'); onResult(result); invalidate() },
     onError: (e) => toast.error('Could not save nameservers', e.message),
   })
 
   const resetMut = useMutation({
     mutationFn: () => del(base),
-    onSuccess: () => { toast.success('Nameservers reset to defaults'); invalidate(); setResetOpen(false) },
+    onSuccess: (result) => { toast.success('Nameservers reset to defaults'); onResult(result); invalidate(); setResetOpen(false) },
     onError: (e) => { toast.error('Could not reset nameservers', e.message); setResetOpen(false) },
   })
 
@@ -500,9 +532,10 @@ function NameserversForm({ username, domain, nameservers, glue }) {
           <Textarea rows={3} value={glueText} placeholder={`ns1.${domain}=203.0.113.10`}
             onChange={(e) => setGlueText(e.target.value)} />
         </FormField>
+        <InlineError error={saveMut.error || resetMut.error} />
       </CardContent>
-      <CardFooter className="flex gap-2">
-        <Button loading={saveMut.isPending} disabled={!linesToList(nsText).length} onClick={() => saveMut.mutate()}>
+      <CardFooter className="flex flex-wrap gap-2">
+        <Button loading={saveMut.isPending} disabled={!linesToList(nsText).length} onClick={() => { resetMut.reset(); saveMut.mutate() }}>
           <Save className="h-4 w-4" /> Save nameservers
         </Button>
         <Button variant="outline" onClick={() => setResetOpen(true)}>
@@ -514,25 +547,42 @@ function NameserversForm({ username, domain, nameservers, glue }) {
         open={resetOpen}
         onOpenChange={setResetOpen}
         title="Reset to default nameservers?"
-        description={`This restores Boron-managed defaults (ns1.${domain} / ns2.${domain}) pointing at this server.`}
+        description={`This restores this server's default nameservers for ${domain}. Glue records written for custom nameservers inside ${domain} are removed unless their addresses are still in use.`}
         confirmLabel="Reset to defaults"
         variant="danger"
         loading={resetMut.isPending}
-        onConfirm={() => resetMut.mutate()}
+        onConfirm={() => { saveMut.reset(); resetMut.mutate() }}
       />
     </Card>
   )
 }
 
 export function NameserversTab({ username, domain }) {
+  const { username: scopedUsername } = useParams()
+  const zonePage = name => scopedUsername ? `/accounts/${username}/domains/${name}` : `/domains/${name}`
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['nameservers', username, domain],
     queryFn: () => get(`/api/v1/accounts/${username}/domains/${domain}/nameservers`),
     enabled: !!username && !!domain,
   })
+  // Kept here: the form below remounts once the saved nameservers load.
+  const [glueResult, setGlueResult] = useState(null)
+  useEffect(() => { setGlueResult(null) }, [domain])
 
   const nameservers = data?.nameservers || []
   const glue = data?.glue || {}
+
+  // A subdomain or addon inside another zone has no delegation of its own.
+  if (data?.managed === false) {
+    return (
+      <div className="settings-notice" role="status">
+        {data.parent_zone ? <>
+          <span className="break-all">{domain}</span> has no DNS zone of its own; it uses the nameservers of{' '}
+          <Link className="break-all font-medium text-link underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/30 rounded-sm" to={{ pathname: zonePage(data.parent_zone), hash: '#nameservers' }}>{data.parent_zone}</Link>.
+        </> : <><span className="break-all">{domain}</span> has no DNS zone on this server, so its nameservers are set where its DNS is hosted.</>}
+      </div>
+    )
+  }
 
   // Cloudflare zones: the NS pair is assigned by Cloudflare, not edited here
   // (docs/PLAN-cloudflare.md SS1.8) — show it instead of the glue form.
@@ -587,8 +637,9 @@ export function NameserversTab({ username, domain }) {
         emptyDescription="This zone has no NS records at its apex yet."
         emptyIcon={Server}
       />
+      <GlueChanges result={glueResult} />
       {data && (
-        <NameserversForm key={nameservers.join(',')} username={username} domain={domain} nameservers={nameservers} glue={glue} />
+        <NameserversForm key={nameservers.join(',')} username={username} domain={domain} nameservers={nameservers} glue={glue} onResult={setGlueResult} />
       )}
     </div>
   )
@@ -616,8 +667,15 @@ export function RedirectsTab({ username, domain }) {
       return form.mode === 'edit' ? put(base, body) : post(base, body)
     },
     onSuccess: () => { toast.success('Redirect saved'); invalidate(); setDialog(null) },
-    onError: (e) => toast.error('Could not save redirect', e.message),
+    // Adding a path that already has a redirect answers 409; the dialog then
+    // offers to edit that redirect (PUT) instead of a plain error.
+    onError: (e, form) => { if (!(e.status === 409 && form.mode === 'add')) toast.error('Could not save redirect', e.message) },
   })
+  const openDialog = (next) => { saveMut.reset(); setDialog(next) }
+  const conflict = saveMut.error?.status === 409 && saveMut.variables?.mode === 'add' && dialog?.mode === 'add'
+    && saveMut.variables.path.trim() === dialog.path.trim() ? saveMut.variables : null
+  const existing = conflict ? (data?.redirects || []).find((row) => row.path === conflict.path.trim()) : null
+  const targetError = dialog ? literalTargetError(dialog.target_url) : undefined
 
   const deleteMut = useMutation({
     mutationFn: (row) => del(base, { params: { path: row.path } }),
@@ -633,7 +691,7 @@ export function RedirectsTab({ username, domain }) {
       key: 'actions', header: '', align: 'right', render: (r) => (
         <div className="flex justify-end gap-1">
           <Button variant="ghost" size="icon-sm" title="Edit"
-            onClick={() => setDialog({ mode: 'edit', path: r.path, target_url: r.target_url, status_code: String(r.status_code) })}>
+            onClick={() => openDialog({ mode: 'edit', path: r.path, target_url: r.target_url, status_code: String(r.status_code) })}>
             <Pencil className="h-4 w-4" />
           </Button>
           <Button variant="ghost" size="icon-sm" title="Delete" onClick={() => setToDelete(r)}>
@@ -649,7 +707,7 @@ export function RedirectsTab({ username, domain }) {
   return (
     <div>
       <div className="mb-3 flex justify-end">
-        <Button size="sm" onClick={() => setDialog({ mode: 'add', path: '', target_url: '', status_code: '301' })}>
+        <Button size="sm" onClick={() => openDialog({ mode: 'add', path: '', target_url: '', status_code: '301' })}>
           <Plus className="h-4 w-4" /> Add redirect
         </Button>
       </div>
@@ -673,13 +731,13 @@ export function RedirectsTab({ username, domain }) {
             <DialogTitle>{isEdit ? 'Edit redirect' : 'Add redirect'}</DialogTitle>
           </DialogHeader>
           {dialog && (
-            <form onSubmit={(e) => { e.preventDefault(); saveMut.mutate(dialog) }}>
+            <form onSubmit={(e) => { e.preventDefault(); if (!targetError) saveMut.mutate(dialog) }}>
               <DialogBody className="space-y-4">
-                <FormField label="Path" required hint="Path on this domain, e.g. /old-page">
-                  <Input required value={dialog.path} disabled={isEdit} placeholder="/old-page"
+                <FormField label="Path" required hint="Path on this domain, such as /old-page. Use letters, digits and . _ ~ % - /, at most 500 characters. '.' and '..' segments are not allowed.">
+                  <Input required maxLength={500} value={dialog.path} disabled={isEdit} placeholder="/old-page"
                     onChange={(e) => setDialog((d) => ({ ...d, path: e.target.value }))} />
                 </FormField>
-                <FormField label="Target URL" required>
+                <FormField label="Target URL" required error={targetError} hint={TARGET_URL_HINT}>
                   <Input required type="url" value={dialog.target_url} placeholder="https://example.com/new-page"
                     onChange={(e) => setDialog((d) => ({ ...d, target_url: e.target.value }))} />
                 </FormField>
@@ -689,10 +747,16 @@ export function RedirectsTab({ username, domain }) {
                     <option value="302">302 (temporary)</option>
                   </Select>
                 </FormField>
+                {conflict ? (
+                  <InlineWarning title={`${conflict.path.trim()} already has a redirect`}>
+                    <p className="break-words">{existing ? <>It sends visitors to <span className="break-all font-mono">{existing.target_url}</span> ({existing.status_code}). </> : null}Edit that redirect to replace it with the target above.</p>
+                    <Button type="button" size="sm" variant="secondary" onClick={() => { saveMut.reset(); setDialog((d) => ({ ...d, mode: 'edit', path: d.path.trim() })) }}>Edit the existing redirect</Button>
+                  </InlineWarning>
+                ) : <InlineError error={saveMut.error} />}
               </DialogBody>
               <DialogFooter>
                 <Button type="button" variant="secondary" onClick={() => setDialog(null)}>Cancel</Button>
-                <Button type="submit" loading={saveMut.isPending}>Save redirect</Button>
+                <Button type="submit" disabled={!!targetError || !!conflict} loading={saveMut.isPending}>Save redirect</Button>
               </DialogFooter>
             </form>
           )}
@@ -762,10 +826,11 @@ export function ForwardingTab({ username, domain }) {
               {fwd.keep_path ? ', keeping path' : ''}).
             </p>
           )}
-          <FormField label="Destination URL" required hint="Absolute http(s) URL, e.g. https://example.org">
+          <FormField label="Destination URL" required error={literalTargetError(form.target_url)} hint={TARGET_URL_HINT}>
             <Input required type="url" value={form.target_url} placeholder="https://example.org"
               onChange={(e) => setForm((f) => ({ ...f, target_url: e.target.value }))} />
           </FormField>
+          <InlineError error={saveMut.error || removeMut.error} />
           <div className="grid grid-cols-2 gap-4">
             <FormField label="Redirect type">
               <Select value={form.status_code} onChange={(e) => setForm((f) => ({ ...f, status_code: e.target.value }))}>
@@ -781,11 +846,11 @@ export function ForwardingTab({ username, domain }) {
           </div>
         </CardContent>
         <CardFooter className="flex gap-2">
-          <Button loading={saveMut.isPending} disabled={!form.target_url.trim()} onClick={() => saveMut.mutate()}>
+          <Button loading={saveMut.isPending} disabled={!form.target_url.trim() || !!literalTargetError(form.target_url)} onClick={() => { removeMut.reset(); saveMut.mutate() }}>
             <Save className="h-4 w-4" /> {fwd ? 'Update forwarding' : 'Enable forwarding'}
           </Button>
           {fwd && (
-            <Button variant="outline" loading={removeMut.isPending} onClick={() => removeMut.mutate()}>
+            <Button variant="outline" loading={removeMut.isPending} onClick={() => { saveMut.reset(); removeMut.mutate() }}>
               <Trash2 className="h-4 w-4" /> Remove forwarding
             </Button>
           )}
@@ -820,9 +885,17 @@ function LscacheForm({ username, domain, settings }) {
 
   const purgeMut = useMutation({
     mutationFn: () => post(`${base}/purge`),
-    onSuccess: () => { toast.success('Cache purged'); invalidate() },
+    onSuccess: () => { toast.success('Cache purged'); invalidate(); qc.invalidateQueries({ queryKey: ['lscache-stats', username, domain] }) },
     onError: (e) => toast.error('Could not purge cache', e.message),
   })
+  // Objects on disk, counted up to a bound (complete false: there are more).
+  const stats = useQuery({
+    queryKey: ['lscache-stats', username, domain],
+    queryFn: () => get(`${base}/stats`),
+    enabled: !!username && !!domain,
+    retry: false,
+  })
+  const count = stats.data?.cached_object_count
 
   return (
     <Card>
@@ -830,6 +903,7 @@ function LscacheForm({ username, domain, settings }) {
         <CardTitle>LiteSpeed cache</CardTitle>
         <CardDescription>
           {settings.last_purged_at ? `Last purged ${relativeTime(settings.last_purged_at)}` : 'Cache has never been purged.'}
+          {typeof count === 'number' && ` Cached objects: ${count.toLocaleString()}${stats.data.cached_object_count_complete === false ? '+' : ''}.`}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -840,11 +914,12 @@ function LscacheForm({ username, domain, settings }) {
           </div>
           <Switch aria-label="Enable full-page cache" checked={form.enabled} onCheckedChange={(v) => setForm((f) => ({ ...f, enabled: v }))} />
         </div>
+        <InlineError error={(!saveMut.isPending && saveMut.error) || (!purgeMut.isPending && purgeMut.error)} />
         <FormField label="Cache TTL (seconds)">
           <Input type="number" min="0" value={form.ttl_seconds}
             onChange={(e) => setForm((f) => ({ ...f, ttl_seconds: e.target.value }))} />
         </FormField>
-        <FormField label="Excluded paths" hint="One path per line — these are never cached.">
+        <FormField label="Excluded paths" hint="One path per line, such as /cart. These are never cached. Use letters, digits and . _ ~ % - /, at most 500 characters per path; '.' and '..' segments are not allowed.">
           <Textarea rows={4} value={form.exclude_paths} placeholder="/cart&#10;/checkout"
             onChange={(e) => setForm((f) => ({ ...f, exclude_paths: e.target.value }))} />
         </FormField>
@@ -1769,9 +1844,17 @@ export function WildcardTab({ username, domain }) {
   })
   const invalidate = () => qc.invalidateQueries({ queryKey: key })
 
+  // Both GET and PATCH read the live zone: dns_record_created says whether
+  // the panel's own *.domain record is there, and dns_conflict explains a
+  // * record the customer made, which the panel never replaces or deletes.
   const setMut = useMutation({
     mutationFn: (enabled) => patch(base, { enabled }),
-    onSuccess: (_r, enabled) => { toast.success(enabled ? 'Wildcard routing enabled' : 'Wildcard routing disabled'); invalidate() },
+    onSuccess: (result, enabled) => {
+      if (result) qc.setQueryData(key, current => ({ ...current, ...result }))
+      if (enabled && result?.dns_conflict) toast.warning('Wildcard routing enabled', 'Your own * DNS record was kept, so wildcard names may not reach this server.')
+      else toast.success(enabled ? 'Wildcard routing enabled' : 'Wildcard routing disabled')
+      invalidate()
+    },
     onError: (e) => toast.error('Could not update wildcard routing', e.message),
   })
 
@@ -1792,7 +1875,7 @@ export function WildcardTab({ username, domain }) {
           {!data?.zone_managed && (
             <p className="rounded-btn border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground">
               This domain's DNS zone isn't managed by Boron yet, so a wildcard A record can't be created here.
-              Manage this domain's DNS first (DNS tab), or create <span className="font-mono">*.{domain}</span>{' '}
+              Manage this domain's DNS first, or create <span className="font-mono">*.{domain}</span>{' '}
               manually with your DNS provider.
             </p>
           )}
@@ -1801,9 +1884,27 @@ export function WildcardTab({ username, domain }) {
               <p className="text-sm font-medium text-foreground">Wildcard routing</p>
               <p className="text-xs text-muted-foreground">*.{domain} → this domain's docroot</p>
             </div>
-            <Switch checked={!!data?.enabled} disabled={!data?.zone_managed && !data?.enabled}
+            <Switch aria-label="Wildcard routing" checked={!!data?.enabled} disabled={setMut.isPending || (!data?.zone_managed && !data?.enabled)}
               onCheckedChange={(v) => setMut.mutate(v)} />
           </div>
+          {data?.enabled && data?.dns_conflict && (
+            <InlineWarning title="Your own * DNS record was kept">
+              <p>{data.dns_conflict}</p>
+            </InlineWarning>
+          )}
+          {data?.enabled && data?.zone_managed && !data?.dns_conflict && (
+            data.dns_record_created ? (
+              <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
+                <Badge variant="success">DNS record in place</Badge>
+                <span className="break-all font-mono text-xs">*.{domain}</span> points at this server.
+              </p>
+            ) : (
+              <p className="text-sm text-muted-foreground" role="status">
+                The panel has no <span className="break-all font-mono text-xs">*.{domain}</span> record in this zone. If
+                wildcard names do not resolve, turn wildcard routing off and on again to create it.
+              </p>
+            )
+          )}
           {data?.enabled && !data?.ssl_is_wildcard && (
             <p className="rounded-btn border border-info/40 bg-info/10 px-3 py-2 text-sm text-foreground">
               Wildcard routing is on, but there's no wildcard SSL certificate for this domain yet — HTTPS requests to
@@ -2027,9 +2128,45 @@ export function StatsTab({ username, domain }) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// .htaccess access rules (GET .../htaccess-status; reload re-renders the vhost)
+// ---------------------------------------------------------------------------
+function HtaccessCard({ username, domain }) {
+  const qc = useQueryClient()
+  const base = `/api/v1/accounts/${username}/domains/${encodeURIComponent(domain)}`
+  const key = ['htaccess-status', username, domain]
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: key, queryFn: () => get(`${base}/htaccess-status`), enabled: !!username && !!domain,
+  })
+  const reloadMut = useMutation({
+    mutationFn: () => post(`${base}/reload-htaccess`, {}),
+    onSuccess: (result) => {
+      qc.setQueryData(key, result)
+      if (htaccessNeedsAttention(result)) toast.warning('.htaccess reloaded with warnings', 'Some lines need your attention. See the list on this page.')
+      else toast.success('.htaccess reloaded', `${domain} now uses its .htaccess rewrite and access rules.`)
+    },
+    onError: (e) => toast.error('Could not reload .htaccess', e.message),
+  })
+  return (
+    <Card>
+      <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 space-y-0">
+        <div className="min-w-0">
+          <CardTitle>.htaccess access rules</CardTitle>
+          <CardDescription>Rewrite rules in .htaccess apply as written. Access rules (Require, Order, Allow and Deny) are enforced by the server where it can; edits take effect on their own within a few seconds.</CardDescription>
+        </div>
+        <Button variant="secondary" size="sm" loading={reloadMut.isPending} onClick={() => reloadMut.mutate()}><RefreshCw className="h-4 w-4" /> Reload .htaccess</Button>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? <CardSkeleton /> : error ? <ErrorState error={error} onRetry={refetch} /> : <HtaccessReport report={data} />}
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function DomainDetail() {
   const username = useAccountUsername()
   const { domain, username: scopedUsername } = useParams()
+  const location = useLocation()
   const backPath = scopedUsername ? `/accounts/${username}?tab=domains` : '/domains'
   const { data, isLoading } = useQuery({
     queryKey: ['domains', username],
@@ -2039,6 +2176,19 @@ export default function DomainDetail() {
   const item = data?.domains?.find((entry) => entry.domain === domain)
   const [, setWorkingDomain] = useDomainContext(username, data?.domains || [])
   useEffect(() => { if (domain) setWorkingDomain(domain) }, [domain, setWorkingDomain])
+  // Nameservers and wildcard routing belong to a domain with its own DNS
+  // zone; a subdomain or addon inside another zone follows that zone.
+  const zoneQuery = useQuery({
+    queryKey: ['dns-records', domain],
+    queryFn: () => get(`/api/v1/dns/zones/${domain}/records`),
+    enabled: !!domain,
+  })
+  const ownZone = zoneQuery.data?.managed === true
+  // Links such as the DNS editor's "Nameservers page" open a section here.
+  useEffect(() => {
+    const target = location.hash ? document.getElementById(location.hash.slice(1)) : null
+    if (target) { target.scrollIntoView({ block: 'start' }); target.focus({ preventScroll: true }) }
+  }, [location.hash, ownZone])
 
   return (
     <div className="domain-settings-page">
@@ -2070,6 +2220,28 @@ export default function DomainDetail() {
             </div>
           </CardContent>
         </Card>
+      </div>
+      <div className="mt-6 space-y-8">
+        {domain && <HtaccessCard username={username} domain={domain} />}
+        {domain && (
+          <Card>
+            <CardHeader><div><CardTitle>HTTPS</CardTitle><CardDescription>Certificates are issued on the SSL page; this domain's redirect to https:// is set here.</CardDescription></div></CardHeader>
+            <CardContent><ForceHttpsSetting username={username} domain={domain} /></CardContent>
+          </Card>
+        )}
+        {domain && item && item.kind !== 'parked' && !domain.startsWith('staging.') && <StagingCard username={username} domain={domain} admin={!!scopedUsername} />}
+        {ownZone && (
+          <section id="nameservers" tabIndex={-1} aria-labelledby="domain-nameservers-title" className="scroll-mt-24 focus:outline-none">
+            <h2 id="domain-nameservers-title" className="interior-section-title">Nameservers</h2>
+            <p className="mb-4 text-sm text-muted-foreground">The nameservers this zone delegates to. Set them to match what you entered at your domain registrar.</p>
+            <NameserversTab username={username} domain={domain} />
+          </section>
+        )}
+        {ownZone && (
+          <section id="wildcard" tabIndex={-1} aria-label="Wildcard subdomains" className="scroll-mt-24 focus:outline-none">
+            <WildcardTab username={username} domain={domain} />
+          </section>
+        )}
       </div>
     </div>
   )

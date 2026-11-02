@@ -22,8 +22,13 @@ prefix for database names. Do not reuse a system/reserved username.
 ### Suspend, unsuspend, and terminate
 
 - **Suspend** locks the account login and serves the static suspended page for
-  every domain. DNS and mail remain in place. Verify the live site in a fresh
-  browser because caches are purged as part of the suspension hooks.
+  every domain. SSH, SFTP, cron and mailbox logins (IMAP, POP3, SMTP AUTH,
+  webmail) are refused, and processes the account still runs are ended: shell
+  sessions, nohup/tmux/screen jobs, PHP workers and panel command jobs. The
+  account's Node.js, Python and Redis services keep running. DNS stays in
+  place and incoming mail is still delivered. The customer's panel login is
+  refused with a message that the account is suspended. Verify the live site
+  in a fresh browser because caches are purged as part of the suspension hooks.
 - **Unsuspend** restores the vhost and unlocks the account. Re-test HTTP and
   FTP before notifying the customer.
 - **Terminate** is irreversible: it removes the account's vhosts, databases,

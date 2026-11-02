@@ -588,3 +588,111 @@ def test_remove_domain_reports_dns_lookup_failure_after_vhost_removal(isolated_d
     assert result["cleanup_failed"] == ["DNS records"]
     with write_session() as session:
         assert session.scalar(select(Domain).where(Domain.domain == "blog.demo1.example")) is None
+
+
+# --- name-keyed state: purge coverage, dependents, ownership conflicts ------
+
+
+def test_removal_drops_waf_php_override_and_htaccess_state_of_the_name(isolated_db, stub_sysops, stub_filesystem,
+                                                                        stub_ols, monkeypatch):
+    """WAF rows, an admin disable_functions override and the .htaccess
+    watcher's last-seen rules are keyed by the name: a freed domain must not
+    hand them to its next owner (round 1 left WAF rows behind)."""
+    import datetime as dt
+    from daemon import htaccess
+    from shared.models import PhpFunctionOverride, WafCustomRule, WafDomainOverride, WafException, utcnow
+
+    refreshed = []
+    monkeypatch.setattr(hd.ols, "refresh_main_config", lambda: refreshed.append(True))
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    hd.add_domain({"username": "demo1", "domain": "shop.example", "kind": "addon"})
+    with write_session() as session:
+        account = session.scalar(select(ha.Account).where(ha.Account.username == "demo1"))
+        session.add(WafDomainOverride(domain="shop.example", disabled=True, mode="disabled"))
+        session.add(WafCustomRule(domain="shop.example", target="ARGS", pattern="evil"))
+        session.add(WafException(domain="shop.example", rule_id=941100, expires_at=utcnow() + dt.timedelta(hours=1)))
+        session.add(PhpFunctionOverride(account_id=account.id, domain="shop.example", disable_functions="phpinfo"))
+        session.add(PhpFunctionOverride(account_id=account.id, domain=None, disable_functions="exec"))
+    monkeypatch.setitem(htaccess.watcher.access_signatures, "shop.example", (("", "deny", (), ()),))
+
+    result = hd.remove_domain({"username": "demo1", "domain": "shop.example"})
+
+    assert "cleanup_failed" not in result
+    assert refreshed == [True]  # the server-wide WAF rules no longer mention the name
+    assert "shop.example" not in htaccess.watcher.access_signatures
+    with write_session() as session:
+        for model in (WafDomainOverride, WafCustomRule, WafException):
+            assert session.scalars(select(model)).all() == []
+        assert [row.domain for row in session.scalars(select(PhpFunctionOverride)).all()] == [None]
+
+
+def test_readding_a_name_drops_leftover_waf_rows_without_a_separate_reload(isolated_db, stub_sysops, stub_filesystem,
+                                                                          stub_ols, monkeypatch):
+    from shared.models import WafDomainOverride
+
+    monkeypatch.setattr(hd.ols, "refresh_main_config", lambda: pytest.fail("provision_vhost renders it next"))
+    ha.create_account({"username": "demo1"})
+    with write_session() as session:
+        session.add(WafDomainOverride(domain="orphan.example", disabled=True, mode="disabled"))
+    hd.add_domain({"username": "demo1", "domain": "orphan.example", "kind": "primary"})
+    with write_session() as session:
+        assert session.scalars(select(WafDomainOverride)).all() == []
+    assert stub_ols["provision"] == ["demo1"]
+
+
+@pytest.mark.parametrize("dependent", ["node", "python", "parked"])
+def test_remove_domain_refuses_while_something_routes_through_it(isolated_db, stub_sysops, stub_filesystem,
+                                                                stub_ols, dependent):
+    """An app's proxy mapping is keyed by the name, so removing its domain
+    would route a later owner of the name to this account's app."""
+    from shared.models import NodeApp, ParkedDomain, PythonApp
+    from shared.validation import ConflictError
+
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    hd.add_domain({"username": "demo1", "domain": "app.demo1.example", "kind": "subdomain"})
+    with write_session() as session:
+        account = session.scalar(select(ha.Account).where(ha.Account.username == "demo1"))
+        if dependent == "node":
+            session.add(NodeApp(account_id=account.id, domain="app.demo1.example", name="api",
+                                entry_point="server.js", port=30001, node_version="20"))
+        elif dependent == "python":
+            session.add(PythonApp(account_id=account.id, domain="app.demo1.example", name="api",
+                                  entry_point="app:application", port=30002))
+        else:
+            session.add(ParkedDomain(account_id=account.id, parked_domain="alias.example",
+                                     target_domain="app.demo1.example"))
+    expected = {"node": "Node.js app 'api'", "python": "Python app 'api'", "parked": "alias.example"}[dependent]
+    with pytest.raises(ConflictError, match=expected):
+        hd.remove_domain({"username": "demo1", "domain": "app.demo1.example"})
+    assert stub_ols["remove"] == []
+    with write_session() as session:
+        assert session.scalar(select(Domain).where(Domain.domain == "app.demo1.example")) is not None
+
+
+@pytest.mark.parametrize("with_zone", [True, False])
+def test_adding_another_accounts_domain_is_a_conflict(isolated_db, stub_sysops, stub_filesystem, stub_ols, with_zone):
+    """409 whether or not the owner's zone exists (with a zone this used to
+    be the 400 "The matching DNS zone belongs to another account")."""
+    from daemon import server
+    from shared.validation import ConflictError
+
+    ha.create_account({"username": "demo1"})
+    ha.create_account({"username": "demo2"})
+    hd.add_domain({"username": "demo2", "domain": "taken.example", "kind": "primary"})
+    if with_zone:
+        _add_zone_owned_by("demo2", "taken.example")
+    with pytest.raises(ConflictError, match="domain 'taken.example' already belongs to another account") as raised:
+        hd.add_domain({"username": "demo1", "domain": "taken.example", "kind": "addon"})
+    assert server.rpc_error_code(raised.value) == "conflict"
+    with pytest.raises(ConflictError, match="domain 'taken.example' is already in use"):
+        hd.add_domain({"username": "demo2", "domain": "taken.example", "kind": "addon"})
+
+
+def test_unknown_domain_kind_is_a_readable_validation_error(isolated_db, stub_sysops):
+    from shared.validation import ValidationError
+
+    ha.create_account({"username": "demo1"})
+    with pytest.raises(ValidationError, match="kind must be primary, addon, or subdomain"):
+        hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "parked"})

@@ -305,9 +305,11 @@ def snapshot_destination_settings(destination_id: int, body: SnapshotDestination
 
 
 @api_router.delete('/snapshots/destinations/{destination_id}')
-def snapshot_delete_destination(destination_id: int, identity: Identity = Depends(get_identity)):
+def snapshot_delete_destination(destination_id: int, delete_jobs: bool = False,
+                                identity: Identity = Depends(get_identity)):
+    """delete_jobs=true also deletes the disabled backup jobs that use it."""
     require_admin(identity)
-    return call_daemon('snapshot.destination.delete', identity, id=destination_id)
+    return call_daemon('snapshot.destination.delete', identity, id=destination_id, delete_jobs=delete_jobs)
 
 
 @api_router.post('/snapshots/destinations/{destination_id}/{action}')

@@ -83,7 +83,7 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
     await page.screenshot({path:info.outputPath('php-desktop.png'),fullPage:true})
     await page.goto('/app/databases')
     const titleSize = await page.getByRole('heading',{name:'Databases',exact:true}).evaluate(el => parseFloat(getComputedStyle(el).fontSize))
-    const sectionSize = await page.getByRole('heading',{name:'Current Databases',exact:true}).evaluate(el => parseFloat(getComputedStyle(el).fontSize))
+    const sectionSize = await page.getByRole('heading',{name:'Current databases',exact:true}).evaluate(el => parseFloat(getComputedStyle(el).fontSize))
     expect(sectionSize).toBeLessThan(titleSize)
     await page.goto('/app/cache')
     await expect(page.getByRole('switch',{name:'Enable full-page cache',exact:true})).toBeVisible()

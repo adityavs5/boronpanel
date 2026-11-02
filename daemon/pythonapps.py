@@ -18,6 +18,7 @@ customer-supplied installs implicitly" posture as nodeapps.npm_install).
 """
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import pwd
@@ -29,6 +30,7 @@ from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain, NodeApp, PythonApp
 from shared.validation import (
+    NotFoundError,
     ValidationError,
     validate_app_name,
     validate_domain,
@@ -43,6 +45,7 @@ from daemon.procutil import run
 
 KIND = "python"
 APP_TYPES = ("wsgi", "asgi")
+logger = logging.getLogger("borond.pythonapps")
 
 
 def _app_dir(username: str, name: str) -> str:
@@ -66,14 +69,14 @@ def _validate_app_type(value: str) -> str:
 def _get_account(session, username: str) -> Account:
     account = session.scalar(select(Account).where(Account.username == username))
     if account is None:
-        raise RuntimeError(f"account '{username}' not found")
+        raise NotFoundError(f"account '{username}' not found")
     return account
 
 
 def _get_domain_for_account(session, account: Account, domain_name: str) -> Domain:
     domain_row = session.scalar(select(Domain).where(Domain.domain == domain_name, Domain.account_id == account.id))
     if domain_row is None:
-        raise RuntimeError(f"domain '{domain_name}' not found for account '{account.username}'")
+        raise NotFoundError(f"domain '{domain_name}' not found for account '{account.username}'")
     return domain_row
 
 
@@ -88,7 +91,7 @@ def _get_row(session, username: str, app_id: int) -> tuple[Account, PythonApp]:
     account = _get_account(session, username)
     row = session.scalar(select(PythonApp).where(PythonApp.id == app_id, PythonApp.account_id == account.id))
     if row is None:
-        raise RuntimeError(f"Python app {app_id} not found for account '{username}'")
+        raise NotFoundError(f"Python app {app_id} not found for account '{username}'")
     return account, row
 
 
@@ -141,7 +144,12 @@ def _create_venv(username: str, name: str) -> None:
     except subprocess.TimeoutExpired:
         raise ValidationError('Python environment preparation exceeded three minutes. Check account resource limits and retry; no application was registered.') from None
     if not result.ok:
-        raise RuntimeError(f"failed to create virtualenv: {result.stderr.strip()[:2000] or result.stdout.strip()[:2000]}")
+        # Command output stays in the daemon log (bounded), never the API.
+        _log_command_failure("python -m venv", username, name, result)
+        raise ValidationError(
+            f"Creating the Python environment failed (exit status {result.returncode}). Check the account's "
+            "disk quota and resource limits, then retry; no application was registered."
+        )
 
     pip = f"{venv_dir}/bin/pip"
     try:
@@ -149,7 +157,18 @@ def _create_venv(username: str, name: str) -> None:
     except subprocess.TimeoutExpired:
         raise ValidationError('Python package installation exceeded three minutes. Check outbound package access and account resource limits, then retry.') from None
     if not result.ok:
-        raise RuntimeError(f"failed to install gunicorn/uvicorn: {result.stderr.strip()[:2000] or result.stdout.strip()[:2000]}")
+        _log_command_failure("pip install gunicorn uvicorn", username, name, result)
+        raise ValidationError(
+            f"Installing gunicorn and uvicorn failed (exit status {result.returncode}). Check outbound package "
+            "access and account resource limits, then retry; no application was registered."
+        )
+
+
+def _log_command_failure(command: str, username: str, name: str, result) -> None:
+    """Tenant command output can be large or carry escape sequences: it is
+    logged (bounded, repr-escaped) instead of returned to the caller."""
+    logger.warning("%s failed for Python app '%s' of account '%s' (exit status %d): %r", command, name, username,
+                   result.returncode, (result.stderr.strip() or result.stdout.strip())[-2000:])
 
 
 def _exec_start(venv_dir: str, app_type: str, entry_point: str, port: int, *, use_socket: bool = True) -> str:
@@ -387,9 +406,17 @@ def pip_install(params: dict) -> dict:
         username, [pip, "install", "--quiet", "--disable-pip-version-check", "-r", "requirements.txt"],
         token=f"pip-{app_id}", cwd=app_dir,
     )
-    result = run(command, timeout=300)
+    try:
+        result = run(command, timeout=300)
+    except subprocess.TimeoutExpired:
+        raise ValidationError("pip install did not finish within five minutes. Check requirements.txt and "
+                              "outbound package access, then retry.") from None
     if not result.ok:
-        raise RuntimeError(f"pip install failed: {result.stderr.strip()[:2000] or result.stdout.strip()[:2000]}")
+        _log_command_failure("pip install -r requirements.txt", username, name, result)
+        raise ValidationError(
+            f"pip install failed (exit status {result.returncode}). Check requirements.txt; to see pip's "
+            f"output, run pythonapps/{name}/venv/bin/pip install -r requirements.txt over SSH."
+        )
     return {"id": app_id, "status": "installed", "output": result.stdout[-4000:]}
 
 

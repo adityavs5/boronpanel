@@ -35,6 +35,7 @@ from daemon import license_client, panel_config, panel_jobs, panel_tls, snapshot
 from daemon.logsetup import configure_logging
 from daemon.rpc_authority import AuthenticationError, AuthorizationError, authorize, resolve_principal
 from daemon import directadmin_remote
+from daemon import handlers_force_https
 from daemon.rpc_policy import POLICY_BY_OPERATION
 
 logger = logging.getLogger("borond")
@@ -46,6 +47,7 @@ CUSTOMER_SCOPE_OPERATIONS = frozenset({
     "snapshot.restore.databases", "snapshot.restore.mailboxes",
     "snapshot.restore.configuration", "snapshot.restore.mail_routing",
     "snapshot.restore.trigger", "snapshot.restore.undo",
+    "backup.restore.trigger",  # only an administrator may recreate a terminated account
 })
 
 OP_TABLE = {
@@ -279,6 +281,9 @@ OP_TABLE = {
     "db.user.grant": handlers_database.grant_user,
     "db.user.revoke": handlers_database.revoke_user,
     "db.health": handlers_database.database_health,
+    "db.recovery.list": handlers_database.list_import_recovery_copies,
+    "db.recovery.restore": handlers_database.restore_import_recovery_copy,
+    "db.recovery.release": handlers_database.release_import_recovery_copy,
     "mail.create_domain": handlers_mail.create_mail_domain,
     "mail.delete_domain": handlers_mail.delete_mail_domain,
     "mail.create_mailbox": handlers_mail.create_mailbox,
@@ -356,6 +361,8 @@ OP_TABLE = {
     "backup.job.get": backup.get_job,
     "backup.job.list": backup.list_jobs,
     "backup.job.browse": backup.browse_backup,
+    "backup.job.download": portable_archive.prepare_account_download,
+    "backup.job.download.cleanup": portable_archive.cleanup_account_download,
     "backup.restore.trigger": backup.trigger_restore,
     "backup.restore.get": backup.get_restore_job,
     "backup.restore.list": backup.list_restore_jobs,
@@ -365,6 +372,7 @@ OP_TABLE = {
     "wordpress.install.list": wordpress.list_installs,
     # Phase 3 feature 3: phpMyAdmin single-signon
     "pma.token.create": pma.create_token,
+    "pma.status": pma.provisioning_status,
     "system.bootstrap_pma": lambda params: (pma.bootstrap_pma(), {"status": "ok"})[1],
     "system.bootstrap_spamassassin": lambda params: spamfilter.bootstrap_spamassassin(),
     # Phase 3 feature 5: FTP sub-accounts
@@ -405,6 +413,9 @@ OP_TABLE = {
     # Phase 4 feature 2: hotlink protection
     "hotlink.get": handlers_hotlink.get_hotlink_protection,
     "hotlink.set": handlers_hotlink.set_hotlink_protection,
+    # Per-domain HTTP-to-HTTPS redirect (uptimeways QA L3)
+    "force_https.get": handlers_force_https.get_force_https,
+    "force_https.set": handlers_force_https.set_force_https,
     # Phase 4 feature 3: IP blocker
     "ipblock.list": handlers_ipblock.list_ip_blocks,
     "ipblock.add": handlers_ipblock.add_ip_block,
@@ -760,7 +771,7 @@ REPORTING_OPS = {
     "ipmanager.list",
     "portable.import.get", "portable.import.list", "portable.import.upload.reserve", "portable.import.upload.cleanup",
     "cpanel_import.upload.reserve", "cpanel_import.upload.cleanup",
-    "portable.export.prepare", "portable.export.cleanup",
+    "portable.export.prepare", "portable.export.cleanup", "backup.job.download", "backup.job.download.cleanup",
     # Run A feature 5: history is dashboard-polled; check shells out 7x
     # systemctl -- same isolation reasoning as health/services below.
     "monitoring.history", "monitoring.check",
@@ -789,6 +800,7 @@ REPORTING_OPS = {
     # Phase 8 feature 5: parses up to ~12MB of the Postfix mail log -- same
     # isolation reasoning as disktree/usage above.
     "maillog.delivery",
+    "mail.dns.preview",  # public DNS lookups when this server's zone is not authoritative
     # Phase 8 feature 10: samples live process state (psutil, ~0.1s CPU sample)
     # -- same dashboard-polling isolation reasoning as health/services above.
     "processes.list",
@@ -851,6 +863,8 @@ handlers_account.UNSUSPEND_HOOKS.append(lambda account: lscache.purge_account_do
 handlers_account.SUSPEND_HOOKS.append(lambda account: cloudflare_ops.purge_account_zones(account))
 handlers_account.UNSUSPEND_HOOKS.append(lambda account: cloudflare_ops.purge_account_zones(account))
 handlers_account.SUSPEND_HOOKS.append(lambda account: webmail_sso.revoke_account(account.id))
+handlers_account.SUSPEND_HOOKS.append(lambda account: handlers_mail.suspend_account_mail(account))
+handlers_account.UNSUSPEND_HOOKS.append(lambda account: handlers_mail.unsuspend_account_mail(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: webmail_sso.revoke_account(account.id))
 handlers_account.PHP_VERSION_HOOKS.append(lambda account: ols.refresh_vhost(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: ols.terminate_vhost(account))
@@ -1013,6 +1027,27 @@ def _user_error_kind(exc: ValidationError) -> type[ValidationError]:
 
 
 async def dispatch(op: str, params: dict, credential: object = None) -> dict:
+    """Run one RPC; every exception that escapes is safe to return as is.
+
+    _dispatch classifies what it raises and attaches a diagnostic: a user
+    error keeps its (redacted) message, anything else is an opaque
+    OperationFailure. An exception without a diagnostic was raised outside
+    those handlers -- by the audit store, say -- and its text can carry SQL
+    or vendor output, so it becomes an opaque failure with a reference too.
+    """
+    try:
+        return await _dispatch(op, params, credential)
+    except Exception as exc:  # noqa: BLE001
+        if getattr(exc, "diagnostic", None) is not None:
+            raise
+        from shared.failures import OperationFailure, describe_failure
+        diagnostic = describe_failure(op, exc)
+        ensure_error_reference(diagnostic["reference"])
+        logger.error("operation failure: %s", json.dumps(diagnostic))
+        raise OperationFailure(diagnostic) from None
+
+
+async def _dispatch(op: str, params: dict, credential: object = None) -> dict:
     action_started = time.monotonic()
     params.pop("_actor", None)
     params.pop("_role", None)
@@ -1050,6 +1085,17 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
                      source_ip=ip, duration_ms=elapsed_ms())
         exc.diagnostic = diagnostic
         raise
+    except Exception as exc:  # noqa: BLE001
+        # The credential lookup itself failed (a locked or broken database):
+        # an internal failure like any other, never its SQL text.
+        from shared.failures import OperationFailure, describe_failure
+        diagnostic = describe_failure(op, exc)
+        ensure_error_reference(diagnostic["reference"])
+        logger.error("operation failure: %s", json.dumps(diagnostic))
+        audit.record("unknown", "unknown", op, params.get("username"), params, "failed",
+                     f"{diagnostic['error_type']} (reference: {diagnostic['reference']})",
+                     source_ip=ip, duration_ms=elapsed_ms())
+        raise OperationFailure(diagnostic) from None
     actor = principal.username if principal else "login"
     role = principal.role if principal else "anonymous"
     trace, trace_token = audit.begin_action_trace(op, params, enabled=op in TRACED_ACTION_OPS)
@@ -1106,6 +1152,7 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
             # widen a customer to another account's history.
             handler_params["_authenticated_role"] = current.role
             handler_params["_authenticated_account_id"] = current.account_id
+            handler_params["_authenticated_reseller_id"] = current.reseller_id
             handler_params["_authenticated_username"] = current.username
             handler_params["_source_ip"] = ip
         elif op.startswith("sessions.") and current is not None:
@@ -1268,10 +1315,22 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     with request_context(request_id):
         try:
             result = await dispatch(op, dict(params), credential)
-            writer.write(encode_response(True, result=result))
+            try:
+                frame = encode_response(True, result=result)
+            except Exception as exc:  # noqa: BLE001
+                # A handler returned something JSON cannot carry (a date, a
+                # set). The operation ran, but its result is lost: report an
+                # opaque failure with a reference, never the encoder's text.
+                from shared.failures import OperationFailure, describe_failure
+                diagnostic = describe_failure(op, exc)
+                ensure_error_reference(diagnostic["reference"])
+                logger.error("result encoding failure: %s", json.dumps(diagnostic))
+                raise OperationFailure(diagnostic) from None
+            writer.write(frame)
         except Exception as exc:  # noqa: BLE001
-            # dispatch() has already replaced every non-user error with an
-            # opaque OperationFailure, so str(exc) is safe to return here.
+            # dispatch() replaces every non-user error with an opaque
+            # OperationFailure, wherever it was raised, so str(exc) is safe
+            # to return here.
             writer.write(encode_response(False, error_code=rpc_error_code(exc), error_message=str(exc),
                                          diagnostic=getattr(exc, 'diagnostic', None)))
         finally:

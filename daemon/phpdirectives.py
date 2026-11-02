@@ -53,6 +53,20 @@ DEFAULT_DISABLE_FUNCTIONS = (
 _FUNCTION_NAME_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
 MAX_DISABLE_FUNCTIONS = 100
 
+# Error display/logging defaults every lsphp php.ini carries: PHP never prints
+# errors (file system paths, queries) to visitors unless a site or account
+# turns display on, and errors are logged (customer vhosts point error_log at
+# ~/logs/php-error.log). Written by scripts/install.sh and reconciled on every
+# upgrade by scripts/upgrade_runtime.py, both through
+# phpext.reconcile_php_ini_defaults. Customer vhosts also default
+# display_errors to Off themselves (templates/vhost.conf.j2), so a PHP version
+# installed later is covered before the next upgrade reaches its php.ini.
+PHP_INI_DEFAULTS = (
+    ("display_errors", "Off"),
+    ("display_startup_errors", "Off"),
+    ("log_errors", "On"),
+)
+
 
 def validate_disable_functions(value) -> str:
     """Accepts a list of function names or a single comma-separated string

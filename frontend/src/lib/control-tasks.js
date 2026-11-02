@@ -17,8 +17,12 @@ export async function waitForControlTask(initial, { onProgress, reveal = false }
   }
   onProgress?.(task)
   if (task.status !== 'completed') {
-    const reference = task.error_reference ? ` Reference: ${task.error_reference}.` : ''
-    throw new Error(`${task.progress_message || 'The operation failed.'}${reference}`)
+    // progress_message carries the handler's own reason for user errors
+    // ("account 'x' already exists", a busy lock); internal failures only
+    // say "Operation failed" and are traced through error_reference.
+    const reason = task.progress_message && task.progress_message !== 'Operation failed' ? task.progress_message : 'The operation failed.'
+    const reference = task.error_reference || null
+    throw Object.assign(new Error(reference ? `${reason} (reference: ${reference})` : reason), { reason, reference, task })
   }
   if (reveal) return post(`/api/v1/task-operations/${task.id}/reveal`, {})
   return task.result || {}

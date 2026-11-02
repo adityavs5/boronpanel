@@ -295,7 +295,7 @@ profile_has() {
 configure_profile() {
     case "$INSTALL_PROFILE" in
         minimal) REQUIRED_PORTS=(2222 80 443 3306) ;;
-        standard|full) REQUIRED_PORTS=(2222 8081 80 443 21 25 110 143 587 993 995 3306 53) ;;
+        standard|full) REQUIRED_PORTS=(2222 8081 80 443 21 25 110 143 465 587 993 995 3306 53) ;;
         *) die "invalid profile '${INSTALL_PROFILE}'; choose minimal, standard, or full" ;;
     esac
 }
@@ -352,7 +352,7 @@ readonly BASE_PKGS=(
 readonly CORE_STACK_PKGS=(certbot)
 readonly DATABASE_STACK_PKGS=(mariadb-server)
 readonly STANDARD_STACK_PKGS=(
-    postfix dovecot-core dovecot-imapd dovecot-lmtpd
+    postfix dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd
     dovecot-mysql dovecot-sieve postfix-mysql pdns-server pdns-backend-sqlite3
     pure-ftpd spamassassin opendkim opendkim-tools msmtp fail2ban
 )
@@ -844,6 +844,10 @@ setup_config() {
     if [[ -z "$PMA_DOMAIN" && -n "$PANEL_DOMAIN" ]] && profile_has database; then
         PMA_DOMAIN="phpmyadmin.${PANEL_DOMAIN}"
     fi
+    # pma_hostname stays empty until setup_phpmyadmin has installed the
+    # package and saves it: the hostname adds an OLS vhost for phpMyAdmin's
+    # document root, and every OLS config test (bootstrap_baseline in
+    # start_services first) fails while that path is missing.
 
     if [[ -f "${CONF_DIR}/boron.toml" ]]; then
         skip "existing boron.toml retained (profile and host settings are changed from Server Setup)"
@@ -859,7 +863,7 @@ webmail_hostname = "${WEBMAIL_DOMAIN}"
 webmail_url = "${WEBMAIL_DOMAIN:+https://${WEBMAIL_DOMAIN}}"
 mail_hostname = "${WEBMAIL_DOMAIN}"
 webmail_docroot = "/var/www/roundcube/public_html"
-pma_hostname = "${PMA_DOMAIN}"
+pma_hostname = ""
 EOF
         ok "boron.toml written"
     fi
@@ -1157,6 +1161,17 @@ EOF
     postconf -P 'submission/inet/smtpd_sender_restrictions=reject_authenticated_sender_login_mismatch'
     postconf -P 'submission/inet/content_filter=boron-sign:'
     postconf -P 'submission/inet/smtpd_relay_restrictions=permit_sasl_authenticated,reject'
+    # Implicit-TLS submission (465, RFC 8314): the same rules as 587, kept
+    # equal by daemon/dkim.py's submission_policy() on every reconcile.
+    postconf -Me 'submissions/inet=submissions inet n - y - - smtpd'
+    postconf -P 'submissions/inet/syslog_name=postfix/submissions'
+    postconf -P 'submissions/inet/smtpd_tls_wrappermode=yes'
+    postconf -P 'submissions/inet/smtpd_sasl_auth_enable=yes'
+    postconf -P 'submissions/inet/smtpd_client_restrictions=permit_sasl_authenticated,reject'
+    postconf -P 'submissions/inet/smtpd_sender_login_maps=mysql:/etc/postfix/boron/mysql-sender-login.cf'
+    postconf -P 'submissions/inet/smtpd_sender_restrictions=reject_authenticated_sender_login_mismatch'
+    postconf -P 'submissions/inet/content_filter=boron-sign:'
+    postconf -P 'submissions/inet/smtpd_relay_restrictions=permit_sasl_authenticated,reject'
     postconf -P 'smtp/inet/smtpd_sasl_auth_enable=no'
     postconf -Me "boron-sign/unix=boron-sign unix - n n - 4 pipe flags=Rq user=opendkim argv=/opt/boron/.venv/bin/python /opt/boron/scripts/mail_sign_filter.py --sender \${sender} --login=\${sasl_username} --recipient \${recipient}"
 
@@ -1315,16 +1330,32 @@ EOF
 
 setup_phpmyadmin() {
     # daemon/pma.py installs the distribution package without recommends (no
-    # web server, no phpMyAdmin control database) and, when a phpMyAdmin
-    # hostname is configured, renders its signon config and OLS vhost. Server
-    # Setup publishes it later when the hostname is chosen there instead.
-    if [[ -n "$PMA_DOMAIN" ]]; then
-        info "Installing phpMyAdmin at ${PMA_DOMAIN}"
+    # web server, no phpMyAdmin control database), then saves the phpMyAdmin
+    # hostname to boron.toml and publishes it (signon config and OLS vhost).
+    # Server Setup publishes it later when the hostname is chosen there
+    # instead. phpMyAdmin is optional: a failed install is recorded for
+    # Diagnostics and the installation goes on.
+    local hostname=""
+    # An existing server keeps the hostname chosen in Server Setup.
+    if ! $EXISTING_INSTALL; then
+        hostname="$PMA_DOMAIN"
+    fi
+    if [[ -n "$hostname" ]]; then
+        info "Installing phpMyAdmin at ${hostname}"
     else
         info "Installing phpMyAdmin (publish it by choosing a phpMyAdmin hostname in Server Setup)"
     fi
-    run_sh "'${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from daemon.pma import provision; print('phpMyAdmin:', provision())\""
-    ok "phpMyAdmin provisioned"
+    export BORON_PMA_HOSTNAME="$hostname"
+    if run_sh "'${VENV}/bin/python' -c \"import os, sys; sys.path.insert(0, '${DEST}'); from daemon.pma import provision; print('phpMyAdmin:', provision(os.environ.get('BORON_PMA_HOSTNAME') or None))\""; then
+        if [[ -n "$hostname" ]]; then
+            # The daemon loaded boron.toml before the hostname was saved.
+            run systemctl restart boron-provisiond
+        fi
+        ok "phpMyAdmin provisioned"
+    else
+        warn "phpMyAdmin could not be installed; the panel works without it. Diagnostics shows the reason, and saving the phpMyAdmin hostname in Server Setup retries the installation"
+    fi
+    unset BORON_PMA_HOSTNAME
 }
 
 # --- 6. systemd services + cron + logrotate ----------------------------------
@@ -1495,7 +1526,7 @@ setup_firewall() {
     allow_ssh_firewall_rules
     local p
     local ports=(80 443 2222 7080)
-    profile_has mail && ports+=(25 110 143 587 993 995)
+    profile_has mail && ports+=(25 110 143 465 587 993 995)
     profile_has dns && ports+=(53)
     profile_has ftp && ports+=(21)
     for p in "${ports[@]}"; do
@@ -1589,7 +1620,7 @@ EOF
 # --- 8.6 PHP hardening (disable_functions default, item 9) -----------------
 
 setup_php_hardening() {
-    info "Hardening PHP (disable_functions default)"
+    info "Hardening PHP (disable_functions default, error display off)"
     if $DRY_RUN; then
         # The real venv this needs doesn't exist yet in a dry-run (deploy_app
         # never actually ran) -- describe the plan without trying to execute
@@ -1600,6 +1631,7 @@ setup_php_hardening() {
         # with "no such file or directory" under set -e, caught by actually
         # running --dry-run rather than just reading the diff).
         printf '  %s hardened disable_functions default (daemon/phpdirectives.DEFAULT_DISABLE_FUNCTIONS) into lsphp81 through lsphp85 php.ini files\n' "${C_YELLOW}[dry]${C_RESET}"
+        printf '  %s error display/logging defaults (daemon/phpdirectives.PHP_INI_DEFAULTS) into the same php.ini files\n' "${C_YELLOW}[dry]${C_RESET}"
         return 0
     fi
     # Single source of truth: daemon/phpdirectives.DEFAULT_DISABLE_FUNCTIONS
@@ -1630,8 +1662,14 @@ print(','.join(phpdirectives.DEFAULT_DISABLE_FUNCTIONS))
         warn "no lsphp php.ini files found -- skipping PHP hardening"
         return 0
     fi
+    # display_errors/display_startup_errors Off and log_errors On, through
+    # the same helper scripts/upgrade_runtime.py reconciles existing servers
+    # with (daemon/phpdirectives.PHP_INI_DEFAULTS is the single source).
+    if ! run_sh "'${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from daemon import phpext; phpext.reconcile_php_ini_defaults()\""; then
+        warn "could not apply the PHP error display defaults -- customer vhosts still default display_errors to Off"
+    fi
     run systemctl restart lshttpd
-    ok "PHP hardened (disable_functions: ${funcs})"
+    ok "PHP hardened (disable_functions: ${funcs}; display_errors Off, log_errors On)"
 }
 
 # --- 8.7 GeoLite2 (site statistics' top-countries breakdown, item 12) ------

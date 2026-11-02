@@ -350,3 +350,46 @@ def test_wait_until_running_requires_a_stable_main_process(monkeypatch):
     monkeypatch.setattr(pythonapps.appunits, "run", lambda args, timeout=30, **kwargs: ProcResult(
         args=args, returncode=0, stdout=next(states), stderr=""))
     assert pythonapps.appunits.wait_until_running("boron-python-demo1-1.service", "python", 1)["active"] == "active"
+
+
+def test_pip_install_failure_is_a_short_error_without_pip_output(account_with_domain, monkeypatch, caplog):
+    """Same contract as npm install (round 1 core): pip's output is tenant
+    text, logged instead of returned (and no longer an opaque 502)."""
+    import logging
+
+    created = pythonapps.create_app({"username": "demo1", "domain": "demo1.example", "name": "my-api", "entry_point": "app:app"})
+    with open(f"{created['app_dir']}/requirements.txt", "w") as f:
+        f.write("no-such-package==0\n")
+
+    def failing_pip(args, timeout=30, **kwargs):
+        return ProcResult(args=args, returncode=1, stdout="",
+                          stderr="ERROR: No matching distribution found for no-such-package==0")
+
+    monkeypatch.setattr(pythonapps, "run", failing_pip)
+    with caplog.at_level(logging.WARNING, logger="borond.pythonapps"):
+        with pytest.raises(ValidationError) as excinfo:
+            pythonapps.pip_install({"username": "demo1", "id": created["id"]})
+    message = str(excinfo.value)
+    assert message.startswith("pip install failed (exit status 1)")
+    assert "No matching distribution" not in message
+    assert "No matching distribution" in caplog.text
+
+
+def test_environment_install_failure_is_a_validation_error_and_registers_nothing(account_with_domain, monkeypatch):
+    def failing_gunicorn_install(args, timeout=30, **kwargs):
+        failed = any("gunicorn" in str(arg) for arg in args)
+        return ProcResult(args=args, returncode=1 if failed else 0, stdout="", stderr="network unreachable" if failed else "")
+
+    monkeypatch.setattr(pythonapps, "run", failing_gunicorn_install)
+    with pytest.raises(ValidationError, match="Installing gunicorn and uvicorn failed") as excinfo:
+        pythonapps.create_app({"username": "demo1", "domain": "demo1.example", "name": "my-api", "entry_point": "app:app"})
+    assert "network unreachable" not in str(excinfo.value)
+    with write_session() as session:
+        assert session.scalar(select(PythonApp)) is None
+
+
+def test_unknown_python_app_is_not_found(account_with_domain):
+    from shared.validation import NotFoundError
+
+    with pytest.raises(NotFoundError):
+        pythonapps.get_app({"username": "demo1", "id": 999})

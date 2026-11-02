@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import datetime as dt
 import http.client
+import ipaddress
+import logging
 import os
 import socket
 import ssl as ssl_library
@@ -22,12 +24,12 @@ import secrets
 from pathlib import Path
 
 from cryptography import x509
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain, DnsZone, SslExpiryNotice, WordPressSiteState
-from shared.validation import validate_domain, validate_username
+from shared.validation import ValidationError, validate_domain, validate_username
 
 from daemon import audit, cloudflare_accounts, dnsprovider, events, safeio
 from daemon.ols import letsencrypt_cert_paths
@@ -35,6 +37,11 @@ from daemon.procutil import run
 
 DEPLOY_HOOK_SCRIPT = "/opt/boron/scripts/ssl_deploy_hook.py"
 _VENV_PYTHON = str(Path(settings.certbot_bin).parent / "python")
+# What the rest of the internet (and Let's Encrypt) resolves: never this
+# server's own PowerDNS copy of a zone, which may not be delegated at all.
+PUBLIC_RESOLVERS = ("1.1.1.1", "8.8.8.8")
+
+logger = logging.getLogger("borond.ssl")
 
 
 class SslError(Exception):
@@ -186,7 +193,7 @@ def _local_dns_is_publicly_authoritative(zone: str) -> bool:
         if not expected:
             return False
         resolver = dns.resolver.Resolver(configure=False)
-        resolver.nameservers = ['1.1.1.1', '8.8.8.8']
+        resolver.nameservers = list(PUBLIC_RESOLVERS)
         resolver.timeout = 1.5
         answer = resolver.resolve(zone, 'NS', lifetime=3)
         actual = {str(row.target).lower().rstrip('.') for row in answer}
@@ -221,9 +228,23 @@ def _challenge_plan(domain: str) -> tuple[str, list[str]]:
     # per-account Domain row -- it's server infrastructure, same category
     # as the panel's own TLS cert. Its webroot is settings.webmail_docroot,
     # not something looked up from the accounts/domains tables.
-    if domain in {settings.webmail_hostname, settings.mail_hostname}:
+    if domain == settings.webmail_hostname:
         from daemon.acme_http import challenge_args
         return "http-01", challenge_args()
+
+    if domain == settings.mail_hostname:
+        # A mail hostname of its own has no vhost: acme_http and the OLS
+        # mapping answer ACME requests only for the webmail hostname, so
+        # HTTP-01 cannot succeed. DNS-01 works when its zone is here and
+        # publicly authoritative, or on Cloudflare.
+        dns01 = _dns01_plan(domain)
+        if dns01 is not None:
+            return "dns-01", dns01
+        raise SslError(
+            f"The mail hostname {domain} is not served over HTTP by this server, so its certificate "
+            "needs a DNS-01 check: host its DNS zone on this server (delegated to it publicly) or on "
+            "Cloudflare, or use the webmail hostname as the mail hostname."
+        )
 
     if domain == settings.pma_hostname:
         return "http-01", ["--webroot", "-w", settings.pma_docroot]
@@ -238,6 +259,161 @@ def _challenge_plan(domain: str) -> tuple[str, list[str]]:
         raise SslError(f"domain '{domain}' is not provisioned in Boron")
     from daemon.acme_http import challenge_args
     return "http-01", challenge_args()
+
+
+def _server_addresses() -> set[str]:
+    """Every address this server answers on (ipmanager's inventory, which
+    includes the configured primary address of a NAT install)."""
+    from daemon import ipmanager
+
+    return {item["address"] for item in ipmanager.detected_addresses()}
+
+
+def _public_addresses(hostname: str) -> set[str] | None:
+    """A/AAAA answers for hostname from public resolvers, CNAMEs followed.
+    Empty when the name has no address; None when public DNS could not be
+    asked, so a resolver outage is never mistaken for "points elsewhere"."""
+    import dns.exception
+    import dns.resolver
+
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = list(PUBLIC_RESOLVERS)
+    resolver.timeout = 1.5
+    found: set[str] = set()
+    for record_type in ("A", "AAAA"):
+        try:
+            answer = resolver.resolve(hostname, record_type, lifetime=3)
+        except dns.resolver.NXDOMAIN:
+            return found
+        except dns.resolver.NoAnswer:
+            continue
+        except dns.exception.DNSException:
+            return None
+        for row in answer:
+            try:
+                found.add(ipaddress.ip_address(row.to_text()).compressed)
+            except ValueError:
+                continue
+    return found
+
+
+def _cloudflare_record_points_here(hostname: str, local: set[str]) -> bool | None:
+    """A Cloudflare-proxied name resolves to Cloudflare's edge, so public DNS
+    cannot show that it reaches this server; for a zone Boron runs on
+    Cloudflare the record content decides. None when the name is not in a
+    Cloudflare-active zone or its records could not be read."""
+    from daemon.dns_zone_lookup import find_managed_zone
+
+    zone = find_managed_zone(hostname)
+    row = dnsprovider.cloudflare_zone_row(zone) if zone else None
+    if row is None or row.status != "active":
+        return None
+    try:
+        records = dnsprovider.list_records(zone)
+    except Exception:  # noqa: BLE001 - an unreachable API only means "unknown"
+        logger.warning("could not read the Cloudflare records of %s", zone, exc_info=True)
+        return None
+    rrsets = {(str(item.get("name", "")).lower().rstrip("."), item.get("type")): item.get("values") or []
+              for item in records}
+    name = hostname
+    for _ in range(4):  # a short CNAME chain inside the zone, e.g. www -> apex
+        values = [*rrsets.get((name, "A"), []), *rrsets.get((name, "AAAA"), [])]
+        if values:
+            try:
+                return {ipaddress.ip_address(str(value)).compressed for value in values} <= local
+            except ValueError:
+                return False
+        targets = rrsets.get((name, "CNAME"), [])
+        if not targets:
+            return False
+        name = str(targets[0]).lower().rstrip(".")
+        if name != zone and not name.endswith("." + zone):
+            return False
+    return False
+
+
+def _points_here(hostname: str, local: set[str]) -> bool | None:
+    """True when every public address of hostname belongs to this server,
+    False when DNS shows it does not (or it does not resolve), None when
+    that could not be determined."""
+    addresses = _public_addresses(hostname)
+    if addresses and addresses <= local:
+        return True
+    proxied = _cloudflare_record_points_here(hostname, local)
+    if proxied is not None:
+        return proxied
+    return None if addresses is None else False
+
+
+def _listener_aliases(session, domain: str) -> list[str]:
+    """Other names the domain's vhost answers for. daemon/ols.py
+    (_all_active_vhosts) maps www.<domain> to it unless that name is a site
+    of its own or a panel service hostname."""
+    if domain.startswith("www."):
+        return []
+    alias = "www." + domain
+    if alias in {settings.webmail_hostname, settings.pma_hostname, settings.panel_hostname}:
+        return []
+    if session.scalar(select(Domain.id).where(Domain.domain == alias)) is not None:
+        return []
+    return [alias]
+
+
+def _certificate_san(domain: str) -> set[str]:
+    """DNS names on the domain's current certificate (empty when none)."""
+    _key, cert_path = letsencrypt_cert_paths(domain)
+    try:
+        cert = x509.load_pem_x509_certificate(Path(cert_path).read_bytes())
+        names = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    except (OSError, ValueError, x509.ExtensionNotFound):
+        return set()
+    return {name.lower() for name in names.get_values_for_type(x509.DNSName)}
+
+
+def _certificate_names(domain: str) -> tuple[list[str], list[dict]]:
+    """Names to request for a site's certificate, and the aliases left out.
+
+    The certificate covers the domain plus every alias its vhost answers for
+    (www.<domain>) that resolves to this server, so https://www works
+    wherever visitors can reach it. An alias pointing elsewhere would only
+    fail the ACME validation of the whole certificate, so it is left out and
+    reported. When public DNS cannot be asked, an alias already on the
+    current certificate is kept: a reissue never drops a working name
+    because of a resolver outage (certbot's own renewals reuse the names).
+    A WordPress site whose address is https://www.<domain> always needs www.
+    Service hostnames (no Domain row) get a single-name certificate.
+    """
+    with write_session() as session:
+        site = session.scalar(select(Domain).where(Domain.domain == domain))
+        if site is None:
+            return [domain], []
+        aliases = _listener_aliases(session, domain)
+        www_required = session.scalar(select(WordPressSiteState.id).where(
+            WordPressSiteState.account_id == site.account_id,
+            WordPressSiteState.domain == domain,
+            WordPressSiteState.site_url.like('https://www.' + domain + '%'))) is not None
+    if www_required and "www." + domain not in aliases:
+        raise ValidationError('The www hostname belongs to a separate site; update the WordPress address before requesting its certificate')
+    names, skipped = [domain], []
+    local: set[str] | None = None
+    current: set[str] | None = None
+    for alias in aliases:
+        if www_required:
+            names.append(alias)
+            continue
+        if local is None:
+            local = _server_addresses()
+        here = _points_here(alias, local)
+        if here is None:
+            if current is None:
+                current = _certificate_san(domain)
+            here = True if alias in current else None
+        if here:
+            names.append(alias)
+        else:
+            skipped.append({"name": alias, "reason": "does not point to this server" if here is False
+                            else "could not be checked in public DNS"})
+    return names, skipped
 
 
 def issue_certificate(params: dict) -> dict:
@@ -256,15 +432,8 @@ def issue_certificate(params: dict) -> dict:
         if domain == settings.webmail_hostname and not preflight["http_challenge"]["ok"]:
             raise SslError(preflight["http_challenge"].get("detail", "Webmail ACME preflight failed"))
 
-    with write_session() as session:
-        site_domain = session.scalar(select(Domain).where(Domain.domain == domain))
-        www_used = site_domain is not None and session.scalar(select(WordPressSiteState.id).where(
-            WordPressSiteState.account_id == site_domain.account_id,
-            WordPressSiteState.domain == domain,
-            WordPressSiteState.site_url.like('https://www.' + domain + '%'))) is not None
-        if www_used and session.scalar(select(Domain).where(Domain.domain == 'www.' + domain)) is not None:
-            raise SslError('The www hostname belongs to a separate site; update the WordPress address before requesting its certificate')
-    extra_names = ['--expand', '-d', 'www.' + domain] if www_used else []
+    with audit.step("SSL: choose certificate names"):
+        names, skipped_names = _certificate_names(domain)
     with audit.step("SSL: select ACME challenge"):
         mode, challenge_args = _challenge_plan(domain)
     audit.change(
@@ -290,8 +459,8 @@ def issue_certificate(params: dict) -> dict:
         "--agree-tos",
         "--email", settings.letsencrypt_email,
         "--cert-name", domain,
-        "-d", domain,
-        *extra_names,
+        *(["--expand"] if len(names) > 1 else []),
+        *(argument for name in names for argument in ("-d", name)),
         "--deploy-hook", f"{_VENV_PYTHON} {DEPLOY_HOOK_SCRIPT}",
         *force_args,
         *challenge_args,
@@ -309,7 +478,9 @@ def issue_certificate(params: dict) -> dict:
         with audit.step("SSL: deploy mail service certificate"):
             _deploy_mail_service_certificate(domain)
 
-    response = {"domain": domain, "challenge": mode, "status": "issued"}
+    response = {"domain": domain, "challenge": mode, "status": "issued", "names": names}
+    if skipped_names:
+        response["skipped_names"] = skipped_names
     if _service_hostname(domain):
         with audit.step("SSL: verify served certificate"):
             response["diagnostics"] = service_certificate_diagnostics({"domain": domain})
@@ -413,6 +584,68 @@ def terminate_account_certs(account) -> None:
         if not Path(f"/etc/letsencrypt/live/{domain_name}").exists():
             continue
         run([settings.certbot_bin, "delete", "--cert-name", domain_name, "--non-interactive"], timeout=30)
+
+
+def delete_certificate(domain_name: str) -> None:
+    """Name-keyed cleanup (handlers_domain.purge_domain_settings): delete the
+    certificate lineage and expiry notices of a name no site uses any more.
+    Otherwise certbot keeps renewing it, and a later owner of the name sees
+    the previous owner's certificate in their SSL dashboard."""
+    domain_name = validate_domain(domain_name)
+    if _service_hostname(domain_name):
+        return  # never a site's lineage; Server Setup manages these
+    with write_session() as session:
+        session.execute(delete(SslExpiryNotice).where(SslExpiryNotice.domain == domain_name))
+    if not (Path(f"/etc/letsencrypt/live/{domain_name}").exists()
+            or (RENEWAL_CONF_DIR / f"{domain_name}.conf").exists()):
+        return
+    result = run([settings.certbot_bin, "delete", "--cert-name", domain_name, "--non-interactive"], timeout=60)
+    if not result.ok:
+        raise SslError(f"could not delete the certificate of '{domain_name}'")
+
+
+def https_ready(domain: str, host: str | None = None) -> bool:
+    """Whether https://<host> is served with a valid certificate by the
+    domain's vhost, which uses its own lineage once ssl_status is active
+    (daemon/ols.py _ssl_paths_for_domain). host defaults to the domain."""
+    domain = validate_domain(domain)
+    host = validate_domain(host or domain)
+    with write_session() as session:
+        row = session.scalar(select(Domain).where(Domain.domain == domain))
+        if row is None or row.ssl_status != "active":
+            return False
+    details = _cert_file_details(domain)
+    if details is None or details["cert_status"] not in ("valid", "expiring"):
+        return False
+    return host in _certificate_san(domain)
+
+
+def prepare_https(domain: str, host: str | None = None) -> dict:
+    """Make https://<host> usable before a site is given that address
+    (WordPress clone, staging), so the site never redirects visitors to a
+    name without a certificate. Uses the existing certificate when it covers
+    host, otherwise issues one when host resolves to this server.
+
+    Returns {"https": bool, "certificate": "existing" | "issued" | None,
+    "detail": why https cannot be used, or None}.
+    """
+    domain = validate_domain(domain)
+    host = validate_domain(host or domain)
+    if https_ready(domain, host):
+        return {"https": True, "certificate": "existing", "detail": None}
+    here = _points_here(host, _server_addresses())
+    if here is not True:
+        detail = (f"{host} does not point to this server yet" if here is False
+                  else f"public DNS for {host} could not be checked")
+        return {"https": False, "certificate": None, "detail": detail}
+    try:
+        issue_certificate({"domain": domain})
+    except Exception:  # noqa: BLE001 - the site still works over http; the reason is in the log
+        logger.exception("could not issue a certificate for %s", domain)
+        return {"https": False, "certificate": None, "detail": f"a certificate for {host} could not be issued"}
+    if https_ready(domain, host):
+        return {"https": True, "certificate": "issued", "detail": None}
+    return {"https": False, "certificate": None, "detail": f"the certificate does not cover {host}"}
 
 
 # --- SSL dashboard (Phase 3 feature 8) ---------------------------------

@@ -15,6 +15,7 @@ trend data keeps accumulating even if nobody opens the usage page).
 from __future__ import annotations
 
 import datetime as dt
+import gzip
 import logging
 import os
 import stat
@@ -167,11 +168,23 @@ def access_log_lines(path: Path):
             raise ValueError('Access log must be a regular file')
         if info.st_size > ACCESS_LOG_MAX_BYTES:
             raise ValueError('Access log exceeds the safe scan size')
+        # OpenLiteSpeed gzips rotated logs (<vhost>-access.log.<date>.gz);
+        # read as plain text they matched no line, so every day already
+        # rotated away lost its traffic. The size budget below counts
+        # decompressed bytes.
+        source = gzip.GzipFile(fileobj=stream, mode='rb') if path.name.endswith('.gz') else stream
         deadline = time.monotonic() + ACCESS_LOG_MAX_SECONDS
         consumed = 0
         discarding = False
         while True:
-            raw = stream.readline(ACCESS_LOG_MAX_LINE + 1)
+            try:
+                raw = source.readline(ACCESS_LOG_MAX_LINE + 1)
+            except (OSError, EOFError):
+                if source is stream:
+                    raise
+                # A damaged or still-being-written archive: keep what it held.
+                logging.getLogger(__name__).warning('stopped reading damaged compressed access log %s', path.name)
+                break
             if not raw:
                 break
             consumed += len(raw)
@@ -504,5 +517,12 @@ def refresh_all_accounts() -> int:
         except (OSError, ValueError, safeio.UnsafePathError):
             logging.getLogger(__name__).exception('Usage scan failed for %s', account.username)
             continue
+        finally:
+            # Once its bandwidth is read: keep the account's rotated vhost
+            # log archives on /var within their bound (sysops).
+            try:
+                sysops.prune_vhost_logs(account.username)
+            except (OSError, ValueError, safeio.UnsafePathError):
+                logging.getLogger(__name__).exception('Vhost log pruning failed for %s', account.username)
         count += 1
     return count

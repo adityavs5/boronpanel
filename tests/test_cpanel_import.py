@@ -307,6 +307,66 @@ def test_parse_bind_zone_records_bad_file_raises(tmp_path):
         ci._parse_bind_zone_records(zone_path, "broken.example")
 
 
+def test_zone_import_skips_and_reports_refused_record_sets(isolated_db, tmp_path, monkeypatch):
+    """One record set today's rules refuse used to fail the dns step, which
+    failed the job and removed the whole imported account. Each one is now
+    skipped and reported; the rest of the zone still imports."""
+    from daemon import handlers_dns
+    from shared.db import write_session
+    from shared.models import CpanelImportJob
+
+    zone = "example.com"
+    # What create_zone seeds, including the key this server signs mail with.
+    records = {(zone, "NS"): ["ns1.host.net.", "ns2.host.net."], (f"www.{zone}", "CNAME"): [f"{zone}."],
+               (f"ftp.{zone}", "CNAME"): [f"{zone}."], (f"default._domainkey.{zone}", "TXT"): ['"v=DKIM1; k=rsa; p=OURS"']}
+
+    def upsert_record(zone_name, sub, rtype, values, ttl=3600, proxied=False):
+        records[(zone_name if sub == "@" else f"{sub}.{zone_name}", rtype)] = list(values)
+
+    monkeypatch.setattr(handlers_dns, "create_zone",
+                        lambda params: {"zone": zone, "dkim": {"selector": "default", "dns_published": True}})
+    monkeypatch.setattr(handlers_dns.dnsprovider, "zone_exists", lambda name: name == zone)
+    monkeypatch.setattr(handlers_dns.dnsprovider, "upsert_record", upsert_record)
+    monkeypatch.setattr(handlers_dns.dnsprovider, "list_records", lambda name: [
+        {"name": n, "type": t, "ttl": 3600, "values": v} for (n, t), v in records.items()])
+    zone_path = tmp_path / f"{zone}.db"
+    zone_path.write_text(
+        "$TTL 3600\n"
+        "@ IN SOA ns1.example.com. hostmaster.example.com. ( 1 3600 900 604800 3600 )\n"
+        "@ IN NS ns1.example.com.\n"
+        "@ IN A 203.0.113.10\n"
+        "@ IN MX 10 203.0.113.25.\n"  # an IP address as MX target
+        "@ IN TXT \"v=spf1 +a +mx ~all\"\n"
+        "ftp IN A 203.0.113.10\n"  # beside the CNAME a new zone starts with
+        "www IN CNAME example.com.\n"
+        "default._domainkey IN TXT \"v=DKIM1; k=rsa; p=OLDSERVER\"\n"
+        "odd IN TXT \"\\\"quoted\\\"\"\n"
+        "bin IN TXT \"\\255\"\n"
+    )
+    with write_session() as session:
+        job = CpanelImportJob(username="alice", panel="cpanel", source="upload", source_ref="x", status="running", results=[])
+        session.add(job)
+        session.flush()
+        job_id = job.id
+
+    assert ci._run_step(job_id, f"dns:{zone}", lambda: ci._import_dns_zone("alice", zone, zone_path, job_id))
+    with write_session() as session:
+        results = session.get(CpanelImportJob, job_id).results
+    skipped = {row["item"]: row["detail"] for row in results if row["status"] == "skipped"}
+    assert set(skipped) == {f"dns:{zone} MX", f"dns:ftp.{zone} A", f"dns:default._domainkey.{zone} TXT"}
+    assert "IP address" in skipped[f"dns:{zone} MX"]
+    assert "CNAME" in skipped[f"dns:ftp.{zone} A"]
+    (zone_step,) = [row for row in results if row["item"] == f"dns:{zone}"]
+    assert zone_step["status"] == "ok" and "not imported" in zone_step["detail"]
+    assert records[(zone, "A")] == ["203.0.113.10"]
+    assert records[(f"ftp.{zone}", "CNAME")] == [f"{zone}."]
+    assert records[(f"default._domainkey.{zone}", "TXT")] == ['"v=DKIM1; k=rsa; p=OURS"']
+    assert (zone, "MX") not in records
+    # TXT keeps its exact bytes: literal quotes and a non-UTF-8 octet.
+    assert records[(f"odd.{zone}", "TXT")] == ['"\\"quoted\\""']
+    assert records[(f"bin.{zone}", "TXT")] == ['"\\255"']
+
+
 # --- cron parsing -------------------------------------------------------------
 
 

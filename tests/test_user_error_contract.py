@@ -90,6 +90,47 @@ def test_dispatch_still_hides_internal_failures(synchronous_dispatch, monkeypatc
     assert server.rpc_error_code(raised.value) == "internal_error"
 
 
+def test_dispatch_hides_a_credential_lookup_failure(synchronous_dispatch, monkeypatch, caplog):
+    """Regression (round 1 core review): an exception raised while resolving
+    the credential, before the handler boundary, came back as internal_error
+    with its own text (SQL and parameters for a database error)."""
+    records = []
+
+    def broken_lookup(_credential):
+        raise RuntimeError("(sqlite3.OperationalError) database is locked "
+                           "[SQL: SELECT sessions.session_id] [parameters: ('GeneratedDigest',)]")
+
+    monkeypatch.setattr(server, "resolve_principal", broken_lookup)
+    monkeypatch.setattr(server.audit, "record", lambda *args, **_kwargs: records.append(args))
+    monkeypatch.setitem(server.OP_TABLE, "test.user_error", lambda _params: pytest.fail("handler reached"))
+    with pytest.raises(OperationFailure) as raised:
+        asyncio.run(server.dispatch("test.user_error", {}, {"type": "session", "value": "opaque"}))
+    reference = raised.value.diagnostic["reference"]
+    assert str(raised.value) == f"internal operation failure (reference: {reference})"
+    assert server.rpc_error_code(raised.value) == "internal_error"
+    assert "GeneratedDigest" not in caplog.text
+    assert records and records[0][-1] == f"RuntimeError (reference: {reference})"
+
+
+@pytest.mark.parametrize("failing", ["unknown_op", "after_success", "user_error"])
+def test_dispatch_hides_audit_store_failures_on_every_path(synchronous_dispatch, monkeypatch, failing):
+    """Nothing that escapes dispatch() carries raw text, even when the audit
+    store fails outside the handler boundary."""
+    def broken_audit(*_args, **_kwargs):
+        raise RuntimeError("audit insert failed for GeneratedSecret")
+
+    monkeypatch.setattr(server.audit, "record", broken_audit)
+    op = "test.missing_op" if failing == "unknown_op" else "test.user_error"
+    if failing == "after_success":
+        monkeypatch.setitem(server.OP_TABLE, op, lambda _params: {"ok": True})
+    elif failing == "user_error":
+        monkeypatch.setitem(server.OP_TABLE, op, lambda _params: (_ for _ in ()).throw(ValidationError("bad input")))
+    with pytest.raises(OperationFailure) as raised:
+        asyncio.run(server.dispatch(op, {}))
+    assert "GeneratedSecret" not in str(raised.value)
+    assert server.rpc_error_code(raised.value) == "internal_error"
+
+
 @pytest.mark.parametrize("code,status", [
     ("bad_request", 400), ("not_found", 404), ("conflict", 409),
     ("internal_error", 502), ("something_new", 502),

@@ -26,7 +26,7 @@ from shared.config import settings
 from shared.db import write_session
 from shared.models import BrandingSettings
 from shared.terminal_welcome import DEFAULT_TERMINAL_BANNER, validate_terminal_banner
-from shared.validation import ValidationError, validate_email_address, validate_redirect_target
+from shared.validation import ValidationError, validate_email_address, validate_http_url
 
 logger = logging.getLogger("borond.branding")
 
@@ -203,7 +203,7 @@ def set_settings(params: dict) -> dict:
             row.support_email = validate_email_address(raw) if raw else None
         if "support_url" in params:
             raw = params["support_url"]
-            row.support_url = validate_redirect_target(raw) if raw else None
+            row.support_url = validate_http_url(raw, "support URL") if raw else None
         session.flush()
         return _to_dict(row)
 

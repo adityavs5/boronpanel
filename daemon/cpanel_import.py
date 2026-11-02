@@ -67,6 +67,7 @@ from shared.config import settings
 from shared.db import write_session, read_session
 from shared.models import Account, CpanelImportJob, Domain, PanelUser, utcnow
 from shared.validation import (
+    BusyError,
     ValidationError,
     generate_strong_password,
     validate_db_identifier,
@@ -83,7 +84,7 @@ def _read_text_limited(path: Path, limit: int, label: str) -> str:
     with path.open("r", encoding="utf-8", errors="replace") as handle:
         return handle.read(limit + 1)
 
-from daemon import audit, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_mail, jobcredentials, mariadb, ols, safeio, webhooks
+from daemon import audit, dnsprovider, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_mail, jobcredentials, mariadb, ols, safeio, webhooks
 from daemon.procutil import run
 from daemon.wordpress import _php_str
 
@@ -932,22 +933,55 @@ def _parse_bind_zone_records(zone_path: Path, domain: str) -> list[dict]:
                 elif rtype == "CNAME":
                     value = str(rdata.target.derelativize(origin))
                 elif rtype == "TXT":
-                    value = b"".join(rdata.strings).decode("utf-8", errors="replace")
+                    # Presentation form keeps the exact bytes (\DDD escapes)
+                    # and never mistakes data that starts with '"' for quoting.
+                    value = rdata.to_text()
                 else:
                     value = str(rdata)
                 records.append({"subdomain": label, "type": rtype, "value": value})
     return records
 
 
-def _import_dns_zone(username: str, domain: str, zone_path: Path) -> str:
-    handlers_dns.create_zone({"username": username, "domain": domain})
+def _import_dns_zone(username: str, domain: str, zone_path: Path, job_id: int | None = None) -> str:
+    created = handlers_dns.create_zone({"username": username, "domain": domain}) or {}
     records = _parse_bind_zone_records(zone_path, domain)
     grouped = {}
     for rec in records:
-        grouped.setdefault((rec['subdomain'], rec['type']), []).append(rec['value'])
-    for (label, kind), values in grouped.items():
-        handlers_dns.set_record({'domain': domain, 'subdomain': label, 'type': kind, 'values': list(dict.fromkeys(values))})
-    return f"created managed zone '{domain}' with {len(records)} records imported"
+        grouped.setdefault((rec['subdomain'].lower(), rec['type']), []).append(rec['value'])
+    # create_zone published the key this server signs the domain's mail with;
+    # the source zone's TXT at that selector is the previous server's key.
+    dkim = created.get("dkim") or {}
+    own_dkim = f"{dkim['selector']}._domainkey" if dkim.get("dns_published") else None
+    imported, skipped = 0, []
+
+    def skip(name: str, kind: str, reason: str) -> None:
+        skipped.append(f"{name} {kind}")
+        if job_id is not None:
+            _append_result(job_id, f"dns:{name} {kind}", "skipped", reason)
+
+    with dnsprovider.batch_cluster_notifications():
+        for (label, kind), values in grouped.items():
+            name = domain if label == "@" else f"{label}.{domain}"
+            if kind == "TXT" and label == own_dkim:
+                skip(name, kind, "Kept the DKIM key this server signs with; the imported key belongs to the "
+                                 "previous server.")
+                continue
+            values = list(dict.fromkeys(values))
+            try:
+                handlers_dns.set_record({'domain': domain, 'subdomain': label, 'type': kind, 'values': values})
+            except BusyError:
+                raise
+            except ValidationError as exc:
+                # One record set today's rules refuse (an IP address as MX
+                # target, more than 100 values, a CNAME beside a record the
+                # new zone starts with) is reported; the rest still imports.
+                skip(name, kind, str(exc))
+                continue
+            imported += len(values)
+    detail = f"created managed zone '{domain}' with {imported} records imported"
+    if skipped:
+        detail += "; not imported: " + ", ".join(skipped)
+    return detail
 
 
 
@@ -1664,6 +1698,7 @@ def _run_import_job(job_id: int, params: dict) -> None:
                         # addon/subdomain provisioning. A generated primary
                         # zone here would make that restore fail as duplicate.
                         "create_dns_zone": False,
+                        "stage_inode_limits": True,  # the imported home may exceed them; warn first
                     })
                 finally:
                     with write_session() as session:
@@ -1708,7 +1743,7 @@ def _run_import_job(job_id: int, params: dict) -> None:
                 for domain_entry in domains:
                     zone_path = dnszones_dir / f"{domain_entry['domain']}.db"
                     if zone_path.is_file():
-                        _run_step(job_id, f"dns:{domain_entry['domain']}", lambda d=domain_entry["domain"], p=zone_path: _import_dns_zone(username, d, p))
+                        _run_step(job_id, f"dns:{domain_entry['domain']}", lambda d=domain_entry["domain"], p=zone_path: _import_dns_zone(username, d, p, job_id))
 
             for domain_entry in domains:
                 _run_step(job_id, f"domain:{domain_entry['domain']}", lambda d=domain_entry: _add_domain_step(username, d))

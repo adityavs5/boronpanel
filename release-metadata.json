@@ -16,6 +16,7 @@
     "apparmor-policy",
     "mail-configuration",
     "ols-configuration",
+    "php-configuration",
     "systemd-units"
   ],
   "channel": "stable"

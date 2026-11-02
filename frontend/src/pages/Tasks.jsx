@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/Button'
 import { Input, FormField } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
+import { ErrorReference } from '@/components/ui/ErrorReference'
 import { toast } from '@/components/ui/Toast'
 
 function when(value) {
@@ -63,7 +64,9 @@ export default function Tasks() {
   const columns = [
     { key: 'label', header: 'Task', sortable: true, render: (row) => <div><div className="font-medium">{row.label}</div><div className="text-xs text-muted-foreground">{row.key}</div></div> },
     ...(role === 'admin' ? [{ key: 'account', header: 'Account', sortable: true, render: (row) => row.account || 'Server' }] : []),
-    { key: 'status', header: 'Status', sortable: true, render: (row) => <StatusBadge status={row.status} /> },
+    // A failed task's detail is its reason (control tasks keep the handler's
+    // own message, e.g. "account already exists"), so show it in the list.
+    { key: 'status', header: 'Status', sortable: true, render: (row) => <div className="max-w-xs"><StatusBadge status={row.status} />{row.status === 'failed' && row.detail && <p className="mt-1 line-clamp-2 text-xs text-danger" title={row.detail}>{row.detail}</p>}</div> },
     { key: 'progress', header: 'Progress', render: (row) => <div className="min-w-28"><span>{row.progress == null ? 'Progress unavailable' : `${row.progress}%`}</span>{row.progress != null && <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-accent" style={{ width: `${row.progress}%` }} /></div>}</div> },
     { key: 'started_at', header: 'Started', sortable: true, render: (row) => when(row.started_at) },
     { key: 'duration_seconds', header: 'Duration', sortable: true, render: (row) => elapsed(row.duration_seconds) },
@@ -97,9 +100,11 @@ export default function Tasks() {
         <DialogBody className="space-y-5">
           {detailsQuery.isLoading ? <p role="status" className="text-sm text-muted-foreground">Loading task details…</p> : detailsQuery.error ? <p role="alert" className="text-sm text-danger">{detailsQuery.error.message}</p> : detail && <>
             <dl className="grid gap-3 text-sm sm:grid-cols-2">
-              {[['Status', <StatusBadge status={detail.status} />], ['Account', detail.account || 'Server'], ['Started', when(detail.started_at)], ['Duration', elapsed(detail.duration_seconds)], ['Request ID', detail.request_id || '—'], ['Error reference', detail.error_reference || '—']].map(([label, value]) => <div key={label}><dt className="text-[13px] font-medium text-muted-foreground">{label}</dt><dd className="mt-1 break-all text-foreground">{value}</dd></div>)}
+              {[['Status', <StatusBadge status={detail.status} />], ['Account', detail.account || 'Server'], ['Started', when(detail.started_at)], ['Duration', elapsed(detail.duration_seconds)], ['Request ID', detail.request_id || '—'], ['Error reference', detail.error_reference ? <ErrorReference reference={detail.error_reference} className="mt-0" /> : '—']].map(([label, value]) => <div key={label}><dt className="text-[13px] font-medium text-muted-foreground">{label}</dt><dd className="mt-1 break-all text-foreground">{value}</dd></div>)}
             </dl>
-            <div><h3 className="text-sm font-semibold">Current detail</h3><p className="mt-1 text-sm text-muted-foreground">{detail.detail}</p></div>
+            {detail.status === 'failed'
+              ? <div role="alert"><h3 className="text-sm font-semibold">Why it failed</h3><p className="mt-1 text-sm text-danger">{detail.detail}</p></div>
+              : <div><h3 className="text-sm font-semibold">Current detail</h3><p className="mt-1 text-sm text-muted-foreground">{detail.detail}</p></div>}
             <div><h3 className="text-sm font-semibold">Action timeline</h3>{detail.timeline?.length ? <ol className="mt-2 divide-y divide-border border-y border-border">{detail.timeline.map((step, index) => <li key={`${step.name}-${index}`} className="py-3"><div className="flex items-center justify-between gap-3"><span className="text-sm font-medium">{step.name}</span><StatusBadge status={step.result} /></div><p className="mt-1 text-xs text-muted-foreground">{step.duration_ms} ms{step.exit_code == null ? '' : ` · exit ${step.exit_code}`}</p>{(step.stdout || step.stderr) && <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-control bg-muted p-3 text-xs">{[step.stdout, step.stderr].filter(Boolean).join('\n')}</pre>}</li>)}</ol> : <p className="mt-1 text-sm text-muted-foreground">No step timeline was recorded for this task.</p>}</div>
           </>}
         </DialogBody>

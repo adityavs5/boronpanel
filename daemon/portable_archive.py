@@ -11,6 +11,7 @@ import pwd
 import shutil
 import tarfile
 import tempfile
+import time
 import stat
 from shared.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
@@ -20,7 +21,7 @@ from sqlalchemy import select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, AccountArchiveImportJob, BackupDestination, BackupJob, PanelUser, utcnow
-from shared.validation import ValidationError, validate_username
+from shared.validation import NotFoundError, ValidationError, validate_username
 
 from daemon import backup, jobcredentials
 from daemon.archive_limits import ArchiveMetadataTooLarge, open_guarded_tar
@@ -329,6 +330,7 @@ def validate_archive(archive_path: Path, extract_dir: Path, expected_username: s
 def _run_import(job_id: int, username: str, source_ref: str) -> None:
     work_dir = None
     placeholder_created = False
+    reactivation = {}
     try:
         with write_session() as session:
             job = session.get(AccountArchiveImportJob, job_id)
@@ -374,6 +376,7 @@ def _run_import(job_id: int, username: str, source_ref: str) -> None:
         summary = backup._restore_full(
             username, account_status, str(private_archive), str(restore_dir),
             progress=lambda message: _update(job_id, progress_message=message),
+            reactivation=reactivation,
         )
         with write_session() as session:
             account = session.scalar(select(Account).where(Account.username == username))
@@ -388,43 +391,77 @@ def _run_import(job_id: int, username: str, source_ref: str) -> None:
                 "role": "customer",
                 "account_id": account_id,
             })
+        outcome, details = backup.restore_outcome(summary, done="restored")
         _update(
             job_id,
             status="completed",
-            progress_message="restored",
+            progress_message=outcome,
+            error=details,
             initial_password=jobcredentials.seal(summary.get("initial_password")),
             completed_at=utcnow(),
         )
     except Exception as exc:  # noqa: BLE001
-        if placeholder_created:
+        error = public_import_error(exc)
+        # Nothing half-restored stays active: a failure after this import
+        # reactivated the account terminates it again (only then: an
+        # account another restore brought back meanwhile is left alone).
+        cleanup = backup.terminate_after_failed_recreation(username) if reactivation.get("done") else ""
+        if placeholder_created and not cleanup:
+            # Never reactivated, so the row this import added has nothing
+            # attached to it yet.
             with write_session() as session:
                 account = session.scalar(select(Account).where(Account.username == username))
                 if account is not None and account.status == "terminated":
                     session.delete(account)
-        _update(job_id, status="failed", progress_message="failed", error=public_import_error(exc),
-                completed_at=utcnow())
+        _update(job_id, status="failed", progress_message="failed",
+                error=f"{error} {cleanup}".strip()[:4000], completed_at=utcnow())
     finally:
         Path(source_ref).unlink(missing_ok=True)
         if work_dir is not None:
             shutil.rmtree(work_dir, ignore_errors=True)
 
 
-def prepare_download(params: dict) -> dict:
-    job_id = int(params["job_id"])
-    with write_session() as session:
-        job = session.get(BackupJob, job_id)
-        if job is None or job.kind != "full" or job.status != "completed" or not job.artifact_path:
-            raise PortableArchiveError("A completed full-account backup is required")
-        destination = session.get(BackupDestination, job.destination_id)
-        artifact_path = job.artifact_path
-        destination_kind = destination.kind
-        username = session.get(Account, job.account_id).username
-    temp_dir = tempfile.mkdtemp(prefix="export-", dir=_export_base())
+# A handoff copy is opened by boron-api as soon as prepare returns and is
+# removed when its response finishes. A client that disconnects mid-stream
+# can skip that cleanup; such copies are swept once nothing has written to
+# them for this long (a stream in progress keeps reading its open file).
+EXPORT_STALE_SECONDS = 15 * 60
+# Free space a prepared download must leave on the handoff filesystem.
+EXPORT_FREE_RESERVE_BYTES = 2 * 1024 * 1024 * 1024
+# A plain file name: never "." or "..", which would name the handoff itself.
+_ARTIFACT_NAME_RE = re.compile(r"[A-Za-z0-9_@-][A-Za-z0-9_.@-]{0,199}")
+
+
+def _sweep_stale_exports(base: Path) -> None:
+    cutoff = time.time() - EXPORT_STALE_SECONDS
+    for child in base.iterdir():
+        try:
+            info = child.lstat()
+            if not child.name.startswith("export-") or not stat.S_ISDIR(info.st_mode):
+                continue
+            latest = max([info.st_mtime, *(entry.lstat().st_mtime for entry in child.iterdir())])
+        except FileNotFoundError:
+            continue
+        if latest < cutoff:
+            shutil.rmtree(child, ignore_errors=True)
+
+
+def _prepare_export(prefix: str, artifact_path: str, destination_kind: str, size_bytes: int | None,
+                    filename: str | None = None) -> dict:
+    """Copy a backup artifact into the API handoff; bounded by free space."""
+    base = _export_base()
+    _sweep_stale_exports(base)
+    if shutil.disk_usage(base).free < max(0, int(size_bytes or 0)) + EXPORT_FREE_RESERVE_BYTES:
+        raise PortableArchiveError("Not enough free space is available on the server to prepare this download")
+    temp_dir = tempfile.mkdtemp(prefix=prefix, dir=base)
     try:
-        local_path = backup._fetch_artifact_locally(artifact_path, destination_kind, temp_dir)
-        export_path = Path(temp_dir) / f"{username}.boron.tar"
-        if Path(local_path) != export_path:
-            shutil.copy2(local_path, export_path)
+        local_path = Path(backup._fetch_artifact_locally(artifact_path, destination_kind, temp_dir))
+        export_path = Path(temp_dir) / (filename or local_path.name)
+        if local_path != export_path:
+            if local_path.parent == export_path.parent:
+                os.replace(local_path, export_path)
+            else:
+                shutil.copy2(local_path, export_path)
         api_user = pwd.getpwnam("boron-api")
         # API and daemon use separate systemd PrivateTmp namespaces. Publish
         # into an explicit shared handoff with group traversal but no listing.
@@ -440,6 +477,83 @@ def prepare_download(params: dict) -> dict:
     except Exception:
         shutil.rmtree(temp_dir, ignore_errors=True)
         raise
+
+
+def prepare_download(params: dict) -> dict:
+    job_id = int(params["job_id"])
+    with write_session() as session:
+        job = session.get(BackupJob, job_id)
+        if job is None or job.kind != "full" or job.status != "completed" or not job.artifact_path:
+            raise PortableArchiveError("A completed full-account backup is required")
+        destination = session.get(BackupDestination, job.destination_id)
+        artifact_path = job.artifact_path
+        destination_kind = destination.kind
+        size_bytes = job.size_bytes
+        username = session.get(Account, job.account_id).username
+    return _prepare_export("export-", artifact_path, destination_kind, size_bytes, f"{username}.boron.tar")
+
+
+def _account_export_prefix(account_id: int) -> str:
+    return f"export-a{int(account_id)}-"
+
+
+def prepare_account_download(params: dict) -> dict:
+    """Hand one of an account's own completed backups to the API to stream.
+
+    The account-scoped counterpart of prepare_download (full archives, for
+    administrators) on the same handoff, with the same cleanup and free
+    space rule, plus one download at a time per account: a customer cannot
+    fill the shared handoff with copies.
+    """
+    from daemon.snapshot_jobs import lock
+
+    username = validate_username(params["username"])
+    job_id = int(params["job_id"])
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        job = session.get(BackupJob, job_id)
+        # Another account's job is reported exactly like a missing one.
+        if account is None or job is None or job.account_id != account.id:
+            raise NotFoundError(f"backup job {job_id} not found")
+        if job.status != "completed" or not job.artifact_path:
+            raise PortableArchiveError("Only a completed backup can be downloaded")
+        destination = session.get(BackupDestination, job.destination_id)
+        if destination is None:
+            raise PortableArchiveError("This backup's destination no longer exists")
+        artifact_path, destination_kind, size_bytes = job.artifact_path, destination.kind, job.size_bytes
+        account_id = account.id
+    name = PurePosixPath(artifact_path.split(":", 1)[-1] if destination_kind != "local" else artifact_path).name
+    if not _ARTIFACT_NAME_RE.fullmatch(name):
+        name = f"{username}-backup-{job_id}"
+    prefix = _account_export_prefix(account_id)
+    busy = "A download of this account's backups is already in progress. Try again when it has finished."
+    try:
+        with lock(f"backup-download-{account_id}", blocking=False):
+            base = _export_base()
+            _sweep_stale_exports(base)
+            if any(child.name.startswith(prefix) for child in base.iterdir()):
+                raise PortableArchiveError(busy)
+            return _prepare_export(prefix, artifact_path, destination_kind, size_bytes, name)
+    except BlockingIOError:
+        raise PortableArchiveError(busy) from None
+
+
+def cleanup_account_download(params: dict) -> dict:
+    username = validate_username(params["username"])
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            raise NotFoundError(f"account '{username}' not found")
+        prefix = _account_export_prefix(account.id)
+    cleanup_id = str(params.get("cleanup_id") or "")
+    if not re.fullmatch(re.escape(prefix) + r"[A-Za-z0-9_]{6,80}", cleanup_id):
+        raise ValidationError("Invalid backup download cleanup identifier")
+    base = _export_base()
+    target = base / cleanup_id
+    if target.is_symlink() or target.parent != base:
+        raise ValidationError("Invalid backup download cleanup identifier")
+    shutil.rmtree(target, ignore_errors=True)
+    return {"removed": not target.exists()}
 
 
 def cleanup_download(params: dict) -> dict:

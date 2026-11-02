@@ -135,6 +135,22 @@ def deploy(hostname,lineage):
         raise
 
 
+MAIL_DEPLOY_HOOK=(Path('/opt/boron/.venv/bin/python'),Path('/opt/boron/scripts/ssl_deploy_hook.py'))
+
+def deploy_mail_service(hostname,lineage):
+    """With no webmail (or mail) hostname the panel hostname is the mail
+    hostname, and Postfix and Dovecot use this certificate too. That copy
+    needs the panel's own environment (certbot's Python has none of it), so
+    ssl_deploy_hook.py deploys it as for any other renewed name. Returns
+    whether it succeeded; the panel listener is already switched by then."""
+    with CONFIG_PATH.open('rb') as handle:config=tomllib.load(handle)
+    canonical=config.get('mail_hostname') or config.get('webmail_hostname') or config.get('panel_hostname')
+    if hostname!=canonical:return True
+    env={**os.environ,'RENEWED_DOMAINS':hostname,'RENEWED_LINEAGE':str(lineage)}
+    result=subprocess.run([str(part) for part in MAIL_DEPLOY_HOOK],env=env,check=False,timeout=180)
+    return result.returncode==0
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--hostname',required=True)
@@ -143,3 +159,5 @@ if __name__=='__main__':
     if args.hostname not in os.environ.get('RENEWED_DOMAINS','').split():
         raise SystemExit('Panel hostname missing from renewed certificate domains')
     deploy(args.hostname,lineage)
+    if not deploy_mail_service(args.hostname,lineage):
+        raise SystemExit('Panel certificate deployed, but the mail service copy failed; see ssl_deploy_hook output')

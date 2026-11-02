@@ -832,13 +832,40 @@ def _fake_mariadb(monkeypatch, respond):
     return conn
 
 
-def test_duplicate_forwarder_is_a_conflict(isolated_db, monkeypatch):
+def test_duplicate_forwarder_is_a_conflict_found_before_the_insert(isolated_db, monkeypatch):
+    from shared.validation import ConflictError
+
+    conn = _fake_mariadb(monkeypatch, lambda sql, params: ({"id": 3}, 1) if sql.startswith("SELECT") else (None, 1))
+    with pytest.raises(ConflictError, match="already exists"):
+        hm.mail.create_forward("demo1.example", "alice", "carol@demo1.example")
+    assert not any(sql.startswith("INSERT") for sql in conn.statements)
+
+
+def test_concurrent_duplicate_forwarder_is_a_conflict(isolated_db, monkeypatch):
     import pymysql
 
     from shared.validation import ConflictError
 
-    _fake_mariadb(monkeypatch, lambda sql, params: pymysql.err.IntegrityError(1062, "Duplicate entry"))
+    def respond(sql, params):
+        if sql.startswith("SELECT"):
+            return None, 0
+        return pymysql.err.IntegrityError(1062, "Duplicate entry")
+
+    _fake_mariadb(monkeypatch, respond)
     with pytest.raises(ConflictError, match="already exists"):
+        hm.mail.create_forward("demo1.example", "alice", "carol@demo1.example")
+
+
+def test_forwarder_constraint_failure_is_not_reported_as_a_duplicate(isolated_db, monkeypatch):
+    import pymysql
+
+    def respond(sql, params):
+        if sql.startswith("SELECT"):
+            return None, 0
+        return pymysql.err.IntegrityError(1452, "Cannot add or update a child row")
+
+    _fake_mariadb(monkeypatch, respond)
+    with pytest.raises(pymysql.err.IntegrityError):
         hm.mail.create_forward("demo1.example", "alice", "carol@demo1.example")
 
 
@@ -957,3 +984,231 @@ def test_default_dmarc_never_shadows_a_parent_policy(isolated_db, monkeypatch):
     answers["demo1.example"] = False
     assert hm.dkim._ensure_default_dmarc("shop.demo1.example", "shop.demo1.example") is True
     assert upserts == ["_dmarc"]
+
+
+# --- Round 2: webmail purge, suspended logins, mail hostname ---------------
+
+
+def _account(username):
+    from sqlalchemy import select
+
+    from shared.db import write_session
+    from shared.models import Account
+
+    with write_session() as session:
+        return session.scalar(select(Account).where(Account.username == username))
+
+
+def test_mail_domain_delete_and_termination_purge_webmail_rows(isolated_db, stub_sysops, stub_mail, monkeypatch):
+    order = []
+    monkeypatch.setattr(hm.webmail_sso, "revoke_domain", lambda domain: order.append(("revoke", domain)))
+    monkeypatch.setattr(hm.webmail_sso, "purge_domain", lambda domain: order.append(("purge", domain)))
+    monkeypatch.setattr(hm.webmail_sso, "purge_account", lambda account_id: order.append(("purge_account", account_id)))
+    ha.create_account({"username": "demo1"})
+    hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
+    hm.delete_mail_domain({"domain": "demo1.example"})
+    assert order == [("revoke", "demo1.example"), ("purge", "demo1.example")]
+    assert ("delete_mail_domain", "demo1.example") in stub_mail
+
+    order.clear()
+    hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
+    account = _account("demo1")
+    hm.terminate_account_mail(account)
+    assert order == [("revoke", "demo1.example"), ("purge", "demo1.example"), ("purge_account", account.id)]
+
+
+@pytest.fixture(autouse=True)
+def no_linux_logins(monkeypatch):
+    """Suspension also expires the Linux login; these accounts are fictional."""
+    monkeypatch.setattr(ha, "block_system_logins", lambda username: None)
+    monkeypatch.setattr(ha, "allow_system_logins", lambda username: None)
+
+
+@pytest.fixture()
+def login_block(tmp_path, monkeypatch):
+    """The Dovecot suspended-login list in a throwaway directory."""
+    from types import SimpleNamespace
+
+    passdb = tmp_path / "08-boron-suspended-auth.conf"
+    passdb.write_text("passdb {}\n")
+    listing = tmp_path / "boron-suspended-mail-domains"
+    listing.write_text("")
+    monkeypatch.setattr(hm.mail, "SUSPENDED_PASSDB_CONFIG", passdb)
+    monkeypatch.setattr(hm.mail, "SUSPENDED_DOMAINS_FILE", listing)
+    kicked = []
+    monkeypatch.setattr(hm.mail, "end_login_sessions", lambda domains: kicked.extend(domains))
+    return SimpleNamespace(listing=listing, kicked=kicked)
+
+
+def test_suspension_refuses_mail_logins_and_unsuspension_restores_them(
+        isolated_db, stub_sysops, stub_mail, login_block, monkeypatch):
+    """Live finding: IMAP still worked while the account was suspended."""
+    monkeypatch.setattr(ha, "SUSPEND_HOOKS", [hm.suspend_account_mail])
+    monkeypatch.setattr(ha, "UNSUSPEND_HOOKS", [hm.unsuspend_account_mail])
+    for name in ("demo1", "demo2"):
+        ha.create_account({"username": name})
+        hm.create_mail_domain({"username": name, "domain": f"{name}.example"})
+    hm.create_mail_domain({"username": "demo1", "domain": "shop.demo1.example"})
+
+    ha.suspend_account({"username": "demo1"})
+    assert login_block.listing.read_text() == "demo1.example\nshop.demo1.example\n"
+    assert sorted(login_block.kicked) == ["demo1.example", "shop.demo1.example"]
+    assert login_block.listing.stat().st_mode & 0o777 == 0o640
+    ha.suspend_account({"username": "demo2"})
+    assert hm.mail.suspended_login_domains() == {"demo1.example", "shop.demo1.example", "demo2.example"}
+
+    ha.unsuspend_account({"username": "demo1"})
+    assert login_block.listing.read_text() == "demo2.example\n"
+    # Delivery is untouched: the mail domains themselves stay in place.
+    assert ("delete_mail_domain", "demo1.example") not in stub_mail
+
+
+def test_domain_created_while_suspended_is_blocked_and_freed_on_delete(
+        isolated_db, stub_sysops, stub_mail, login_block, monkeypatch):
+    monkeypatch.setattr(ha, "SUSPEND_HOOKS", [hm.suspend_account_mail])
+    ha.create_account({"username": "demo1"})
+    ha.suspend_account({"username": "demo1"})
+    hm.create_mail_domain({"username": "demo1", "domain": "late.example"})
+    assert hm.mail.suspended_login_domains() == {"late.example"}
+    # A later owner of the name must not inherit the suspension.
+    hm.delete_mail_domain({"domain": "late.example"})
+    assert hm.mail.suspended_login_domains() == set()
+
+
+def test_failed_mail_domain_create_releases_its_login_block(isolated_db, stub_sysops, stub_mail, login_block, monkeypatch):
+    monkeypatch.setattr(ha, "SUSPEND_HOOKS", [])
+    ha.create_account({"username": "demo1"})
+    ha.suspend_account({"username": "demo1"})
+
+    def broken(domain, active=True):
+        raise RuntimeError("mariadb unavailable")
+
+    monkeypatch.setattr(hm.mail, "create_mail_domain", broken)
+    with pytest.raises(RuntimeError, match="mariadb unavailable"):
+        hm.create_mail_domain({"username": "demo1", "domain": "late.example"})
+    assert hm.mail.suspended_login_domains() == set()
+
+
+def test_upgrade_reconcile_blocks_exactly_the_suspended_accounts(isolated_db, stub_sysops, stub_mail, login_block, monkeypatch):
+    monkeypatch.setattr(ha, "SUSPEND_HOOKS", [])
+    for name in ("demo1", "demo2"):
+        ha.create_account({"username": name})
+        hm.create_mail_domain({"username": name, "domain": f"{name}.example"})
+    ha.suspend_account({"username": "demo1"})  # as a release without the list did
+    login_block.listing.write_text("stale.example\n")
+    assert hm.reconcile_suspended_mail_logins() == ["demo1.example"]
+    assert login_block.listing.read_text() == "demo1.example\n"
+
+
+def test_login_list_is_not_managed_without_the_dovecot_passdb(tmp_path, monkeypatch):
+    monkeypatch.setattr(hm.mail, "SUSPENDED_PASSDB_CONFIG", tmp_path / "missing.conf")
+    monkeypatch.setattr(hm.mail, "SUSPENDED_DOMAINS_FILE", tmp_path / "list")
+    assert hm.mail.update_suspended_login_domains(add=["demo1.example"]) is False
+    assert not (tmp_path / "list").exists()
+
+
+def test_open_sessions_are_ended_best_effort(monkeypatch):
+    from types import SimpleNamespace
+
+    commands = []
+
+    def run(args, **kwargs):
+        commands.append(args)
+        if args[-1] == "*@broken.example":
+            raise TimeoutError("doveadm hung")
+        return SimpleNamespace(returncode=68, stderr="", stdout="")
+
+    monkeypatch.setattr(hm.mail.shutil, "which", lambda name: "/usr/bin/doveadm")
+    monkeypatch.setattr(hm.mail, "run", run)
+    hm.mail.end_login_sessions(["broken.example", "demo1.example"])
+    assert commands == [["doveadm", "kick", "*@broken.example"], ["doveadm", "kick", "*@demo1.example"]]
+
+
+def test_suspend_hooks_are_registered_by_the_daemon():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "daemon" / "server.py").read_text()
+    assert "SUSPEND_HOOKS.append(lambda account: handlers_mail.suspend_account_mail(account))" in source
+    assert "UNSUSPEND_HOOKS.append(lambda account: handlers_mail.unsuspend_account_mail(account))" in source
+
+
+def test_webmail_sso_refuses_suspended_accounts(isolated_db, stub_sysops, stub_mail, monkeypatch):
+    monkeypatch.setattr(ha, "SUSPEND_HOOKS", [])
+    ha.create_account({"username": "demo1"})
+    hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
+    ha.suspend_account({"username": "demo1"})
+    with pytest.raises(ValidationError, match="not active"):
+        hm.webmail_sso.create_launch({"username": "demo1", "mailbox": "john@demo1.example"})
+
+
+def test_mail_hostname_cannot_become_a_mail_domain(isolated_db, stub_sysops, stub_mail, monkeypatch):
+    monkeypatch.setattr(settings, "mail_hostname", "mail.demo1.example")
+    ha.create_account({"username": "demo1"})
+    with pytest.raises(ValidationError, match="mail hostname"):
+        hm.create_mail_domain({"username": "demo1", "domain": "mail.demo1.example"})
+    assert ("create_mail_domain", "mail.demo1.example") not in stub_mail
+
+
+def test_mailbox_list_carries_mail_client_settings(isolated_db, stub_sysops, stub_mail, monkeypatch):
+    monkeypatch.setattr(settings, "mail_hostname", "mail.host.test")
+    ha.create_account({"username": "demo1"})
+    hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
+    client = hm.list_mailboxes({"domain": "demo1.example"})["client_settings"]
+    assert client["hostname"] == "mail.host.test" and client["username"] == "full_address"
+    assert [(row["protocol"], row["port"], row["security"]) for row in client["incoming"]] == [
+        ("IMAP", 993, "SSL/TLS"), ("IMAP", 143, "STARTTLS"), ("POP3", 995, "SSL/TLS"), ("POP3", 110, "STARTTLS")]
+    assert [(row["protocol"], row["port"], row["security"]) for row in client["outgoing"]] == [
+        ("SMTP", 465, "SSL/TLS"), ("SMTP", 587, "STARTTLS")]
+
+
+def test_first_mailbox_reports_the_mail_domain_it_created(isolated_db, stub_mail, monkeypatch):
+    """Round 2 (fe-customer): the SPA creates the mail domain through the
+    first mailbox, so that mailbox's result carries the DKIM/DMARC outcome."""
+    from shared.db import write_session
+    from shared.models import Account, Domain
+    with write_session() as session:
+        a = Account(username='mailqa', status='active'); session.add(a); session.flush()
+        session.add(Domain(account_id=a.id, domain='mailqa.example', docroot='/home/mailqa/public_html', kind='primary'))
+    dkim_result = {"dmarc_published": True, "dmarc_record_value": "v=DMARC1; p=none"}
+    monkeypatch.setattr(hm.dkim, 'setup_dns_signing', lambda domain: dict(dkim_result))
+    first = hm.create_mailbox({'domain': 'mailqa.example', 'local_part': 'hello', 'password': 'StrongMailPassword_123!'})
+    assert first['mail_domain'] == {"created": True, "dkim": dkim_result}
+    second = hm.create_mailbox({'domain': 'mailqa.example', 'local_part': 'second', 'password': 'StrongMailPassword_123!'})
+    assert 'mail_domain' not in second
+
+
+def test_suspension_ends_sessions_even_when_the_deny_list_already_named_the_domain(
+        isolated_db, stub_sysops, stub_mail, login_block, monkeypatch):
+    """An interrupted earlier suspension left the domain on the list: the
+    sessions opened since must still be ended."""
+    monkeypatch.setattr(ha, "SUSPEND_HOOKS", [hm.suspend_account_mail])
+    ha.create_account({"username": "demo1"})
+    hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
+    login_block.listing.write_text("demo1.example\n")
+    ha.suspend_account({"username": "demo1"})
+    assert login_block.kicked == ["demo1.example"]
+
+
+def test_autoresponder_dates_are_returned_as_iso_strings(monkeypatch):
+    """Round 2 (fe-customer): pymysql decodes DATE columns to datetime.date,
+    which the RPC frame cannot encode (502 'Object of type date ...')."""
+    import datetime as dt
+    import json
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    row = {"subject": "Away", "body": "Back soon", "start_date": dt.date(2026, 12, 1),
+           "end_date": None, "active": 1}
+
+    @contextmanager
+    def cursor():
+        yield SimpleNamespace(execute=lambda *a: None, fetchone=lambda: dict(row))
+
+    monkeypatch.setattr(hm.mail, "_domain_id", lambda domain: 1)
+    monkeypatch.setattr(hm.mail, "_mail_user_id", lambda domain_id, local_part: 2)
+    monkeypatch.setattr(hm.mail, "_connect", lambda: SimpleNamespace(cursor=cursor, close=lambda: None))
+    result = hm.mail.get_autoresponder("demo1.example", "john")
+    assert result["start_date"] == "2026-12-01" and result["end_date"] is None
+    json.dumps(result)
+    row["start_date"] = None
+    assert hm.mail.get_autoresponder("demo1.example", "john")["start_date"] is None

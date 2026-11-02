@@ -10,6 +10,8 @@ from shared.validation import ValidationError
 
 ZONE = "example.com"
 DKIM_VALUE = "v=DKIM1; k=rsa; p=" + "A" * 392  # ~410 octets like a 2048-bit key
+# How older writers (mail_dns, dkim, legacy rows) stored DKIM: one quoted string.
+DKIM_ONE_STRING = '"' + DKIM_VALUE + '"'
 
 
 @pytest.fixture()
@@ -58,9 +60,14 @@ def test_sub_zone_delegation_stays_allowed(zone):
 
 @pytest.mark.parametrize("rtype,value,match", [
     ("MX", "99999 mx.example.com", "MX priority"),
+    ("MX", "-1 mx.example.com", "<priority> <host>"),
     ("SRV", "70000 5 80 t.example.com", "SRV priority"),
     ("SRV", "1 70000 80 t.example.com", "SRV weight"),
+    ("SRV", "1 5 65536 t.example.com", "SRV port"),
     ("TXT", '"a"b"', "quotes"),
+    ("TXT", "x" * 2049, "too long"),
+    ("CAA", "256 issue letsencrypt.org", "CAA flags"),
+    ("CAA", "0 issue " + "x" * 256, "CAA value too long"),
     ("MX", "10 1.2.3.4", "IP address"),
     ("CNAME", "192.0.2.1", "IP address"),
 ])
@@ -68,6 +75,16 @@ def test_invalid_values_are_validation_errors_before_any_write(zone, rtype, valu
     with pytest.raises(ValidationError, match=match):
         put(subdomain="x", type=rtype, values=[value])
     assert zone["writes"] == []
+
+
+def test_cname_targets_may_be_underscore_names(zone):
+    """Microsoft 365 DKIM and ACME delegations point CNAMEs at '_' labels."""
+    target = "selector1-example-com._domainkey.example.onmicrosoft.com"
+    assert put(subdomain="selector1._domainkey", type="CNAME", values=[target.upper()])["values"] == [target + "."]
+    with pytest.raises(ValidationError, match="not a valid domain name"):
+        put(subdomain="bad", type="CNAME", values=["_x..example.com"])
+    with pytest.raises(ValidationError, match="hostname"):
+        put(subdomain="mx", type="MX", values=["10 _mail.example.com"])  # MX, NS and SRV need hostnames
 
 
 def test_duplicate_values_are_collapsed(zone):
@@ -100,6 +117,33 @@ def test_null_mx_is_accepted_alone_only(zone):
     assert put(subdomain="@", type="MX", values=["0 ."])["values"] == ["0 ."]
     with pytest.raises(ValidationError, match="only MX"):
         put(subdomain="@", type="MX", values=["0 .", "10 mail.example.com"])
+
+
+def test_add_mode_keeps_and_reports_a_legacy_invalid_value(zone):
+    """An IP-address MX target stored before validation must not block
+    adding an unrelated mail server; it is kept as stored and reported."""
+    zone["records"][(ZONE, "MX")] = {"ttl": 3600, "values": ["10 192.0.2.25."]}
+    result = put(subdomain="@", type="MX", values=["20 mx2.example.com"], mode="add")
+    assert result["values"] == ["10 192.0.2.25.", "20 mx2.example.com."]
+    assert zone["records"][(ZONE, "MX")]["values"] == ["10 192.0.2.25.", "20 mx2.example.com."]
+    (invalid,) = result["invalid_existing_values"]
+    assert invalid["value"] == "10 192.0.2.25." and "IP address" in invalid["reason"]
+
+
+def test_add_mode_still_validates_the_new_value_and_normalizes_valid_stored_ones(zone):
+    zone["records"][(f"txt.{ZONE}", "TXT")] = {"ttl": 3600, "values": ['"' + DKIM_VALUE + '"']}
+    with pytest.raises(ValidationError, match="IP address"):
+        put(subdomain="@", type="MX", values=["20 192.0.2.26"], mode="add")
+    result = put(subdomain="txt", type="TXT", values=["second"], mode="add")
+    assert result["invalid_existing_values"] == []
+    assert result["values"] == [hdns._validate_txt(DKIM_VALUE), '"second"']  # stored one re-split
+    assert put(subdomain="a", type="A", values=["192.0.2.1"])["invalid_existing_values"] == []
+
+
+def test_add_mode_cannot_put_mail_servers_beside_a_null_mx(zone):
+    zone["records"][(ZONE, "MX")] = {"ttl": 3600, "values": ["0 ."]}
+    with pytest.raises(ValidationError, match="only MX"):
+        put(subdomain="@", type="MX", values=["10 mail.example.com"], mode="add")
 
 
 def test_caa_tags_are_case_insensitive(zone):
@@ -154,7 +198,7 @@ def test_powerdns_writes_split_long_txt_from_every_caller(isolated_db, monkeypat
     monkeypatch.setattr(dnsprovider, "cloudflare_zone_row", lambda zone: None)
     monkeypatch.setattr(dnsprovider, "_cluster_notify", lambda zone, action="upsert": None)
     monkeypatch.setattr(powerdns, "upsert_record", lambda zone, sub, rtype, values, ttl=3600: sent.append(values))
-    dnsprovider.upsert_record(ZONE, "default._domainkey", "TXT", [mail_dns._quote(DKIM_VALUE)])
+    dnsprovider.upsert_record(ZONE, "default._domainkey", "TXT", [DKIM_ONE_STRING])
     (content,) = sent[0]
     dns.rdata.from_text("IN", "TXT", content)
     assert dnsprovider.txt_text(content) == DKIM_VALUE
@@ -174,8 +218,8 @@ def test_cloudflare_writes_join_split_txt_into_one_string(isolated_db, monkeypat
 
 
 def test_mail_dns_treats_split_and_single_string_dkim_as_the_same_record():
-    split = dnsprovider.normalize_txt(mail_dns._quote(DKIM_VALUE))
-    assert mail_dns._canonical_values("TXT", [split]) == mail_dns._canonical_values("TXT", [mail_dns._quote(DKIM_VALUE)])
+    split = dnsprovider.normalize_txt(DKIM_ONE_STRING)
+    assert mail_dns._canonical_values("TXT", [split]) == mail_dns._canonical_values("TXT", [DKIM_ONE_STRING])
 
 
 # --- SOA primary nameserver ----------------------------------------------
@@ -188,7 +232,7 @@ def _soa_zone(mname):
         {"name": f"{ZONE}.", "type": "NS", "ttl": 3600,
          "records": [{"content": "ns1.example.com.", "disabled": False}, {"content": "ns2.example.com.", "disabled": False}]},
         {"name": f"dkim.{ZONE}.", "type": "TXT", "ttl": 3600,
-         "records": [{"content": mail_dns._quote(DKIM_VALUE), "disabled": False}]},
+         "records": [{"content": DKIM_ONE_STRING, "disabled": False}]},
         {"name": f"ok.{ZONE}.", "type": "TXT", "ttl": 3600,
          "records": [{"content": '"short"', "disabled": False}]},
     ]}
@@ -288,3 +332,125 @@ def test_cpanel_cluster_peer_gets_the_joined_txt_data():
     split = dnsprovider.normalize_txt('"' + DKIM_VALUE + '"')
     params = dnscluster._cpanel_record_params(ZONE, {"name": "default._domainkey", "type": "TXT", "ttl": 3600}, split)
     assert params["txtdata"] == DKIM_VALUE
+    caa = dnscluster._cpanel_record_params(ZONE, {"name": ZONE, "type": "CAA", "ttl": 3600}, '0 iodef "mailto:a\\"b@example.com"')
+    assert caa["value"] == 'mailto:a"b@example.com'
+
+
+# --- Round 2: Cloudflare TXT reads PowerDNS presentation -----------------
+
+
+def test_cloudflare_txt_conversion_understands_multi_string_and_decimal_escapes():
+    from daemon import cloudflare
+
+    payload = cloudflare._to_cf_payload("TXT", "x", '"v=spf1 " "include:caf\\195\\169.example ~all"', 3600, False)
+    assert payload["content"] == "v=spf1 include:café.example ~all"
+    # Reads give PowerDNS's canonical content: escaped, 255-octet strings.
+    split = cloudflare._from_cf_record({"type": "TXT", "content": DKIM_VALUE})
+    assert split == hdns._validate_txt(DKIM_VALUE)
+    dns.rdata.from_text("IN", "TXT", split)
+    assert cloudflare._from_cf_record({"type": "TXT", "content": '"part1" "part2"'}) == '"part1part2"'
+    assert cloudflare._from_cf_record({"type": "TXT", "content": "line1\nline2"}) == '"line1\\010line2"'
+    for value in (split, '"say \\"hi\\""', '"caf\\195\\169"'):
+        assert cloudflare._canonical_value("TXT", value) == value
+    with pytest.raises(cloudflare.CloudflareError, match="UTF-8"):
+        cloudflare._to_cf_payload("TXT", "x", '"\\255"', 3600, False)
+
+
+def test_cloudflare_upsert_matches_split_and_quoted_txt_without_churn(isolated_db, monkeypatch):
+    """A record Cloudflare returns quoted or split must match the panel's
+    value; before, the reconcile deleted and re-created it on every save."""
+    import httpx
+    from daemon import cloudflare
+    from shared.config import settings
+    from tests.test_cloudflare import FakeCF
+
+    fake = FakeCF()
+    monkeypatch.setattr(cloudflare, "_transport", httpx.MockTransport(fake.handler))
+    monkeypatch.setitem(settings.secrets, "CLOUDFLARE_API_TOKEN", "test-token")
+    zid = fake.add_zone(ZONE)
+    fake.add_record(zid, type="TXT", name=f"default._domainkey.{ZONE}", content='"' + DKIM_VALUE[:255] + '" "' + DKIM_VALUE[255:] + '"')
+    fake.calls.clear()
+    cloudflare.upsert_record(ZONE, "default._domainkey", "TXT", [hdns._validate_txt(DKIM_VALUE)], zone_id=zid)
+    assert [method for method, _path in fake.calls] == ["GET"]
+    (rrset,) = cloudflare.list_records(ZONE, zone_id=zid)
+    assert rrset["values"] == [hdns._validate_txt(DKIM_VALUE)]
+
+
+def test_cloudflare_snapshot_validator_accepts_a_long_dkim_key():
+    """Same bug as the PowerDNS snapshot restore: one TXT string over 255
+    octets made Cloudflare recovery unavailable for any zone with DKIM."""
+    from daemon import snapshot_cloudflare_records
+
+    record = snapshot_cloudflare_records.normalize(ZONE, {
+        "name": f"default._domainkey.{ZONE}", "type": "TXT", "ttl": 3600, "proxied": False, "content": DKIM_VALUE,
+    })
+    assert record["content"] == DKIM_VALUE
+
+
+# --- Round 2: zones are created with their real SOA in one request ---------
+
+
+def _pdns_transport(monkeypatch, config_rows, status=200):
+    import json
+
+    import httpx
+
+    posted = []
+
+    def handler(request):
+        if request.url.path.endswith("/config"):
+            return httpx.Response(status, json=config_rows)
+        posted.append(json.loads(request.content))
+        return httpx.Response(201, json={"name": f"{ZONE}.", "rrsets": []})
+
+    monkeypatch.setattr(powerdns, "_client", lambda: httpx.Client(base_url="http://pdns/api/v1",
+                                                                transport=httpx.MockTransport(handler)))
+    return posted
+
+
+def test_powerdns_create_zone_sends_the_soa_with_its_primary_nameserver(monkeypatch):
+    posted = _pdns_transport(monkeypatch, [
+        {"name": "default-soa-content", "type": "ConfigSetting", "value": "ns1.boron.invalid hostmaster.@ 0 10800 3600 604800 3600"},
+        {"name": "default-ttl", "type": "ConfigSetting", "value": "3600"},
+    ])
+    powerdns.create_zone(ZONE, ["ns1.host.net.", "ns2.host.net."])
+    (payload,) = posted
+    assert payload["nameservers"] == ["ns1.host.net.", "ns2.host.net."]
+    assert payload["rrsets"] == [{"name": f"{ZONE}.", "type": "SOA", "ttl": 3600, "records": [
+        {"content": f"ns1.host.net. hostmaster.{ZONE}. 0 10800 3600 604800 3600", "disabled": False}]}]
+
+
+@pytest.mark.parametrize("rows,status", [([], 200), ([{"name": "default-soa-content", "value": "garbage"}], 200), ([], 401)])
+def test_powerdns_create_zone_falls_back_to_the_server_soa(monkeypatch, rows, status):
+    posted = _pdns_transport(monkeypatch, rows, status)
+    powerdns.create_zone(ZONE, ["ns1.host.net."])
+    assert "rrsets" not in posted[0]
+
+
+def test_zone_created_with_its_soa_needs_no_second_write(isolated_db, monkeypatch):
+    monkeypatch.setattr(powerdns, "create_zone", lambda zone, ns: {"name": f"{zone}.", "rrsets": [
+        {"name": f"{zone}.", "type": "SOA", "records": [{"content": f"ns1.example.com. hostmaster.{zone}. 2026110201 10800 3600 604800 3600"}]}]})
+    monkeypatch.setattr(powerdns, "get_zone", lambda zone: pytest.fail("the SOA was already right"))
+    monkeypatch.setattr(dnsprovider, "_cluster_notify", lambda zone, action="upsert": None)
+    dnsprovider.create_zone(ZONE, ["ns1.example.com.", "ns2.example.com."])
+
+
+def test_upgrade_reconcile_repairs_only_the_soa_of_zones_received_from_peers(isolated_db, monkeypatch):
+    from shared.db import write_session
+    from shared.models import DnsClusterPeer, DnsClusterZoneState
+
+    with write_session() as session:
+        peer = DnsClusterPeer(name="peer1", endpoint="https://peer1.example.net:8443", peer_type="boron",
+                              direction="receive", credential_enc="x", credential_hash="0" * 64)
+        session.add(peer)
+        session.flush()
+        session.add(DnsClusterZoneState(peer_id=peer.id, zone=ZONE, direction="received"))
+    applied, notified = [], []
+    monkeypatch.setattr(dnsprovider, "cloudflare_zone_row", lambda zone: None)
+    monkeypatch.setattr(powerdns, "zone_exists", lambda zone: True)
+    monkeypatch.setattr(powerdns, "get_zone", lambda zone: _soa_zone("ns1.boron.invalid."))
+    monkeypatch.setattr(powerdns, "apply_rrset_changes", lambda zone, changes: applied.extend(changes))
+    monkeypatch.setattr(dnsprovider, "_cluster_notify", lambda zone, action="upsert": notified.append(zone))
+    assert dnssetup.reconcile_zone_records()["repaired"] == [ZONE]
+    assert [row["type"] for row in applied] == ["SOA"]  # the peer's records stay the sender's
+    assert notified == []

@@ -136,3 +136,13 @@ def test_mail_certificate_restores_previous_pair_when_service_validation_fails(h
         hook._deploy_mail_service_certificate("mail.example.com")
     assert (ssl_dir / "mail.crt").read_text() == "previous certificate"
     assert (ssl_dir / "mail.key").read_text() == "previous key"
+
+
+def test_www_alias_on_the_sites_certificate_is_not_a_separate_site(hook, account_with_domain, monkeypatch, caplog):
+    """daemon/ssl.py puts www.<domain> on the site's own certificate; the
+    hook must not look for (and warn about) a www Domain row."""
+    monkeypatch.setenv("RENEWED_DOMAINS", "demo1.example www.demo1.example")
+    assert hook.main() == 0
+    assert "www.demo1.example' not found" not in caplog.text
+    with write_session() as session:
+        assert session.scalar(select(Domain).where(Domain.domain == "demo1.example")).ssl_status == "active"

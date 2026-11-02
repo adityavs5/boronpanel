@@ -1,6 +1,9 @@
+import fnmatch
+
 import pytest
 
 from daemon import nameservers as ns
+from daemon import powerdns
 from shared.validation import ValidationError
 
 
@@ -11,8 +14,21 @@ def fake_powerdns(isolated_db, monkeypatch):
     already shape their return values. nameservers.py now goes through
     daemon/dnsprovider.py (the Cloudflare dispatch layer), so that's what
     gets patched -- including cloudflare_zone_row, pinned to None ("local
-    zone"), which also keeps these unit tests off the database entirely."""
+    zone"), which also keeps these unit tests off the database entirely.
+    The server-wide reference search (powerdns.search_records) runs over
+    every zone in the dict, matching names and content like PowerDNS does."""
     zones: dict[str, dict] = {}
+
+    def search_records(pattern, max_results):
+        rows = []
+        for zone, rrsets in zones.items():
+            for (name, rtype), values in rrsets.items():
+                for value in values:
+                    if fnmatch.fnmatchcase(name.lower(), pattern.lower()) or \
+                            fnmatch.fnmatchcase(value.rstrip(".").lower(), pattern.lower()):
+                        rows.append({"object_type": "record", "zone": f"{zone}.", "name": f"{name}.",
+                                     "type": rtype, "content": value, "disabled": False})
+        return rows[:max_results]
 
     def zone_exists(zone):
         return zone in zones
@@ -36,6 +52,7 @@ def fake_powerdns(isolated_db, monkeypatch):
     monkeypatch.setattr(ns.dnsprovider, "delete_record", delete_record)
     monkeypatch.setattr(ns.dnsprovider, "list_records", list_records)
     monkeypatch.setattr(ns.dnsprovider, "cloudflare_zone_row", lambda zone: None)
+    monkeypatch.setattr(ns.powerdns, "search_records", search_records)
     zones["example.com"] = {}
     return zones
 
@@ -227,3 +244,126 @@ def test_server_nameserver_glue_is_never_removed(fake_powerdns, monkeypatch):
     assert result["removed_glue"] == []
     assert {row["name"] for row in result["kept_glue"]} == {"ns1.example.com", "ns2.example.com"}
     assert fake_powerdns["example.com"][("ns1.example.com", "A")] == ["192.0.2.1"]
+
+
+# --- Round 2: glue other zones on the server depend on --------------------
+
+
+def _vanity_nameservers():
+    ns.set_nameservers({
+        "domain": "example.com",
+        "nameservers": ["ns7.example.com", "ns8.example.com"],
+        "glue": {"ns7.example.com": "192.0.2.77", "ns8.example.com": "192.0.2.88"},
+    })
+
+
+def test_glue_that_other_zones_on_the_server_use_is_kept(fake_powerdns):
+    """A reseller's vanity nameserver lives in the reseller's zone, but the
+    customer zones delegated to it (not in the configured server list)
+    still need its address when the reseller repoints its own zone."""
+    _vanity_nameservers()
+    fake_powerdns["customer.net"] = {("customer.net", "NS"): ["ns7.example.com.", "ns2.other.net."],
+                                     ("customer.net", "MX"): ["10 ns8.example.com."]}
+    result = ns.set_nameservers({"domain": "example.com", "nameservers": ["ns1.other.net", "ns2.other.net"]})
+    zone = fake_powerdns["example.com"]
+    assert zone[("ns7.example.com", "A")] == ["192.0.2.77"]
+    assert zone[("ns8.example.com", "A")] == ["192.0.2.88"]
+    assert result["removed_glue"] == []
+    # The reason never names another account's zone (customers read it).
+    assert result["kept_glue"] == [
+        {"name": "ns7.example.com", "types": ["A"],
+         "reason": "a NS record in another account's zone on this server points at it"},
+        {"name": "ns8.example.com", "types": ["A"],
+         "reason": "a MX record in another account's zone on this server points at it"},
+    ]
+
+
+def test_kept_glue_names_the_referencing_zone_only_for_the_same_account(fake_powerdns):
+    from shared.db import write_session
+    from shared.models import Account, DnsZone
+
+    with write_session() as session:
+        owner = Account(username="demo1", uid=5001, gid=5001, status="active")
+        other = Account(username="demo2", uid=5002, gid=5002, status="active")
+        session.add_all([owner, other])
+        session.flush()
+        session.add_all([DnsZone(account_id=owner.id, zone="example.com"),
+                         DnsZone(account_id=owner.id, zone="mine.net"),
+                         DnsZone(account_id=other.id, zone="theirs.net")])
+    _vanity_nameservers()
+    fake_powerdns["mine.net"] = {("mine.net", "NS"): ["ns7.example.com."]}
+    fake_powerdns["theirs.net"] = {("theirs.net", "MX"): ["10 ns8.example.com."]}
+    result = ns.set_nameservers({"domain": "example.com", "nameservers": ["ns1.other.net", "ns2.other.net"]})
+    assert result["kept_glue"] == [
+        {"name": "ns7.example.com", "types": ["A"], "reason": "mine.net NS points at it"},
+        {"name": "ns8.example.com", "types": ["A"],
+         "reason": "a MX record in another account's zone on this server points at it"},
+    ]
+
+
+def test_a_similar_name_in_another_zone_does_not_keep_glue(fake_powerdns):
+    _vanity_nameservers()
+    fake_powerdns["customer.net"] = {("customer.net", "NS"): ["xns7.example.com.", "ns2.other.net."]}
+    result = ns.set_nameservers({"domain": "example.com", "nameservers": ["ns1.other.net", "ns2.other.net"]})
+    assert sorted(result["removed_glue"]) == ["ns7.example.com A", "ns8.example.com A"]
+
+
+@pytest.mark.parametrize("search", [
+    lambda pattern, limit: (_ for _ in ()).throw(powerdns.PowerDnsError(500, "search failed")),
+    lambda pattern, limit: [],  # a backend without search support finds nothing, not even the glue
+    lambda pattern, limit: [{"object_type": "record", "zone": "example.com.", "name": "ns7.example.com.",
+                             "type": "A", "content": "192.0.2.77", "disabled": False}] * limit,  # cut short
+])
+def test_glue_is_kept_when_the_other_zones_cannot_be_checked(fake_powerdns, monkeypatch, search):
+    ns.set_nameservers({"domain": "example.com", "nameservers": ["ns7.example.com"],
+                        "glue": {"ns7.example.com": "192.0.2.77"}})
+    monkeypatch.setattr(ns.powerdns, "search_records", search)
+    result = ns.set_nameservers({"domain": "example.com", "nameservers": ["ns1.other.net", "ns2.other.net"]})
+    assert result["removed_glue"] == []
+    assert result["kept_glue"] == [{"name": "ns7.example.com", "types": ["A"],
+                                    "reason": "the other zones on this server could not all be checked"}]
+    assert fake_powerdns["example.com"][("ns7.example.com", "A")] == ["192.0.2.77"]
+
+
+def test_powerdns_search_queries_every_hosted_zone(monkeypatch):
+    import httpx
+
+    seen = {}
+
+    def handler(request):
+        seen.update(path=request.url.path, params=dict(request.url.params))
+        return httpx.Response(200, json=[
+            {"object_type": "zone", "name": "customer.net.", "zone_id": "customer.net."},
+            {"object_type": "record", "zone": "customer.net.", "name": "customer.net.", "type": "NS",
+             "content": "ns7.example.com.", "disabled": False, "ttl": 3600},
+        ])
+
+    monkeypatch.setattr(powerdns, "_client", lambda: httpx.Client(base_url="http://pdns/api/v1",
+                                                                transport=httpx.MockTransport(handler)))
+    rows = powerdns.search_records("*ns7.example.com", 1000)
+    assert seen["path"].endswith("/search-data")
+    assert seen["params"] == {"q": "*ns7.example.com", "max": "1000", "object_type": "record"}
+    assert [row["type"] for row in rows] == ["NS"]
+
+
+def test_a_hosted_name_without_its_own_zone_lists_its_parent_instead_of_a_502(fake_powerdns):
+    from shared.db import write_session
+    from shared.models import Account, DnsZone
+
+    with write_session() as session:
+        account = Account(username="demo1", uid=5001, gid=5001, status="active")
+        session.add(account)
+        session.flush()
+        session.add(DnsZone(account_id=account.id, zone="example.com"))
+    listed = ns.list_nameservers({"domain": "blog.example.com"})
+    assert listed == {"domain": "blog.example.com", "provider": None, "managed": False,
+                      "parent_zone": "example.com", "nameservers": [], "glue": {}}
+    assert ns.list_nameservers({"domain": "example.com"})["managed"] is True
+
+
+def test_glue_host_that_is_a_cname_is_a_user_error_not_a_502(fake_powerdns):
+    fake_powerdns["example.com"][("ns7.example.com", "CNAME")] = ["host.other.net."]
+    with pytest.raises(ns.NameserverError, match="CNAME"):
+        ns.set_nameservers({"domain": "example.com", "nameservers": ["ns7.example.com"],
+                            "glue": {"ns7.example.com": "192.0.2.77"}})
+    assert ("ns7.example.com", "A") not in fake_powerdns["example.com"]

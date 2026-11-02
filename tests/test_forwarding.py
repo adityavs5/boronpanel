@@ -58,8 +58,22 @@ def test_set_forwarding_rejects_non_http_target(isolated_db, monkeypatch):
 
 def test_set_forwarding_rejects_parked(isolated_db, monkeypatch):
     _setup(monkeypatch, kind="parked")
-    with pytest.raises(RuntimeError, match="parked"):
+    with pytest.raises(ValidationError, match="parked"):
         forwarding.set_forwarding({"username": "demo1", "domain": "site.com", "target_url": "https://a.com"})
+
+
+@pytest.mark.parametrize("username,domain", [("nobody1", "site.com"), ("demo1", "other.com")])
+def test_unknown_account_or_domain_is_not_found(isolated_db, monkeypatch, username, domain):
+    """Regression: these were RuntimeError, so the API answered 502."""
+    from daemon import server
+    from shared.validation import NotFoundError
+
+    _setup(monkeypatch)
+    for call in (forwarding.get_forwarding, forwarding.delete_forwarding,
+                 lambda params: forwarding.set_forwarding({**params, "target_url": "https://a.com"})):
+        with pytest.raises(NotFoundError, match="not found") as raised:
+            call({"username": username, "domain": domain})
+        assert server.rpc_error_code(raised.value) == "not_found"
 
 
 def test_get_and_delete_forwarding(isolated_db, monkeypatch):

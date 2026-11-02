@@ -47,6 +47,7 @@ export default function Redis() {
   useEffect(() => {
     if (status?.mem_mb != null) setMemValue(String(status.mem_mb))
   }, [status?.mem_mb])
+  useEffect(() => { if (!enabled) setConnOpen(false) }, [enabled])
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['redis', username] })
 
@@ -94,7 +95,7 @@ export default function Redis() {
 
   return (
     <div>
-      <PageHeader title="Redis" description="Per-account in-memory data store for caching and sessions." icon={RedisIcon} primaryAction={provisioned ? (enabled ? <Button variant="secondary" onClick={() => setDisableOpen(true)}><Power className="h-4 w-4" /> Disable</Button> : <Button loading={enableMut.isPending} onClick={() => enableMut.mutate({ mem_mb: status.mem_mb })}><Zap className="h-4 w-4" /> Enable Redis</Button>) : null} moreActions={provisioned ? [{label:'Connection info',icon:<Plug className="h-4 w-4"/>,onSelect:()=>setConnOpen(true)}] : []} />
+      <PageHeader title="Redis" description="Per-account in-memory data store for caching and sessions." icon={RedisIcon} primaryAction={provisioned ? (enabled ? <Button variant="secondary" onClick={() => setDisableOpen(true)}><Power className="h-4 w-4" /> Disable</Button> : <Button loading={enableMut.isPending} onClick={() => enableMut.mutate({ mem_mb: status.mem_mb })}><Zap className="h-4 w-4" /> Enable Redis</Button>) : null} moreActions={enabled ? [{label:'Connection info',icon:<Plug className="h-4 w-4"/>,onSelect:()=>setConnOpen(true)}] : []} />
 
       {isLoading ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -176,7 +177,9 @@ export default function Redis() {
         </div>
       )}
 
-      <ConnectionDialog open={connOpen} onOpenChange={setConnOpen} username={username} onCopy={copyValue} />
+      {/* Connection details exist only while the instance runs (the API
+          answers 400 otherwise), so the dialog never asks for them before. */}
+      <ConnectionDialog open={connOpen && enabled} onOpenChange={setConnOpen} username={username} onCopy={copyValue} />
 
       <ConfirmDialog
         open={flushOpen}

@@ -5,6 +5,7 @@ import { Plus, Users, ShieldCheck, Play, ArrowUpCircle, MoreHorizontal } from 'l
 import { useUpdateStatus } from '@/hooks/useUpdateStatus'
 import { get, patch, post } from '@/lib/api'
 import { formatDate } from '@/lib/utils'
+import { SUSPEND_EFFECTS } from '@/config/constants'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
@@ -53,7 +54,7 @@ function BulkActionBar({ selected, clearSelection }) {
 
   return (
     <div className="accounts-bulk-bar">
-      <ConfirmDialog open={confirmOpen} onOpenChange={setConfirmOpen} title={`Apply ${action.replaceAll('_', ' ')} to ${selected.size} accounts?`} description={`Accounts: ${[...selected].join(', ')}. Changes run in order and stop if an account fails. Individual results appear below.`} confirmLabel="Apply to selected accounts" variant={action === 'suspend' ? 'danger' : 'primary'} loading={triggerMut.isPending} onConfirm={() => triggerMut.mutate()} />
+      <ConfirmDialog open={confirmOpen} onOpenChange={setConfirmOpen} title={`Apply ${action.replaceAll('_', ' ')} to ${selected.size} accounts?`} description={<><span className="block">Accounts: {[...selected].join(', ')}. Changes run in order and stop if an account fails. Individual results appear below.</span>{action === 'suspend' && <span className="mt-2 block">{SUSPEND_EFFECTS}</span>}</>} confirmLabel="Apply to selected accounts" variant={action === 'suspend' ? 'danger' : 'primary'} loading={triggerMut.isPending} onConfirm={() => triggerMut.mutate()} />
       <div className="flex flex-wrap items-end gap-3">
         <span className="text-sm font-medium text-foreground">{selected.size} selected</span>
         <FormField label="Action" className="w-48">

@@ -22,7 +22,7 @@ from version import BORON_VERSION
 
 Compatibility = Literal["additive", "breaking"]
 BASELINE_REVISION = 0
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 SCHEMA_MANIFEST = "schema-compat.json"
 
 
@@ -381,6 +381,43 @@ def _upgrade_api_token_creator_schema(conn) -> None:
     )
 
 
+def _upgrade_force_https_and_function_defaults(conn) -> None:
+    """Per-domain Force HTTPS, and the one-time disable_functions merge.
+
+    domains.force_https (off) backs the HTTP-to-HTTPS redirect.
+
+    Admin disable_functions overrides stored before this revision were
+    rendered as a php_admin_value, which PHP reports but never enforces, so
+    the php.ini default list was what actually applied. They are now
+    enforced at PHP startup and replace that default, so an old override
+    such as "phpinfo" alone would re-enable exec, shell_exec and the rest.
+    Each stored value is therefore merged with the default list once, here:
+    no account becomes less restricted by the upgrade. Values saved after
+    this revision keep the replace semantics the admin UI describes.
+    Additive: older releases ignore the column, and a merged value is still
+    a valid override for them.
+    """
+    tables = set(inspect(conn).get_table_names())
+    if "domains" in tables:
+        present = {item["name"] for item in inspect(conn).get_columns("domains")}
+        if "force_https" not in present:
+            conn.exec_driver_sql('ALTER TABLE "domains" ADD COLUMN "force_https" BOOLEAN NOT NULL DEFAULT 0')
+    if "php_function_overrides" not in tables:
+        return
+    from daemon.phpdirectives import DEFAULT_DISABLE_FUNCTIONS
+
+    rows = conn.execute(text("SELECT id, disable_functions FROM php_function_overrides")).all()
+    for row_id, value in rows:
+        # Same canonical form as phpdirectives.validate_disable_functions.
+        names = {name.strip() for name in (value or "").split(",") if name.strip()}
+        merged = ",".join(sorted(names | set(DEFAULT_DISABLE_FUNCTIONS)))
+        if merged != value:
+            conn.execute(
+                text("UPDATE php_function_overrides SET disable_functions = :value WHERE id = :id"),
+                {"value": merged, "id": row_id},
+            )
+
+
 REVISIONS: tuple[Revision, ...] = (
     Revision(1, "adopt_preledger_additive_schema", "additive", _upgrade_legacy_additive_schema),
     Revision(2, "update_safety_evidence", "additive", _upgrade_update_safety_schema),
@@ -388,6 +425,7 @@ REVISIONS: tuple[Revision, ...] = (
     Revision(4, "retention_alerts_sessions", "additive", _upgrade_retention_alerts_sessions_schema),
     Revision(5, "php_lifecycle_isolation", "additive", _upgrade_php_lifecycle_isolation_schema),
     Revision(6, "api_token_creator", "additive", _upgrade_api_token_creator_schema),
+    Revision(7, "force_https_function_defaults", "additive", _upgrade_force_https_and_function_defaults),
 )
 
 

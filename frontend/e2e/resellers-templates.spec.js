@@ -90,6 +90,8 @@ for (const skin of ['evolution', 'paper-lantern']) {
     await expect(page.locator('#issued-password')).toHaveValue('Test-Only-Site-42!')
     await page.getByRole('button', { name: 'I saved it' }).click()
     await page.getByRole('button', { name: 'Suspend' }).click()
+    await expect(page.getByRole('dialog')).toContainText("Suspending also blocks the account's email logins (IMAP, POP3, SMTP and webmail).")
+    await page.getByRole('dialog').getByRole('button', { name: 'Suspend account' }).click()
     await expect.poll(() => writes.some((item) => item.path.endsWith('/clientone/suspend'))).toBe(true)
     await page.screenshot({ path: info.outputPath(`${skin}-reseller-panel.png`), fullPage: true })
     await page.setViewportSize({ width: 390, height: 844 })

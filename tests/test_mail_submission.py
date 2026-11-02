@@ -119,3 +119,52 @@ def test_invalid_recipient_is_a_permanent_refusal_not_a_retry(monkeypatch):
     with pytest.raises(mail_submission.MailSubmissionError) as caught:
         mail_submission.submit_via_postfix(b"From: a@demo.example\r\n\r\nx", "a@demo.example", ["not an address"])
     assert not isinstance(caught.value, mail_submission.MailSubmissionUnavailable)
+
+
+def _submission_session(monkeypatch, failure):
+    """Drive scripts/mail_submit.py over a socket pair, as systemd does."""
+    import importlib.util
+    import socket
+    import threading
+
+    spec = importlib.util.spec_from_file_location("mail_submit_frontend",
+                                                  Path(__file__).parents[1] / "scripts" / "mail_submit.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    server, client = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+
+    def prepare(uid, raw, envelope):
+        raise failure
+
+    monkeypatch.setattr(module.socket, "socket", lambda fileno=None: server)
+    monkeypatch.setattr(module.mail_submission, "prepare_account_message", prepare)
+    worker = threading.Thread(target=module.main, daemon=True)
+    worker.start()
+    client.sendall(b"EHLO local\r\nMAIL FROM:<demo1@demo.example>\r\nRCPT TO:<user@remote.example>\r\n"
+                   b"DATA\r\nSubject: hi\r\n\r\nbody\r\n.\r\nQUIT\r\n")
+    worker.join(10)
+    client.settimeout(5)
+    replies = b""
+    while not replies.endswith(b"221 Bye\r\n"):
+        chunk = client.recv(4096)
+        if not chunk:
+            break
+        replies += chunk
+    client.close()
+    server.close()
+    return replies.decode().splitlines()
+
+
+@pytest.mark.parametrize("failure,reply", [
+    (mail_submission.MailSubmissionUnavailable("DKIM signing key is unavailable"),
+     "451 4.3.0 DKIM signing key is unavailable"),
+    (mail_submission.MailSubmissionError("envelope sender must use a domain owned by this account"),
+     "550 envelope sender must use a domain owned by this account"),
+    (RuntimeError("database is locked"), "451 4.3.0 Local mail submission failed; try again later"),
+])
+def test_sendmail_socket_defers_outages_and_refuses_policy_violations(monkeypatch, failure, reply):
+    """PHP mail(), sendmail and cron retry a key, key-table or queue outage
+    instead of losing the message to a permanent 550."""
+    replies = _submission_session(monkeypatch, failure)
+    assert reply in replies
+    assert "database is locked" not in "\n".join(replies)

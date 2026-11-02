@@ -272,8 +272,13 @@ def _step4(params: dict) -> tuple[dict, dict]:
     hosts = _service_hosts(params)
     if not params.get("confirm"):
         return {"state": "preview", **_service_record_plan(params)}, {}
-    panel_config.apply_setup_values(hosts, reload_services=True)
+    saved = panel_config.apply_setup_values(hosts, reload_services=True)
     records = _apply_service_records(params)
+    if saved.get("phpmyadmin"):
+        # The phpMyAdmin hostname is held back until the package is installed
+        # (panel_config._defer_pma_hostname): say so instead of implying it
+        # was saved with the others.
+        records = {**records, "phpmyadmin": saved["phpmyadmin"]}
     return records, {**hosts, "service_records": records["records"]}
 
 
@@ -296,6 +301,11 @@ def _step5(params: dict) -> tuple[dict, dict]:
     return {"state": state, "ready": ready, "checks": checks}, {"dns_verified": ready}
 
 
+def _pma_still_installing() -> bool:
+    from daemon import pma
+    return pma.provisioning_status().get("provisioning") == "installing"
+
+
 def _step6(params: dict) -> tuple[dict, dict]:
     with write_session() as db:
         state = _get_or_create(db)
@@ -312,6 +322,16 @@ def _step6(params: dict) -> tuple[dict, dict]:
             results.append({"service": service, **ssl_ops.issue_certificate({"domain": settings.webmail_hostname})})
         elif service == "phpmyadmin" and settings.pma_hostname:
             results.append({"service": service, **ssl_ops.issue_certificate({"domain": settings.pma_hostname})})
+        elif (service == "mail" and settings.mail_hostname
+              and settings.mail_hostname not in (settings.webmail_hostname, settings.panel_hostname)):
+            # A separate mail hostname is validated through DNS-01
+            # (ssl._challenge_plan); the panel and webmail certificates
+            # already cover a mail hostname equal to either of them.
+            results.append({"service": service, **ssl_ops.issue_certificate({"domain": settings.mail_hostname})})
+        elif service == "phpmyadmin" and _pma_still_installing():
+            raise ValidationError(
+                "phpMyAdmin is still being installed; its hostname is saved when the installation "
+                "finishes. Issue its certificate then.")
         else:
             raise ValidationError(f"Unknown or unconfigured certificate service: {service}")
     return {"certificates": results}, {"certificates_issued": [row["service"] for row in results]}

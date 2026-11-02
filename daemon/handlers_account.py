@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import os
 from typing import Callable
 
 from daemon import account_mutation, audit, database_operations, dns_operations, impersonation
@@ -32,7 +33,7 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import cgroups, handlers_domain, license_client, notifications, ols, sysops
+from daemon import cgroups, handlers_domain, inode_quotas, license_client, notifications, ols, sysops
 
 logger = logging.getLogger("borond.account")
 
@@ -76,6 +77,7 @@ def _effective_limits(account: Account) -> dict:
             "io_mb": account.io_mb,
             "pids_max": account.pids_max,
             "limits_source": "account",
+            "resource_override": False,
             "resource_policy": None,
         }
     effective = effective_for_account(session, account)
@@ -93,6 +95,10 @@ def _effective_limits(account: Account) -> dict:
         # "account" means the legacy columns (or an account override) win;
         # otherwise the scope whose policy row is enforced.
         "limits_source": policy["scope_type"] if policy else "account",
+        # An account-scope resource policy (admin.resources account override)
+        # wins over every other scope; "account" above cannot tell it apart
+        # from the legacy columns.
+        "resource_override": bool(policy and policy["scope_type"] == "account"),
         "resource_policy": values,
     }
 
@@ -147,15 +153,31 @@ def _validate_limits(cpu_pct: int, mem_mb: int, io_mb: int, pids_max: int) -> No
         raise ValidationError("Maximum processes must be between 10 and 10000")
 
 
-def _rollback_new_linux_user(username: str) -> None:
+def _home_exists(username: str) -> bool:
+    return os.path.lexists(f"{settings.home_base}/{username}")
+
+
+def _rollback_new_linux_user(username: str, *, home_existed: bool) -> None:
+    """Undo a Linux identity this request created.
+
+    A home that useradd created goes with it: left behind it stays owned by
+    the released uid, which useradd hands to the next account it creates. A
+    home that existed before (an earlier tenant's or restored data) is kept.
+    """
     try:
         sysops.lock_user(username)
     except Exception:
         logger.exception("Could not lock newly provisioned identity %s during rollback", username)
     try:
-        sysops.delete_linux_user(username, remove_home=False)
+        sysops.delete_linux_user(username, remove_home=not home_existed)
     except Exception:
         logger.exception("New identity %s requires administrator cleanup after provisioning failure", username)
+
+
+def _set_identity(username: str, uid: int | None, gid: int | None) -> None:
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        account.uid, account.gid = uid, gid
 
 
 def ensure_customer_login(session, account, password: str) -> PanelUser:
@@ -221,9 +243,16 @@ def release_terminated_username(session, account: Account) -> str:
 
 
 def plan_seed(plan_id) -> dict:
-    """Initial limits from a requested hosting plan; refuses an unknown plan."""
+    """Initial limits from a requested hosting plan; refuses an unknown plan.
+
+    CPU, memory, I/O and process values are the ones the plan's policy
+    enforces, not the plan's own legacy columns, which plans written before
+    3.3.2 let drift from it (cpu_pct 25 next to cpu_cores 1.0 started the
+    account on a quarter core).
+    """
     if plan_id is None:
         return {}
+    from daemon import plans
     from shared.models import Plan
     try:
         plan_id = int(plan_id)
@@ -233,11 +262,7 @@ def plan_seed(plan_id) -> dict:
         plan = session.get(Plan, plan_id)
         if plan is None:
             raise NotFoundError(f"plan {plan_id} not found")
-        return {
-            "quota_soft_mb": plan.quota_soft_mb, "quota_hard_mb": plan.quota_hard_mb,
-            "cpu_pct": plan.cpu_pct, "mem_mb": plan.mem_mb,
-            "io_mb": plan.io_mb, "pids_max": plan.pids_max,
-        }
+        return plans.account_seed(session, plan)
 
 
 @database_operations.serialized
@@ -264,6 +289,20 @@ def create_account(params: dict) -> dict:
     io_mb = int(params.get("io_mb", cgroups.DEFAULT_IO_MB))
     pids_max = int(params.get("pids_max", cgroups.DEFAULT_PIDS_MAX))
     _validate_limits(cpu_pct, mem_mb, io_mb, pids_max)
+    inode_soft, inode_hard = inode_quotas.validate_limits(
+        params.get("inode_soft_limit", inode_quotas.DEFAULT_SOFT),
+        params.get("inode_hard_limit", inode_quotas.DEFAULT_HARD),
+    )
+    # An empty home has nothing to warn about: a new account's inode limits
+    # are due at once and applied below. (They used to start a 7-day warning
+    # period, so every new account reported "warning" and ran without an
+    # inode limit for a week.) Archive importers stage them behind that
+    # warning period instead: the imported home may already hold more files
+    # than the limits allow.
+    staged_inodes = bool(params.get("stage_inode_limits"))
+    inode_enforce_at = None if not inode_hard else (
+        utcnow() + dt.timedelta(days=inode_quotas.DEFAULT_WARNING_DAYS) if staged_inodes else utcnow()
+    )
 
     # Validated before create_linux_user, not after: a rejected weak
     # custom password must never leave an orphaned Linux user behind (no
@@ -300,6 +339,7 @@ def create_account(params: dict) -> dict:
             if existing_domain is not None:
                 raise ConflictError(f"domain '{primary_domain}' is already in use")
 
+    home_existed = _home_exists(username)
     uid, gid = sysops.create_linux_user(username)
 
     password = password or sysops.generate_password()
@@ -311,7 +351,7 @@ def create_account(params: dict) -> dict:
     except Exception:
         # No hosting resource or credential row has been created yet. Do not
         # activate an account whose mandatory identity/quota setup failed.
-        _rollback_new_linux_user(username)
+        _rollback_new_linux_user(username, home_existed=home_existed)
         raise
 
     try:
@@ -330,9 +370,9 @@ def create_account(params: dict) -> dict:
                 io_mb=io_mb,
                 pids_max=pids_max,
                 php_private_sessions=True,
-                inode_soft_limit=450_000,
-                inode_hard_limit=500_000,
-                inode_enforce_at=utcnow() + dt.timedelta(days=7),
+                inode_soft_limit=inode_soft,
+                inode_hard_limit=inode_hard,
+                inode_enforce_at=inode_enforce_at,
             )
             session.add(account)
             session.flush()
@@ -361,8 +401,17 @@ def create_account(params: dict) -> dict:
             result["email"] = email
             account_snapshot = account
     except Exception:
-        _rollback_new_linux_user(username)
+        _rollback_new_linux_user(username, home_existed=home_existed)
         raise
+
+    # A failure is logged and left due; the periodic reconciler retries it.
+    # The account is committed by now, so nothing here may stop the primary
+    # domain below from being provisioned.
+    try:
+        if inode_hard and not staged_inodes and inode_quotas.enforce_due({"username": username})["applied"]:
+            result.update(inode_enforce_at=None, inode_enforcement_state="enforced")
+    except Exception:  # noqa: BLE001 - left due for the periodic reconciler
+        logger.exception("could not apply the inode limits of new account %s", username)
 
     # A primary domain is part of account creation, not a display-only field:
     # its row is needed by ownership checks and by OLS's full vhost render.
@@ -437,6 +486,7 @@ def reactivate_account(params: dict) -> dict:
             raise NotFoundError(f"account '{username}' not found -- use account.create for a genuinely new account")
         if account.status not in ("terminated", "error"):
             raise ConflictError(f"account '{username}' is '{account.status}', not terminated -- nothing to reactivate")
+        previous_identity = (account.uid, account.gid)
 
     php_version = validate_php_version(params.get("php_version") or settings.default_php_version, settings.php_versions)
     quota_soft_mb = int(params.get("quota_soft_mb") or settings.default_quota_soft_mb)
@@ -453,9 +503,15 @@ def reactivate_account(params: dict) -> dict:
     # ordering fix and its own comment for why.
     password = validate_password_strength(params["password"]) if params.get("password") else None
 
+    home_existed = _home_exists(username)
     uid, gid = sysops.create_linux_user(username)
     password = password or sysops.generate_password()
     try:
+        # The row names the new identity before the slice is set up: the
+        # cgroup resolver cross-checks it against the Linux user, and the uid
+        # a terminated row kept belongs to an identity that no longer exists
+        # (useradd usually picks another uid), so direct reactivation failed.
+        _set_identity(username, uid, gid)
         # Mandatory resource enforcement precedes credentials and active state.
         cgroups.apply_limits(username, cpu_pct, mem_mb, io_mb, pids_max, uid=uid)
         sysops.set_initial_password(username, password)
@@ -463,7 +519,11 @@ def reactivate_account(params: dict) -> dict:
     except Exception:
         # No hosting resource or credential row has been created yet. Do not
         # activate an account whose mandatory identity/quota setup failed.
-        _rollback_new_linux_user(username)
+        _rollback_new_linux_user(username, home_existed=home_existed)
+        try:
+            _set_identity(username, *previous_identity)
+        except Exception:  # noqa: BLE001 - keep the setup failure as the error
+            logger.exception("could not restore the previous identity of %s after a failed reactivation", username)
         raise
 
     with write_session() as session:
@@ -479,6 +539,12 @@ def reactivate_account(params: dict) -> dict:
         account.io_mb = io_mb
         account.pids_max = pids_max
         # Reactivated accounts keep their historical session and inode policy.
+        # The new uid's filesystem quota starts without the inode limits, and
+        # the restored home may hold more files than they allow, so they go
+        # through the warning period again instead of staying "enforced"
+        # while nothing enforced them.
+        if account.inode_hard_limit:
+            account.inode_enforce_at = utcnow() + dt.timedelta(days=inode_quotas.DEFAULT_WARNING_DAYS)
         account.terminated_at = None
         account.suspended_at = None
         account.last_error = None
@@ -637,6 +703,10 @@ def customer_login_refusal(session, account_id: int | None) -> str | None:
         return "This hosting account is no longer available."
     if account.status == "suspended":
         return "This hosting account is suspended. Contact your hosting provider."
+    if account.status != "active":
+        # Both resolvers refuse every non-active status, so any status not
+        # named above (one being set up, say) is refused here too.
+        return "This hosting account is not available right now. Try again in a few minutes."
     return None
 
 
@@ -667,24 +737,39 @@ def allow_system_logins(username: str) -> None:
     sysops.unlock_user(username)
 
 
+def _end_running_processes(username: str, uid: int | None) -> None:
+    """Stop what a suspended account still runs (cgroups.end_account_processes).
+
+    Ending only the sshd sessions left nohup, tmux and screen processes (and
+    cron jobs already started) running for the whole suspension. Best
+    effort: logins and the site are already blocked when this runs.
+    """
+    try:
+        cgroups.end_account_processes(username, uid=uid)
+    except Exception:  # noqa: BLE001 - the suspension itself stands
+        logger.exception("could not end the running processes of suspended account %s", username)
+
+
 def reconcile_suspended_logins() -> int:
-    """Upgrade step: apply block_system_logins to already-suspended accounts.
+    """Upgrade step: apply the suspension barriers to already-suspended accounts.
 
     Accounts suspended by a release that only locked the password still
-    accept SSH keys and run cron jobs. Idempotent; returns how many accounts
-    were reconciled.
+    accept SSH keys, run cron jobs and keep whatever they started running.
+    Idempotent; returns how many accounts were reconciled.
     """
     with write_session() as session:
-        usernames = list(session.scalars(
-            select(Account.username).where(Account.status == "suspended", Account.uid.is_not(None))
-        ).all())
+        rows = session.execute(
+            select(Account.username, Account.uid).where(Account.status == "suspended", Account.uid.is_not(None))
+        ).all()
     reconciled = 0
-    for username in usernames:
+    for username, uid in rows:
         try:
             block_system_logins(username)
             reconciled += 1
         except Exception:  # noqa: BLE001 - one missing identity must not stop the upgrade
             logger.exception("could not block logins of suspended account %s", username)
+            continue
+        _end_running_processes(username, uid)
     return reconciled
 
 
@@ -714,6 +799,9 @@ def suspend_account(params: dict) -> dict:
                     pass
             allow_system_logins(username)
             raise
+        # Only once the suspension can no longer roll back: ended processes
+        # cannot be brought back.
+        _end_running_processes(username, account.uid)
 
         from shared.models import utcnow
 
@@ -756,6 +844,12 @@ def unsuspend_account(params: dict) -> dict:
                 except Exception:
                     pass
             raise
+        # Suspension ended a lingering systemd --user manager with everything
+        # else; PHP workers and the panel's own services need nothing here.
+        try:
+            cgroups.resume_user_manager(username, uid=account.uid)
+        except Exception:  # noqa: BLE001 - the account is usable without it
+            logger.exception("could not restart the user manager of unsuspended account %s", username)
 
         account.status = "active"
         account.suspended_at = None
@@ -823,7 +917,7 @@ def _forget_domain_settings(domain_name: str) -> None:
     """
     from daemon import handlers_domain
 
-    failed = handlers_domain._purge_domain_settings(domain_name)
+    failed = handlers_domain.purge_domain_settings(domain_name)
     if failed:  # each step already logged; the account is terminated anyway
         logger.warning("released domain %s kept settings: %s", domain_name, ", ".join(failed))
 
@@ -891,6 +985,11 @@ def _terminate_account(params: dict) -> dict:
                 account.terminated_at = utcnow()
                 account.last_error = None
                 released_domains = _release_domain_rows(session, account)
+                # The Linux user and its home are gone and useradd may give
+                # the uid to another tenant; a stale uid on the tombstone made
+                # reactivation's identity cross-check fail and mapped that
+                # tenant's uid back to this account.
+                account.uid = account.gid = None
             audit.change("status", original_status, account.status)
 
             # Security audit finding F3: every *system* resource above is torn

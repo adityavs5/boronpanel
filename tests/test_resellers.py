@@ -329,3 +329,69 @@ def test_delete_reseller_clears_the_lockout_counter_of_its_name(isolated_db):
     resellers.delete_reseller({"reseller_id": profile_id})
     with write_session() as session:
         assert session.scalar(select(LoginAttempt).where(LoginAttempt.username == "reseller1")) is None
+
+
+# --- round 2: clear 4xx answers, CPU conversion ---------------------------------
+
+
+def test_full_reseller_allocation_is_a_conflict_with_the_numbers(isolated_db):
+    """[UW M8] The reseller account and disk limits returned 502."""
+    from daemon import server
+    from shared.validation import ConflictError
+    plan = make_plan(max_accounts=1, max_total_disk_mb=6000)
+    _, profile_id = make_profile(plan["id"])
+    make_owned_account(profile_id, "ownedone", hard_mb=1000)
+    with pytest.raises(ConflictError, match=r"account limit reached: your plan allows 1 account\(s\)") as raised:
+        resellers.create_account({"reseller_username": "reseller1", "username": "secondone"})
+    assert server.rpc_error_code(raised.value) == "conflict"
+
+    resellers.update_plan({"plan_id": plan["id"], "max_accounts": 3})
+    with pytest.raises(ConflictError, match="allows 6000 MB in total, 1000 MB is allocated and a new account needs 5120 MB"):
+        resellers.create_account({"reseller_username": "reseller1", "username": "secondone"})
+
+
+def test_moving_into_a_full_reseller_is_a_conflict(isolated_db):
+    from shared.validation import ConflictError
+    plan = make_plan(max_accounts=1)
+    _, target = make_profile(plan["id"], "targetone")
+    make_owned_account(target, "alreadyone")
+    with write_session() as db:
+        db.add(Account(username="unassigned", status="active", quota_hard_mb=1000))
+    with pytest.raises(ConflictError, match=r"allows 1 account\(s\) and it already has 1"):
+        resellers.move_account({"username": "unassigned", "reseller_id": target})
+
+
+def test_unknown_reseller_plan_or_reseller_is_not_found(isolated_db):
+    from shared.validation import NotFoundError
+    with pytest.raises(NotFoundError, match="reseller plan 4242 not found"):
+        resellers.update_plan({"plan_id": 4242})
+    with pytest.raises(NotFoundError, match="reseller plan 4242 not found"):
+        resellers.delete_plan({"plan_id": 4242})
+    with pytest.raises(NotFoundError, match="reseller 4242 not found"):
+        resellers.update_reseller({"reseller_id": 4242, "company": "x"})
+    with pytest.raises(NotFoundError, match="account 'ghost' not found"):
+        resellers.move_account({"username": "ghost", "reseller_id": None})
+
+
+def test_reseller_plan_cpu_percentage_follows_the_enforced_cores(isolated_db, monkeypatch):
+    """New reseller accounts start on account_cpu_pct; it used to keep its
+    default (50) next to account_cpu_cores 1.0."""
+    monkeypatch.setattr(resellers.resource_manager, "available_cpu_cores", lambda: 4)
+    plan = resellers.create_plan(dict(
+        name="Cores", max_accounts=2, max_total_disk_mb=12288, account_quota_soft_mb=4096,
+        account_quota_hard_mb=5120, account_mem_mb=1024, account_io_mb=50, account_pids_max=100,
+        php_version="8.3", account_cpu_cores=1.0,
+    ))
+    assert (plan["account_cpu_pct"], plan["account_cpu_cores"]) == (100, 1.0)
+    # An edit naming neither CPU field keeps the enforced value.
+    plan = resellers.update_plan({"plan_id": plan["id"], "max_accounts": 3})
+    assert (plan["account_cpu_pct"], plan["account_cpu_cores"]) == (100, 1.0)
+    plan = resellers.update_plan({"plan_id": plan["id"], "account_cpu_pct": 50})
+    assert (plan["account_cpu_pct"], plan["account_cpu_cores"]) == (50, 0.5)
+
+
+def test_reseller_plan_route_derives_the_limit_form_the_request_left_out():
+    from api.routers.resellers import PlanBody, _plan_fields
+    fields = _plan_fields(PlanBody(name="Cores", account_cpu_cores=1.0, account_mem_mb=512))
+    assert "account_cpu_pct" not in fields and "account_memory_high_mb" not in fields
+    assert fields["account_cpu_cores"] == 1.0 and fields["account_io_write_mb"] == 50

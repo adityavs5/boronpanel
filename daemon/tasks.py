@@ -30,6 +30,7 @@ from shared.models import (
     MalwareScanJob,
     NamespaceMigrationJob,
     PanelConfigJob,
+    ResellerAccount,
     RestoreJob,
     SnapshotDestinationOperation,
     SnapshotDownload,
@@ -250,14 +251,28 @@ def _task(spec: TaskSpec, row: Any, accounts: dict[int, str], *, role: str) -> d
     }
 
 
-def _scope(params: dict) -> tuple[str, int | None]:
+def _scope(params: dict) -> tuple[str, set[int] | None]:
+    """(role, the account ids whose tasks the caller sees; None for all).
+
+    A reseller sees the tasks of the accounts it owns; tasks of no account
+    (server-wide jobs) stay administrator-only."""
     role = str(params.get("_authenticated_role") or "")
     account_id = params.get("_authenticated_account_id")
-    if role not in {"admin", "customer"}:
-        raise ValidationError("Task history is available to administrators and hosting customers")
-    if role == "customer" and not isinstance(account_id, int):
-        raise ValidationError("Customer account is unavailable")
-    return role, account_id
+    if role not in {"admin", "customer", "reseller"}:
+        raise ValidationError("Task history is available to administrators, resellers and hosting customers")
+    if role == "admin":
+        return role, None
+    if role == "customer":
+        if not isinstance(account_id, int):
+            raise ValidationError("Customer account is unavailable")
+        return role, {account_id}
+    reseller_id = params.get("_authenticated_reseller_id")
+    if not isinstance(reseller_id, int):
+        raise ValidationError("Reseller is unavailable")
+    with read_session() as db:
+        owned = set(db.scalars(select(ResellerAccount.account_id).where(
+            ResellerAccount.reseller_id == reseller_id)).all())
+    return role, owned
 
 
 def _load_rows(db, spec: TaskSpec, *, limit: int = 500) -> list[Any]:
@@ -266,7 +281,7 @@ def _load_rows(db, spec: TaskSpec, *, limit: int = 500) -> list[Any]:
 
 
 def list_tasks(params: dict) -> dict:
-    role, own_account_id = _scope(params)
+    role, visible = _scope(params)
     requested_account = params.get("account")
     status_filter = str(params.get("status") or "").strip().lower()
     kind_filter = str(params.get("kind") or "").strip().lower()
@@ -282,9 +297,9 @@ def list_tasks(params: dict) -> dict:
                 continue
             for row in _load_rows(db, spec, limit=limit):
                 task = _task(spec, row, accounts, role=role)
-                if role == "customer" and task["account_id"] != own_account_id:
+                if visible is not None and task["account_id"] not in visible:
                     continue
-                if role == "admin" and requested_account and task["account"] != requested_account:
+                if role != "customer" and requested_account and task["account"] != requested_account:
                     continue
                 if status_filter and task["status"] != status_filter:
                     continue
@@ -343,14 +358,14 @@ def _timeline(db, request_id: str | None) -> list[dict]:
 
 
 def get_task(params: dict) -> dict:
-    role, own_account_id = _scope(params)
+    role, visible = _scope(params)
     task_id = _integer(params.get("task_id"), name="task id")
     kind = str(params.get("kind") or "")
     with read_session() as db:
         accounts = {row.id: row.username for row in db.scalars(select(Account)).all()}
         spec, row = _row(db, kind, task_id)
         task = _task(spec, row, accounts, role=role)
-        if role == "customer" and task["account_id"] != own_account_id:
+        if visible is not None and task["account_id"] not in visible:
             raise ValidationError("Task not found")
         task["timeline"] = _timeline(db, task["request_id"])
         return task

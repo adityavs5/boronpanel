@@ -10,7 +10,10 @@ from daemon import cloudflare, cloudflare_ops, dnscluster, dnsprovider, powerdns
 from daemon.procutil import run
 from shared.config import settings
 from shared.db import write_session
-from shared.models import CloudflareAccount, CloudflareZone, DnsClusterOutbox, DnsClusterPeer, DnsServerSettings, DnsZone, DnsZoneMigration
+from shared.models import (
+    CloudflareAccount, CloudflareZone, DnsClusterOutbox, DnsClusterPeer, DnsClusterZoneState, DnsServerSettings,
+    DnsZone, DnsZoneMigration,
+)
 from shared.validation import ValidationError, validate_domain
 
 MODES = {"cloudflare", "local", "cluster"}
@@ -172,8 +175,11 @@ def reconcile_zone_records(_params: dict | None = None) -> dict:
     placeholder gets the zone's primary nameserver, and a TXT value holding
     a string over 255 octets (or text zone-file grammar cannot read, such as
     a raw newline) is rewritten in canonical split form -- without that a
-    DKIM key makes the zone unrestorable from snapshots. Best-effort per
-    zone; never raises, so DNS trouble cannot fail an upgrade.
+    DKIM key makes the zone unrestorable from snapshots. A zone received
+    from a DNS cluster peer gets only the SOA repair: its records belong to
+    the sending server, but its SOA is this server's own (cluster updates
+    never carry one). Best-effort per zone; never raises, so DNS trouble
+    cannot fail an upgrade.
     """
     from daemon import dns_operations
 
@@ -181,15 +187,20 @@ def reconcile_zone_records(_params: dict | None = None) -> dict:
     try:
         with dns_operations.mutation_lock(timeout=120):
             with write_session() as db:
-                zones = db.scalars(select(DnsZone.zone).order_by(DnsZone.zone)).all()
-            for zone in zones:
+                zones = set(db.scalars(select(DnsZone.zone)).all())
+                received = set(db.scalars(select(DnsClusterZoneState.zone).where(
+                    DnsClusterZoneState.direction == "received")).all()) - zones
+            for zone in sorted(zones | received):
                 try:
                     if dnsprovider.provider_for_zone(zone) != "local" or not powerdns.zone_exists(zone):
                         continue
                     changes = _zone_repairs(zone, powerdns.get_zone(zone))
+                    if zone in received:
+                        changes = [change for change in changes if change["type"] == "SOA"]
                     if changes:
                         powerdns.apply_rrset_changes(zone, changes)
-                        dnsprovider._cluster_notify(zone)
+                        if zone not in received:  # never echo a peer's zone back to the cluster
+                            dnsprovider._cluster_notify(zone)
                         result["repaired"].append(zone)
                 except Exception:  # noqa: BLE001 -- one zone must not stop the rest
                     logger.exception("DNS record reconcile failed for %s", zone)

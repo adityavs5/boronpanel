@@ -147,7 +147,7 @@ export default function SshKeys() {
         </DialogContent>
       </Dialog>
       {/* Add key */}
-      <Dialog open={createOpen} onOpenChange={(v) => { setCreateOpen(v); if (!v) setKeyText('') }}>
+      <Dialog open={createOpen} onOpenChange={(v) => { setCreateOpen(v); if (!v) { setKeyText(''); createMut.reset() } }}>
         <DialogContent size="md">
           <DialogHeader>
             <DialogTitle>Add SSH key</DialogTitle>
@@ -163,12 +163,14 @@ export default function SshKeys() {
             }}
           >
             <DialogBody>
-              <FormField label="Public key" required hint="A single line beginning with ssh-ed25519, ssh-rsa, or ecdsa-…">
+              {/* The server refuses authorized_keys options (command=, from=)
+                  and duplicates; keep its reason beside the key until edited. */}
+              <FormField label="Public key" required error={createMut.error?.message} hint="A single line beginning with ssh-ed25519, ssh-rsa, or ecdsa-…, with nothing before it.">
                 <Textarea
                   autoFocus
                   rows={5}
                   value={keyText}
-                  onChange={(e) => setKeyText(e.target.value)}
+                  onChange={(e) => { setKeyText(e.target.value); if (createMut.error) createMut.reset() }}
                   placeholder="ssh-ed25519 AAAA… you@yourcomputer"
                   className="font-mono text-sm"
                   required

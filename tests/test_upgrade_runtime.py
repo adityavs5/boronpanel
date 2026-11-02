@@ -14,6 +14,8 @@ def isolate_mail_runtime_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(upgrade_runtime, 'DOVECOT_SIEVE_CONFIG', tmp_path / '92-sieve.conf')
     monkeypatch.setattr(upgrade_runtime, 'DOVECOT_SIEVE_PLUGIN', tmp_path / 'no-sieve-plugin.so')
     monkeypatch.setattr(upgrade_runtime, 'POSTFIX_FORWARDS_MAP', tmp_path / 'forwards.cf')
+    monkeypatch.setattr(upgrade_runtime, 'DOVECOT_SUSPENDED_PASSDB_CONFIG', tmp_path / '08-suspended-auth.conf')
+    monkeypatch.setattr(upgrade_runtime, 'DOVECOT_SUSPENDED_DOMAINS', tmp_path / 'suspended-mail-domains')
     monkeypatch.setattr(upgrade_runtime, '_app_runtime_records', lambda: [])
 from shared.config import settings
 
@@ -434,12 +436,125 @@ def test_new_mail_runtime_files_are_in_the_rollback_backup():
 
 
 def test_upgrade_reconciles_accounts_suspended_or_terminated_by_older_releases(monkeypatch):
-    from daemon import handlers_account
+    from daemon import handlers_account, inode_quotas, resource_manager
     calls = []
     monkeypatch.setattr(handlers_account, "reconcile_suspended_logins", lambda: calls.append("logins") or 0)
     monkeypatch.setattr(handlers_account, "release_terminated_domains", lambda: calls.append("domains") or 0)
+    monkeypatch.setattr(inode_quotas, "reapply_enforced", lambda: calls.append("inodes") or 0)
+    monkeypatch.setattr(resource_manager, "reapply_all", lambda: calls.append("limits") or 0)
     upgrade_runtime.configure_account_lifecycle_state()
-    assert calls == ["logins", "domains"]
+    assert calls == ["logins", "domains", "inodes", "limits"]
     source = upgrade_runtime.Path(upgrade_runtime.__file__).read_text()
     main_body = source[source.index("def main("):]
     assert "configure_account_lifecycle_state()" in main_body
+
+
+def _write_sql_config():
+    upgrade_runtime.DOVECOT_SQL_CONFIG.write_text(
+        'driver = mysql\nconnect = host=127.0.0.1 password=test-only-secret\n'
+        'password_query = old query\nuser_query = original user lookup\n')
+
+
+def test_suspended_login_passdb_is_written_and_an_existing_list_is_kept(monkeypatch):
+    from daemon import mail
+    monkeypatch.setattr(upgrade_runtime.shutil, 'chown', lambda *a, **kw: None)
+    _write_sql_config()
+    upgrade_runtime.configure_dovecot()
+    passdb = upgrade_runtime.DOVECOT_SUSPENDED_PASSDB_CONFIG.read_text()
+    assert 'driver = passwd-file' in passdb and 'deny = yes' in passdb
+    assert f'args = username_format=%d {mail.SUSPENDED_DOMAINS_FILE}' in passdb
+    # Sorts before the webmail (09) and SQL (10-auth) passdbs.
+    assert mail.SUSPENDED_PASSDB_CONFIG.name < '09-boron-sso-auth.conf' < '10-auth.conf'
+    assert mail.SUSPENDED_PASSDB_CONFIG.name == '08-boron-suspended-auth.conf'
+    listing = upgrade_runtime.DOVECOT_SUSPENDED_DOMAINS
+    assert listing.read_text() == '' and listing.stat().st_mode & 0o777 == 0o640
+    listing.write_text('suspended.example\n')
+    upgrade_runtime.configure_dovecot()
+    assert listing.read_text() == 'suspended.example\n'
+
+
+def test_suspended_login_paths_match_the_daemon_and_are_in_the_rollback_backup():
+    from pathlib import Path
+    from daemon import mail
+    assert Path('/etc/dovecot/conf.d/08-boron-suspended-auth.conf') == mail.SUSPENDED_PASSDB_CONFIG
+    assert str(mail.SUSPENDED_DOMAINS_FILE) in upgrade_runtime.DOVECOT_SUSPENDED_PASSDB
+    paths = upgrade_runtime._runtime_paths()
+    assert upgrade_runtime.DOVECOT_SUSPENDED_PASSDB_CONFIG in paths
+    assert upgrade_runtime.DOVECOT_SUSPENDED_DOMAINS in paths
+
+
+def test_upgrade_blocks_logins_of_accounts_suspended_by_an_older_release(monkeypatch):
+    from daemon import handlers_mail
+    calls = []
+    monkeypatch.setattr(handlers_mail, 'reconcile_suspended_mail_logins', lambda: calls.append('mail') or [])
+    upgrade_runtime.configure_suspended_mail_logins()
+    assert calls == []  # no passdb, no list to manage
+    upgrade_runtime.DOVECOT_SUSPENDED_PASSDB_CONFIG.write_text('passdb {}\n')
+    upgrade_runtime.configure_suspended_mail_logins()
+    assert calls == ['mail']
+    source = upgrade_runtime.Path(upgrade_runtime.__file__).read_text()
+    main_body = source[source.index("def main("):]
+    assert main_body.index('configure_dovecot()') < main_body.index('configure_suspended_mail_logins()')
+
+
+def test_pop3_and_implicit_tls_submission_are_installed_and_upgraded():
+    from pathlib import Path
+    source = upgrade_runtime.Path(upgrade_runtime.__file__).read_text()
+    main_body = source[source.index("def main("):]
+    assert 'missing_packages.append("dovecot-pop3d")' in main_body
+    # The firewall is opened before configure_signer adds the 465 service.
+    assert main_body.index('configure_mail_client_ports()') < main_body.index('dkim.configure_signer()')
+    install = (Path(__file__).resolve().parents[1] / 'scripts' / 'install.sh').read_text()
+    assert 'dovecot-imapd dovecot-pop3d dovecot-lmtpd' in install
+    assert 'ports+=(25 110 143 465 587 993 995)' in install
+    assert 'REQUIRED_PORTS=(2222 8081 80 443 21 25 110 143 465 587 993 995 3306 53)' in install
+
+
+@pytest.mark.parametrize("master,ufw_status,opened", [
+    ("smtp inet n - y - - smtpd\nsubmission inet n - y - - smtpd\n", "Status: active\n", True),
+    ("smtp inet n - y - - smtpd\n#submissions inet n - y - - smtpd\n", "Status: active\n", True),
+    ("smtp inet n - y - - smtpd\nsubmissions inet n - y - - smtpd\n", "Status: active\n", False),
+    ("smtp inet n - y - - smtpd\nsmtps inet n - y - - smtpd\n", "Status: active\n", False),
+    ("smtp inet n - y - - smtpd\n", "Status: inactive\n", False),
+])
+def test_port_465_is_opened_once_where_the_panel_manages_ufw(tmp_path, monkeypatch, master, ufw_status, opened):
+    from types import SimpleNamespace
+    master_cf = tmp_path / 'master.cf'
+    master_cf.write_text(master)
+    monkeypatch.setattr(upgrade_runtime, 'POSTFIX_MASTER_CONFIG', master_cf)
+    monkeypatch.setattr(upgrade_runtime.shutil, 'which', lambda name: f'/usr/sbin/{name}' if name in ('ufw', 'opendkim', 'postconf') else None)
+    monkeypatch.setattr(upgrade_runtime.subprocess, 'run', lambda *a, **kw: SimpleNamespace(stdout=ufw_status))
+    commands = []
+    monkeypatch.setattr(upgrade_runtime, 'command', lambda args, timeout=900: commands.append(args))
+    upgrade_runtime.configure_mail_client_ports()
+    assert commands == ([['ufw', 'allow', '465/tcp']] if opened else [])
+
+
+def test_php_ini_error_display_defaults_are_reconciled_and_in_the_rollback_backup(tmp_path, monkeypatch):
+    """Existing servers get the same php.ini display/logging defaults as
+    fresh installs; the files are snapshotted so a rollback restores them."""
+    from daemon import phpext
+
+    monkeypatch.setattr(phpext, "LSWS_BASE", str(tmp_path))
+    ini = phpext.php_ini_path("8.3")
+    ini.parent.mkdir(parents=True)
+    ini.write_text("[PHP]\ndisplay_errors = On\nlog_errors = Off\n")
+    assert ini in upgrade_runtime._php_ini_paths()
+    assert ini in upgrade_runtime._runtime_paths()
+    assert upgrade_runtime.configure_php_ini_defaults() is True
+    assert "display_errors = Off\n" in ini.read_text() and "log_errors = On\n" in ini.read_text()
+    assert upgrade_runtime.configure_php_ini_defaults() is False
+    source = upgrade_runtime.Path(upgrade_runtime.__file__).read_text()
+    main_body = source[source.index("def main("):]
+    # Warm PHP workers keep old php.ini values: the refresh restarts them.
+    assert "php_ini_changed = configure_php_ini_defaults()" in main_body
+    assert "ols.refresh_all_vhosts(recycle_php=php_ini_changed)" in main_body
+
+
+def test_install_applies_the_same_php_ini_defaults_as_upgrade():
+    from pathlib import Path
+
+    install = (Path(__file__).resolve().parents[1] / "scripts" / "install.sh").read_text()
+    hardening = install[install.index("setup_php_hardening() {"):]
+    hardening = hardening[:hardening.index("\n}\n")]
+    assert "phpext.reconcile_php_ini_defaults()" in hardening

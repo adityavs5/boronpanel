@@ -2,6 +2,7 @@ import os
 import pwd as real_pwd
 import stat
 import subprocess
+import time
 
 import pytest
 
@@ -189,6 +190,55 @@ def test_migration_skips_files_not_written_by_the_web_server(account_with_home, 
     sysops.ensure_web_logs("demo1")
     assert list((vhost_log_root / "demo1").iterdir()) == []
     assert (logs / "example_com-access.log").read_text() == "tenant-forged\n"
+
+
+def _archive(directory, name, age_days, size=10):
+    path = directory / name
+    path.write_bytes(b"x" * size)
+    stamp = time.time() - age_days * 86400
+    os.utime(path, (stamp, stamp))
+    return path
+
+
+def test_prune_vhost_logs_keeps_the_newest_archives_of_each_log(vhost_log_root, monkeypatch):
+    """Vhost logs moved to /var: OLS bounds each file and the archives' age,
+    but not how many archives a busy site keeps."""
+    directory = vhost_log_root / "demo1"
+    directory.mkdir()
+    (directory / "example_com-access.log").write_text("active")
+    (directory / "php-error.log").write_text("not a vhost log")
+    for day in range(14):
+        _archive(directory, f"example_com-access.log.10_{day + 1:02d}_2026.gz", age_days=day)
+    for day in range(3):
+        _archive(directory, f"example_com-error.log.10_{day + 1:02d}_2026.gz", age_days=day)
+    assert sysops.prune_vhost_logs("demo1") == 14 - sysops.VHOST_LOG_KEEP_ARCHIVES
+    names = sorted(p.name for p in directory.iterdir())
+    assert "example_com-access.log" in names and "php-error.log" in names
+    access = [name for name in names if name.startswith("example_com-access.log.")]
+    assert access == sorted(f"example_com-access.log.10_{day + 1:02d}_2026.gz"
+                            for day in range(sysops.VHOST_LOG_KEEP_ARCHIVES))
+    assert len([name for name in names if name.startswith("example_com-error.log.")]) == 3
+    # A byte budget applies as well.
+    monkeypatch.setattr(sysops, "VHOST_LOG_KEEP_ARCHIVE_BYTES", 25)
+    assert sysops.prune_vhost_logs("demo1") == sysops.VHOST_LOG_KEEP_ARCHIVES - 2 + 1
+    assert sysops.prune_vhost_logs("missing1") == 0
+
+
+def test_log_migration_moves_only_the_archives_retention_keeps(account_with_home, vhost_log_root, monkeypatch):
+    monkeypatch.setattr(sysops, "run", lambda args, **kwargs: None)
+    monkeypatch.setattr(sysops.pwd, "getpwnam", lambda name: real_pwd.struct_passwd(
+        (name, "x", os.getuid(), os.getgid(), "", str(account_with_home), "/usr/sbin/nologin")))
+    logs = account_with_home / "logs"
+    logs.mkdir()
+    (logs / "example_com-access.log").write_text("active")
+    for day in range(12):
+        _archive(logs, f"example_com-access.log.09_{day + 1:02d}_2026.gz", age_days=day)
+    sysops.ensure_web_logs("demo1")
+    moved = sorted(p.name for p in (vhost_log_root / "demo1").iterdir())
+    assert len(moved) == 1 + sysops.VHOST_LOG_KEEP_ARCHIVES and "example_com-access.log" in moved
+    # The oldest archives stay in the account's own ~/logs.
+    assert sorted(p.name for p in logs.iterdir()) == ["example_com-access.log.09_11_2026.gz",
+                                                       "example_com-access.log.09_12_2026.gz"]
 
 
 def test_remove_and_rename_vhost_log_dir(vhost_log_root, monkeypatch):

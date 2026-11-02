@@ -30,7 +30,7 @@ from sqlalchemy import select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import AuditLog, FirewallTemporaryBan, PermanentIpBan, utcnow
-from shared.validation import ValidationError, validate_ip_or_cidr
+from shared.validation import NotFoundError, ValidationError, validate_ip_or_cidr
 
 from daemon import audit
 from daemon.procutil import run
@@ -41,7 +41,7 @@ ALLOWED_DIRECTIONS = {"in", "out"}
 
 SERVICE_PRESETS = {
     "web": {"label": "Web hosting", "direction": "in", "rules": [(80, "tcp"), (443, "tcp")]},
-    "mail": {"label": "Secure mail", "direction": "in", "rules": [(25, "tcp"), (465, "tcp"), (587, "tcp"), (993, "tcp")]},
+    "mail": {"label": "Secure mail", "direction": "in", "rules": [(25, "tcp"), (110, "tcp"), (143, "tcp"), (465, "tcp"), (587, "tcp"), (993, "tcp"), (995, "tcp")]},
     "dns": {"label": "Authoritative DNS", "direction": "in", "rules": [(53, "tcp"), (53, "udp")]},
     "ftp": {"label": "FTP control", "direction": "in", "rules": [(21, "tcp")]},
     "mysql": {"label": "Remote MySQL", "direction": "in", "rules": [(3306, "tcp")]},
@@ -366,7 +366,7 @@ def delete_temporary_ban(params: dict) -> dict:
     with write_session() as session:
         row = session.get(FirewallTemporaryBan, ban_id)
         if row is None:
-            raise ValidationError(f"no temporary ban with id {ban_id}")
+            raise NotFoundError(f"no temporary ban with id {ban_id}")
         value = row.value
         if not server_wide_deny_owned_elsewhere(session, value, owner="temporary"):
             # Comment-less delete: a permanent ban added first owns an
@@ -465,7 +465,7 @@ def delete_bypass(params: dict) -> dict:
     current = _parse_bypass_rules(run(["ufw", "show", "added"], timeout=15).stdout)
     target = next((item for item in current if item["bypass_id"] == bypass_id), None)
     if target is None:
-        raise ValidationError(f"no bypass entry with id '{bypass_id}' found")
+        raise NotFoundError(f"no bypass entry with id '{bypass_id}' found")
     comment = BYPASS_COMMENT + (f"-{target['label']}" if target["label"] else "")
     result = run(
         ["ufw", "--force", "delete", "allow", "from", target["address"], "comment", comment],
@@ -527,7 +527,7 @@ def delete_rule(params: dict) -> dict:
     current = _parse_added_rules(run(["ufw", "show", "added"], timeout=15).stdout)
     target = next((r for r in current if r["rule_id"] == rule_id), None)
     if target is None:
-        raise ValidationError(f"no rule with id '{rule_id}' found")
+        raise NotFoundError(f"no rule with id '{rule_id}' found")
 
     if target["direction"] == "in" and target["action"] == "allow" and target["port"] in protected_ports():
         remaining = [
@@ -989,7 +989,7 @@ def transactional_add_rule(params: dict) -> dict:
 def transactional_delete_rule(params: dict) -> dict:
     target = _rule_for_id(str(params["rule_id"]))
     if target is None:
-        raise ValidationError(f"no rule with id '{params['rule_id']}' found")
+        raise NotFoundError(f"no rule with id '{params['rule_id']}' found")
     restore = {
         "action": target["action"], "port": target["port"], "protocol": target["protocol"],
         "direction": target["direction"], "from_addr": target["from"],
@@ -1018,7 +1018,7 @@ def transactional_delete_bypass(params: dict) -> dict:
     entries = _parse_bypass_rules(run(["ufw", "show", "added"], timeout=15).stdout)
     target = next((item for item in entries if item["bypass_id"] == str(params["bypass_id"])), None)
     if target is None:
-        raise ValidationError(f"no bypass entry with id '{params['bypass_id']}' found")
+        raise NotFoundError(f"no bypass entry with id '{params['bypass_id']}' found")
     restore = {"address": target["address"], "label": target["label"]}
     return _start_change(
         "bypass.delete", f"Remove full-access trust for {target['address']}",
@@ -1042,7 +1042,7 @@ def transactional_delete_temporary_ban(params: dict) -> dict:
     with write_session() as session:
         row = session.get(FirewallTemporaryBan, ban_id)
         if row is None:
-            raise ValidationError(f"no temporary ban with id {ban_id}")
+            raise NotFoundError(f"no temporary ban with id {ban_id}")
         remaining = max(1, int((_aware_utc(row.expires_at) - utcnow()).total_seconds() // 60) + 1)
         restore = {
             "value": row.value, "reason": row.reason or "", "banned_by": row.banned_by,

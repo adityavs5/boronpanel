@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from api.rpc import call_daemon
 from api.upload_guard import BoundedUploadRoute
 from shared.database_uploads import database_upload_directory, MAX_SQL_UPLOAD_BYTES, SQL_UPLOAD_PREFIX
-from api.security import Identity, get_identity, require_account_access
+from api.security import Identity, get_identity, require_account_access, require_admin
 
 api_router = APIRouter(route_class=BoundedUploadRoute, prefix="/api/v1/accounts/{username}/databases", tags=["databases"])
 ui_router = APIRouter(route_class=BoundedUploadRoute, prefix="/ui/accounts/{username}/databases", tags=["ui:databases"])
@@ -51,6 +51,10 @@ class ChangeDatabaseUserPasswordBody(BaseModel):
 class RenameDatabaseUserBody(BaseModel):
     new_name: str
     host: str = "localhost"
+
+
+class RestoreRecoveryCopyBody(BaseModel):
+    confirm: bool = False
 
 
 @api_router.get("")
@@ -106,6 +110,29 @@ def import_database(username: str, name: str, file: UploadFile = File(...), iden
     finally:
         try: os.unlink(path)
         except FileNotFoundError: pass
+
+
+@api_router.get("/recovery-copies")
+def list_recovery_copies(username: str, identity: Identity = Depends(get_identity)):
+    # Pre-import copies kept when a failed SQL import could not be rolled
+    # back. Administrator only: restoring or releasing one is a recovery
+    # decision for the server operator, not customer self-service.
+    require_admin(identity)
+    return call_daemon("db.recovery.list", identity, username=username)
+
+
+@api_router.post("/recovery-copies/{copy_id}/restore")
+def restore_recovery_copy(username: str, copy_id: str, body: RestoreRecoveryCopyBody,
+                          identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("db.recovery.restore", identity, username=username, copy_id=copy_id, confirm=body.confirm)
+
+
+@api_router.delete("/recovery-copies/{copy_id}")
+def release_recovery_copy(username: str, copy_id: str, confirm: bool = Query(False),
+                          identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("db.recovery.release", identity, username=username, copy_id=copy_id, confirm=confirm)
 
 
 @api_router.post("/{name}/password")

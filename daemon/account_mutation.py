@@ -19,7 +19,7 @@ def locked(function):
                 raise NotFoundError(f"account '{username}' not found")
             account_id = account.id
         try:
-            with lock(f'account-{account_id}', blocking=False):
+            with lock(f'account-{account_id}', blocking=False, reentrant=True):
                 # Recheck identity after acquisition rather than applying to a
                 # newly created account that reused the original username.
                 with write_session() as session:

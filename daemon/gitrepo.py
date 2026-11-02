@@ -30,7 +30,10 @@ from sqlalchemy import select
 
 from shared.db import write_session
 from shared.models import Account, GitRepo
-from shared.validation import ValidationError, validate_git_repo_name, validate_protected_dir_relative_path, validate_username
+from shared.validation import (
+    ConflictError, NotFoundError, ValidationError, validate_git_repo_name, validate_protected_dir_relative_path,
+    validate_username,
+)
 
 from daemon import account_exec, filemanager, safeio
 from daemon.procutil import run
@@ -68,10 +71,14 @@ class GitRepoError(ValidationError):
     pass
 
 
+class GitRepoNotFoundError(GitRepoError, NotFoundError):
+    """The account or repository does not exist (HTTP 404)."""
+
+
 def _account_or_raise(session, username: str) -> Account:
     account = session.scalar(select(Account).where(Account.username == username))
     if account is None:
-        raise GitRepoError(f"account '{username}' not found")
+        raise GitRepoNotFoundError(f"account '{username}' not found")
     return account
 
 
@@ -105,7 +112,7 @@ def create_repo(params: dict) -> dict:
         account = _account_or_raise(session, username)
         existing = session.scalar(select(GitRepo).where(GitRepo.account_id == account.id, GitRepo.name == name))
         if existing is not None:
-            raise ValidationError(f"repo '{name}' already exists for account '{username}'")
+            raise ConflictError(f"repo '{name}' already exists for account '{username}'")
 
         repo_path = _repo_path(username, name)
         result = run(account_exec.wrap(username, ["git", "init", "--bare", repo_path]), timeout=30)
@@ -118,22 +125,33 @@ def create_repo(params: dict) -> dict:
         return _repo_to_dict(row)
 
 
+DEPLOY_TARGET_OUTSIDE_HOME = "The deploy target must be a folder inside the account's home directory"
+
+
 def _resolve_deploy_target(username: str, relative_path: str) -> tuple[str, str]:
     relative_path = validate_protected_dir_relative_path(relative_path)
-    resolved, home = filemanager._resolve(username, relative_path)
+    # The name pattern allows dots, so "../x" is checked here. A symlink
+    # that leaves the home is caught by the jail check below; both are the
+    # caller's input, not an internal failure.
+    if ".." in relative_path.split("/"):
+        raise GitRepoError(DEPLOY_TARGET_OUTSIDE_HOME)
+    try:
+        resolved, home = filemanager._resolve(username, relative_path)
+    except filemanager.FileManagerError:
+        raise GitRepoError(DEPLOY_TARGET_OUTSIDE_HOME) from None
     return resolved, os.path.relpath(resolved, home)
 
 
 def set_deploy_target(params: dict) -> dict:
     username = validate_username(params["username"])
     name = validate_git_repo_name(params["name"])
-    resolved_target, normalized_relative = _resolve_deploy_target(username, params["deploy_target"])
 
     with write_session() as session:
         account = _account_or_raise(session, username)
         row = session.scalar(select(GitRepo).where(GitRepo.account_id == account.id, GitRepo.name == name))
         if row is None:
-            raise GitRepoError(f"repo '{name}' not found for account '{username}'")
+            raise GitRepoNotFoundError(f"repo '{name}' not found for account '{username}'")
+    resolved_target, normalized_relative = _resolve_deploy_target(username, params["deploy_target"])
 
     pw = pwd.getpwnam(username)
     # Symlink-safe create+chown. _resolve() jail-checked the target, but that
@@ -176,7 +194,7 @@ def get_push_log(params: dict) -> dict:
         account = _account_or_raise(session, username)
         row = session.scalar(select(GitRepo).where(GitRepo.account_id == account.id, GitRepo.name == name))
         if row is None:
-            raise GitRepoError(f"repo '{name}' not found for account '{username}'")
+            raise GitRepoNotFoundError(f"repo '{name}' not found for account '{username}'")
 
     directory = safeio.open_dir_beneath(_account_home(username), f"{REPOS_SUBDIR}/{name}.git")
     try:
@@ -210,7 +228,7 @@ def delete_repo(params: dict) -> dict:
         account = _account_or_raise(session, username)
         row = session.scalar(select(GitRepo).where(GitRepo.account_id == account.id, GitRepo.name == name))
         if row is None:
-            raise GitRepoError(f"repo '{name}' not found for account '{username}'")
+            raise GitRepoNotFoundError(f"repo '{name}' not found for account '{username}'")
         import shutil
         directory = safeio.open_dir_beneath(_account_home(username), REPOS_SUBDIR)
         try:

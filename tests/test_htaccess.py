@@ -192,3 +192,156 @@ def test_access_status_reports_for_owned_domain(isolated_db, tmp_path, monkeypat
     (docroot / ".htaccess").write_text("Order deny,allow\nDeny from all\nAllow from 198.51.100.4\n")
     result = htaccess.access_status({"username": "owner1", "domain": "example.test"})
     assert result["access_rules"] == [{"directory": "/", "mode": "ip", "allow": ["198.51.100.4"], "deny": ["*"]}]
+    assert result["access_scan_complete"] is True and result["access_scan_reused_previous"] is False
+
+
+# --- <Files>/<Limit> exceptions (round 1 web still_open) --------------------
+
+ASSETS_ONLY = (
+    "Order deny,allow\nDeny from all\n"
+    '<FilesMatch "\\.(css|js|png|jpe?g|gif)$">\n  Allow from all\n</FilesMatch>\n'
+)
+
+
+def _contexts(tmp_path, files: dict) -> list[tuple]:
+    root = tmp_path / "public_html"
+    for relative, text in files.items():
+        directory = root / relative if relative else root
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / ".htaccess").write_text(text)
+    scan = htaccess.scan_access_rules(str(root))
+    return [(c["relative_path"], c["mode"], c.get("allow"), c.get("deny"))
+            for c in htaccess.effective_access_contexts(scan)]
+
+
+def test_files_allow_exception_keeps_those_files_reachable(tmp_path):
+    """Hard rule: a top-level deny with <FilesMatch> 'Allow from all'
+    exceptions used to become a whole-directory 403, breaking site assets
+    on upgrade. Per-file access cannot be expressed in an OLS directory
+    context, so the directory keeps what the exceptions allow."""
+    parsed = htaccess.parse_access_file(ASSETS_ONLY)
+    assert parsed["rule"] == {"mode": "deny"}
+    assert parsed["grants"] == [{"mode": "allow"}]
+    assert [issue["line"] for issue in parsed["unsupported"]] == [4, 0]
+    assert parsed["unsupported"][-1]["directive"].startswith("access rules inside <Files>")
+    assert _contexts(tmp_path, {"assets": ASSETS_ONLY}) == []
+
+
+def test_files_exception_reaches_denied_subdirectories_and_survives_a_denying_parent(tmp_path):
+    """Apache applies a .htaccess <Files> section to the whole subtree, after
+    the directory sections, so neither a deeper nor an enclosing deny may
+    refuse the files it allows."""
+    assert _contexts(tmp_path, {"images": ASSETS_ONLY, "images/private": "Require all denied\n"}) == []
+    contexts = _contexts(tmp_path / "second", {
+        "private": "Require all denied\n",
+        "private/public": "<Files index.html>\n  Require all granted\n</Files>\n",
+    })
+    assert contexts == [("private", "deny", None, None), ("private/public", "allow", None, None)]
+
+
+def test_report_names_every_directory_a_parent_grant_relaxed(tmp_path):
+    """A root <FilesMatch> grant also lifts a deeper directory's own
+    restriction; that directory must be reported as not enforced, not only
+    the .htaccess holding the grant."""
+    root = tmp_path / "public_html"
+    (root / "wp-admin").mkdir(parents=True)
+    (root / ".htaccess").write_text('<FilesMatch "\\.(css|js)$">\n  Require all granted\n</FilesMatch>\n')
+    (root / "wp-admin" / ".htaccess").write_text("Require ip 192.0.2.1\n")
+    (root / "kept").mkdir()
+    (root / "kept" / ".htaccess").write_text("Require all denied\n")
+    (root / "kept" / "open").mkdir()
+    (root / "kept" / "open" / ".htaccess").write_text("Require all granted\n")
+    report = htaccess._public_access_report(htaccess.scan_access_rules(str(root)))
+    relaxed = [issue["path"] for issue in report["unsupported_access_directives"]
+               if issue["directive"] == htaccess._RELAXED_NOTE]
+    assert relaxed == ["kept/.htaccess", "wp-admin/.htaccess"]
+    # Both restrictions are lifted, so no context is rendered at all.
+    assert report["access_rules"] == []
+
+
+def test_ip_exceptions_widen_the_directory_rule_instead_of_opening_it(tmp_path):
+    contexts = _contexts(tmp_path, {
+        "admin": "Require ip 10.0.0.0/8\n<Files status.php>\n  Require ip 192.0.2.1\n</Files>\n",
+    })
+    assert contexts == [("admin", "ip", ["10.0.0.0/8", "192.0.2.1"], ["*"])]
+
+
+def test_limit_section_joins_the_surrounding_directives(tmp_path):
+    """<Limit GET> directives add to the top-level ones for that method:
+    'Deny from all' + '<Limit GET> Allow from X' admits X (for GET)."""
+    parsed = htaccess.parse_access_file(
+        "Order deny,allow\nDeny from all\n<Limit GET>\nAllow from 192.0.2.7\n</Limit>\n")
+    assert parsed["grants"] == [{"mode": "ip", "allow": ["192.0.2.7"], "deny": ["*"]}]
+    assert _contexts(tmp_path, {"api": "Order deny,allow\nDeny from all\n<Limit GET>\nAllow from 192.0.2.7\n</Limit>\n"}) == [
+        ("api", "ip", ["192.0.2.7"], ["*"])]
+
+
+def test_sections_that_only_restrict_are_reported_not_applied(tmp_path):
+    parsed = htaccess.parse_access_file('<Files ".env">\nRequire all denied\n</Files>\nRequire ip 10.0.0.0/8\n')
+    assert parsed["rule"] == {"mode": "ip", "allow": ["10.0.0.0/8"], "deny": ["*"]}
+    assert parsed["grants"] == []
+    assert [issue["line"] for issue in parsed["unsupported"]] == [2]
+
+
+def test_allow_in_an_inexpressible_directory_relaxes_the_nearest_context(tmp_path):
+    contexts = _contexts(tmp_path, {"private": "Require all denied\n", "private/my files": "Require all granted\n"})
+    assert contexts == []
+
+
+# --- Last complete scan (round 1 web still_open) -----------------------------
+
+
+def _bounded_tree(tmp_path):
+    root = tmp_path / "home" / "owner1" / "public_html"
+    for name in ("a", "m", "z"):
+        (root / name).mkdir(parents=True)
+        (root / name / ".htaccess").write_text("Require all denied\n")
+    return root
+
+
+def test_bounded_scan_keeps_rules_found_by_the_last_complete_scan(isolated_db, tmp_path, monkeypatch):
+    """A scan that runs out of budget used to drop the rules it did not
+    reach, so enforcement changed between renders."""
+    root = _bounded_tree(tmp_path)
+    first = htaccess.account_access_scans(7, [str(root)])[str(root)]
+    assert first["complete"] is True and set(first["rules"]) == {"a", "m", "z"}
+
+    monkeypatch.setattr(htaccess, "ACCESS_SCAN_MAX_DIRECTORIES", 2)
+    bounded = htaccess.account_access_scans(7, [str(root)])[str(root)]
+    assert bounded["complete"] is False
+    assert set(bounded["rules"]) == {"a", "m", "z"}
+    report = htaccess._public_access_report(bounded)
+    assert report["access_scan_complete"] is False and report["access_scan_reused_previous"] is True
+    assert [rule["directory"] for rule in report["access_rules"]] == ["/a", "/m", "/z"]
+
+
+def test_complete_scan_replaces_kept_rules_and_deleted_directories_are_not_reused(isolated_db, tmp_path, monkeypatch):
+    root = _bounded_tree(tmp_path)
+    htaccess.account_access_scans(7, [str(root)])
+    (root / "z" / ".htaccess").unlink()
+    assert set(htaccess.account_access_scans(7, [str(root)])[str(root)]["rules"]) == {"a", "m"}
+    monkeypatch.setattr(htaccess, "ACCESS_SCAN_MAX_DIRECTORIES", 2)
+    assert set(htaccess.account_access_scans(7, [str(root)])[str(root)]["rules"]) == {"a", "m"}
+    monkeypatch.setattr(htaccess, "ACCESS_SCAN_MAX_DIRECTORIES", 20000)
+    htaccess.account_access_scans(7, [str(root)])
+    import shutil
+    shutil.rmtree(root / "m")
+    monkeypatch.setattr(htaccess, "ACCESS_SCAN_MAX_DIRECTORIES", 2)
+    assert set(htaccess.account_access_scans(7, [str(root)])[str(root)]["rules"]) == {"a"}
+
+
+def test_kept_scans_are_private_per_account_and_forgotten(isolated_db, tmp_path, monkeypatch):
+    root = _bounded_tree(tmp_path)
+    htaccess.account_access_scans(7, [str(root)])
+    path = htaccess._scan_cache_path(7)
+    assert path.is_file() and (path.stat().st_mode & 0o777) == 0o600
+    monkeypatch.setattr(htaccess, "ACCESS_SCAN_MAX_DIRECTORIES", 2)
+    # Another account's bounded scan of the same path has nothing to reuse.
+    assert set(htaccess.account_access_scans(8, [str(root)])[str(root)]["rules"]) == {"a"}
+    # Pruning drops document roots the account no longer has.
+    other = tmp_path / "other"
+    other.mkdir()
+    htaccess.account_access_scans(7, [str(other)], prune=True)
+    assert set(htaccess._load_scan_cache(7)) == {str(other.resolve())}
+    htaccess.forget_account_scans(7)
+    assert not path.exists()

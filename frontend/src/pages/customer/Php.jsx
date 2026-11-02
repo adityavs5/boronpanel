@@ -35,6 +35,14 @@ const DIRECTIVE_COPY = {
   'date.timezone': { label: 'Default timezone', help: 'IANA timezone name, e.g. Asia/Kolkata or UTC.' },
 }
 
+// "256M" / "1G" / "524288K" in MB; null when it is not a plain size (-1).
+function sizeMb(value) {
+  const match = String(value ?? '').trim().match(/^(\d+)\s*([KMG]?)$/i)
+  if (!match) return null
+  const amount = Number(match[1]), unit = match[2].toUpperCase()
+  return unit === 'G' ? amount * 1024 : unit === 'K' ? amount / 1024 : unit === 'M' ? amount : amount / 1048576
+}
+
 const ERROR_REPORTING_PRESETS = [
   'E_ALL & ~E_DEPRECATED & ~E_STRICT',
   'E_ALL',
@@ -196,6 +204,14 @@ function SettingsCard({ username }) {
     return d.type === 'bool' ? (raw === true || raw === 'On') : String(raw)
   }
   const dirty = directives.filter((d) => effective(d) !== serverValue(d))
+  // memory_limit cannot exceed the account's memory limit (null: no cap
+  // beyond the directive's own bound). An unchanged value is still accepted.
+  const memoryCap = data?.memory_limit_max_mb ?? null
+  const memoryDirective = directives.find((d) => d.name === 'memory_limit')
+  const memoryValue = memoryDirective ? effective(memoryDirective) : null
+  const memoryTooHigh = memoryCap != null && memoryDirective && memoryValue !== serverValue(memoryDirective)
+    && (sizeMb(memoryValue) == null ? String(memoryValue).trim() === '-1' : sizeMb(memoryValue) > memoryCap)
+  const memoryError = memoryTooHigh ? `This account's memory limit is ${memoryCap}M: PHP would be stopped by the account limit before reaching a higher value. Enter ${memoryCap}M or less.` : undefined
 
   const saveMut = useMutation({
     mutationFn: () => {
@@ -254,9 +270,9 @@ function SettingsCard({ username }) {
           <ErrorState error={error} onRetry={refetch} />
         ) : (
           <form
-            onSubmit={(e) => { e.preventDefault(); if (dirty.length) saveMut.mutate() }}
+            onSubmit={(e) => { e.preventDefault(); if (dirty.length && !memoryTooHigh) saveMut.mutate() }}
           >
-            <div className="mb-6 rounded-btn border border-border bg-muted/20 p-4"><FormField label="PHP limits template" htmlFor="php-limit-preset" hint="Choose a starting point, review the values, then save. Custom lets you edit every field."><Select id="php-limit-preset" value={preset} onChange={e=>{const id=e.target.value;setPreset(id);const chosen=data?.limit_presets?.find(p=>p.id===id);if(chosen)setForm(f=>({...f,...Object.fromEntries(Object.entries(chosen.directives).map(([k,v])=>[k,String(v)]))}))}}><option value="custom">Custom (default)</option>{(data?.limit_presets||[]).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</Select></FormField>{preset!=='custom'&&<p className="mt-2 text-sm text-muted-foreground">{data?.limit_presets?.find(p=>p.id===preset)?.description}</p>}<p className="mt-2 text-xs text-muted-foreground">Templates adjust resource limits only. Your timezone and error settings stay as configured. Account resource limits still apply.</p></div>
+            <div className="mb-6 rounded-btn border border-border bg-muted/20 p-4"><FormField label="PHP limits template" htmlFor="php-limit-preset" hint="Choose a starting point, review the values, then save. Custom lets you edit every field."><Select id="php-limit-preset" value={preset} onChange={e=>{const id=e.target.value;setPreset(id);const chosen=data?.limit_presets?.find(p=>p.id===id);if(chosen)setForm(f=>({...f,...Object.fromEntries(Object.entries(chosen.directives).map(([k,v])=>[k,k==='memory_limit'&&memoryCap!=null&&sizeMb(v)>memoryCap?`${memoryCap}M`:String(v)]))}))}}><option value="custom">Custom (default)</option>{(data?.limit_presets||[]).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</Select></FormField>{preset!=='custom'&&<p className="mt-2 text-sm text-muted-foreground">{data?.limit_presets?.find(p=>p.id===preset)?.description}</p>}{preset!=='custom'&&memoryCap!=null&&sizeMb(data?.limit_presets?.find(p=>p.id===preset)?.directives?.memory_limit)>memoryCap&&<p className="mt-2 text-sm text-foreground">The memory limit is set to {memoryCap}M, this account's memory limit, instead of the template's {data.limit_presets.find(p=>p.id===preset).directives.memory_limit}.</p>}<p className="mt-2 text-xs text-muted-foreground">Templates adjust resource limits only. Your timezone and error settings stay as configured. Account resource limits still apply.</p></div>
             <div className="grid grid-cols-1 gap-x-8 gap-y-5 sm:grid-cols-2">
               {directives.map((d) => (
                 <DirectiveField
@@ -264,12 +280,14 @@ function SettingsCard({ username }) {
                   descriptor={d}
                   value={effective(d)}
                   overridden={d.value !== null && d.value !== undefined}
+                  capMb={d.name === 'memory_limit' ? memoryCap : null}
+                  error={d.name === 'memory_limit' ? memoryError : undefined}
                   onChange={(v) => {setPreset('custom');setForm((f) => ({ ...f, [d.name]: v }))}}
                 />
               ))}
             </div>
             <div className="mt-6 flex items-center gap-3 border-t border-border pt-4">
-              <Button type="submit" loading={saveMut.isPending} disabled={!dirty.length}>
+              <Button type="submit" loading={saveMut.isPending} disabled={!dirty.length || memoryTooHigh}>
                 Save changes
               </Button>
               {dirty.length > 0 && (
@@ -301,7 +319,7 @@ function SettingsCard({ username }) {
 const LEGACY_NAMES = new Set(['memory_limit', 'upload_max_filesize', 'post_max_size', 'max_execution_time', 'display_errors', 'error_reporting'])
 const isLegacy = (name) => LEGACY_NAMES.has(name)
 
-function DirectiveField({ descriptor: d, value, overridden, onChange }) {
+function DirectiveField({ descriptor: d, value, overridden, capMb, error, onChange }) {
   const copy = DIRECTIVE_COPY[d.name] || { label: d.name, help: '' }
   const label = (
     <span className="inline-flex items-center gap-2">
@@ -361,7 +379,8 @@ function DirectiveField({ descriptor: d, value, overridden, onChange }) {
     <FormField
       label={label}
       htmlFor={d.name}
-      hint={d.type === 'size' ? `${copy.help} Up to ${d.max_mb}M.` : copy.help}
+      error={error}
+      hint={d.type === 'size' ? (capMb != null && capMb < d.max_mb ? `${copy.help} Up to ${capMb}M, this account's memory limit.` : `${copy.help} Up to ${d.max_mb}M.`) : copy.help}
     >
       <Input
         id={d.name}

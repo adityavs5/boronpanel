@@ -30,13 +30,17 @@ from sqlalchemy import select
 
 from shared.db import write_session
 from shared.models import PermanentIpBan
-from shared.validation import ValidationError, validate_ip_or_cidr
+from shared.validation import NotFoundError, ValidationError, validate_ip_or_cidr
 
 from daemon.procutil import run
 
 
 class IpBanError(ValidationError):
     pass
+
+
+class IpBanNotFoundError(IpBanError, NotFoundError):
+    """No permanent ban has the requested id (HTTP 404)."""
 
 
 def _validate_actor(actor: str) -> str:
@@ -118,7 +122,7 @@ def unban_ip(params: dict) -> dict:
     with write_session() as session:
         row = session.get(PermanentIpBan, ban_id)
         if row is None:
-            raise IpBanError(f"no permanent ban with id {ban_id}")
+            raise IpBanNotFoundError(f"no permanent ban with id {ban_id}")
         value = row.value
         from daemon.firewall import server_wide_deny_owned_elsewhere
         # An active temporary ban for the same value enforces the identical

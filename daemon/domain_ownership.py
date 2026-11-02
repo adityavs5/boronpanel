@@ -92,6 +92,13 @@ def infrastructure_hostnames(session=None) -> set[str]:
     """Hostnames this server answers for on its own behalf."""
     names = {settings.panel_hostname, settings.webmail_hostname, settings.pma_hostname,
              settings.mail_hostname}
+    # A phpMyAdmin hostname held back while the package installs is saved
+    # only when it is published; a customer claiming it meanwhile would make
+    # that publication fail.
+    from daemon import pma
+    pending = pma.provision_state()
+    if pending.get("status") == "installing":
+        names.add(pending.get("hostname"))
     if session is not None:
         row = session.get(DnsServerSettings, 1)
         names.update((row.local_nameservers or []) if row else [])

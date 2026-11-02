@@ -12,21 +12,30 @@ orchestrates calls into those, rather than re-implementing any of them.
 from __future__ import annotations
 
 import logging
+import time
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from shared.db import write_session
 from shared.models import Account, Plan, ResourcePolicy
 from shared.validation import ConflictError, NotFoundError, ValidationError, validate_resource_limit, validate_username
 
-from daemon import handlers_account, inode_quotas, redisacct, resource_manager, sysops, usage_alerts
-from daemon.database_operations import serialized
+from daemon import cgroups, handlers_account, inode_quotas, mutation_locks, redisacct, resource_manager, sysops, usage_alerts
+from daemon.database_operations import mutation_lock, serialized
 
 logger = logging.getLogger("borond.plans")
 
 _LIMIT_FIELDS = (
     "bandwidth_limit_mb", "database_limit", "email_account_limit",
     "subdomain_limit", "ftp_account_limit", "app_limit",
+)
+# Each legacy column (the Plan/Account cpu_pct, mem_mb, io_mb and pids_max)
+# and the policy fields that enforce the same limit.
+_LEGACY_POLICY_FIELDS = (
+    ("cpu_pct", ("cpu_cores",)),
+    ("mem_mb", ("memory_max_mb",)),
+    ("io_mb", ("io_read_bps", "io_write_bps")),
+    ("pids_max", ("nproc",)),
 )
 
 
@@ -76,23 +85,60 @@ def _plan_to_dict(plan: Plan, policy: ResourcePolicy | None = None) -> dict:
     }
     if policy is not None:
         result.update({field: getattr(policy, field) for field in resource_manager.POLICY_FIELDS})
+        # The policy is what accounts on the plan enforce; the legacy columns
+        # only mirror it. Plans saved before 3.3.2 could disagree (cpu_pct 25
+        # next to cpu_cores 1.0), which put accounts on a quarter core.
+        result["cpu_pct"], result["mem_mb"], result["io_mb"], result["pids_max"] = _legacy_limits(result)
     return result
 
 
 def _resource_values(params: dict, *, cpu_pct: int, mem_mb: int, io_mb: int, pids_max: int) -> dict:
+    memory_max = params.get("memory_max_mb", mem_mb)
+    try:
+        memory_high = max(64, int(float(memory_max) * .9))
+    except (TypeError, ValueError):
+        memory_high = None  # Unlimited (or invalid, which validate_policy reports)
+    read_bps = params.get("io_read_bps", io_mb * 1024 * 1024)
     raw = {
         "cpu_cores": params.get("cpu_cores", cpu_pct / 100),
         "cpu_weight": params.get("cpu_weight", 100),
-        "memory_high_mb": params.get("memory_high_mb", max(64, int(mem_mb * .9))),
-        "memory_max_mb": params.get("memory_max_mb", mem_mb),
-        "io_read_bps": params.get("io_read_bps", io_mb * 1024 * 1024),
-        "io_write_bps": params.get("io_write_bps", io_mb * 1024 * 1024),
+        "memory_high_mb": params.get("memory_high_mb", memory_high),
+        "memory_max_mb": memory_max,
+        "io_read_bps": read_bps,
+        "io_write_bps": params.get("io_write_bps", read_bps),
         "io_read_iops": params.get("io_read_iops", resource_manager.DEFAULT_READ_IOPS),
         "io_write_iops": params.get("io_write_iops", resource_manager.DEFAULT_WRITE_IOPS),
         "nproc": params.get("nproc", pids_max),
         "entry_processes": params.get("entry_processes", 20),
     }
     return resource_manager.validate_policy(raw)
+
+
+def _legacy_only_edits(params: dict, current: dict) -> dict:
+    """Policy values a plan edit sets through a legacy field alone.
+
+    An edit of only cpu_pct (or mem_mb, io_mb, pids_max) used to change the
+    column and leave the enforced policy as it was, so the edit had no
+    effect on any account. It now sets the policy fields of that limit; an
+    edit that names a policy field itself keeps that value.
+    """
+    derived = {}
+    for legacy, fields in _LEGACY_POLICY_FIELDS:
+        if legacy not in params or any(field in params for field in fields):
+            continue
+        value = int(params[legacy])
+        if legacy == "cpu_pct":
+            derived["cpu_cores"] = value / 100
+        elif legacy == "mem_mb":
+            derived["memory_max_mb"] = value
+            high = current.get("memory_high_mb")
+            if "memory_high_mb" not in params and high is not None and high > value:
+                derived["memory_high_mb"] = max(64, int(value * .9))
+        elif legacy == "io_mb":
+            derived["io_read_bps"] = derived["io_write_bps"] = value * 1024 * 1024
+        else:
+            derived["nproc"] = value
+    return derived
 
 
 def create_plan(params: dict) -> dict:
@@ -111,10 +157,14 @@ def create_plan(params: dict) -> dict:
     )
     limit_kwargs = {f: validate_resource_limit(params.get(f), f) for f in _LIMIT_FIELDS}
     redis_enabled = bool(params.get("redis_enabled", False))
+    values = _resource_values(params, cpu_pct=cpu_pct, mem_mb=mem_mb, io_mb=io_mb, pids_max=pids_max)
+    cpu_pct, mem_mb, io_mb, pids_max = _legacy_limits(
+        {"cpu_pct": cpu_pct, "mem_mb": mem_mb, "io_mb": io_mb, "pids_max": pids_max, **values}
+    )
 
     with write_session() as session:
         if session.scalar(select(Plan).where(Plan.name == name)) is not None:
-            raise ValidationError(f"a plan named '{name}' already exists")
+            raise ConflictError(f"a plan named '{name}' already exists")
         plan = Plan(
             name=name, cpu_pct=cpu_pct, mem_mb=mem_mb, io_mb=io_mb, pids_max=pids_max,
             quota_soft_mb=quota_soft_mb, quota_hard_mb=quota_hard_mb,
@@ -123,20 +173,27 @@ def create_plan(params: dict) -> dict:
         )
         session.add(plan)
         session.flush()
-        policy = ResourcePolicy(scope_type="plan", scope_id=plan.id, **_resource_values(
-            params, cpu_pct=cpu_pct, mem_mb=mem_mb, io_mb=io_mb, pids_max=pids_max,
-        ))
+        policy = ResourcePolicy(scope_type="plan", scope_id=plan.id, **values)
         session.add(policy)
         session.flush()
         return _plan_to_dict(plan, policy)
+
+
+def _account_counts(session) -> dict[int, int]:
+    """Live (non-terminated) accounts per plan: the ones delete_plan refuses
+    over, so the delete dialog can warn first."""
+    query = (select(Account.plan_id, func.count()).where(Account.plan_id.is_not(None), Account.status != "terminated")
+             .group_by(Account.plan_id))
+    return dict(session.execute(query).all())
 
 
 def list_plans(params: dict) -> dict:
     with write_session() as session:
         plans = session.scalars(select(Plan).order_by(Plan.name)).all()
         policies = {row.scope_id: row for row in session.scalars(select(ResourcePolicy).where(ResourcePolicy.scope_type == "plan")).all()}
+        counts = _account_counts(session)
         return {
-            "plans": [_plan_to_dict(p, policies.get(p.id)) for p in plans],
+            "plans": [{**_plan_to_dict(p, policies.get(p.id)), "account_count": counts.get(p.id, 0)} for p in plans],
             "host_cpu_cores": resource_manager.available_cpu_cores(),
         }
 
@@ -151,10 +208,12 @@ def get_plan(params: dict) -> dict:
         return _plan_to_dict(plan, policy)
 
 
-@serialized
 def update_plan(params: dict) -> dict:
     plan_id = int(params["plan_id"])
-    with write_session() as session:
+    # Only the plan's own rows are written under the database mutation lock.
+    # plan.apply holds it while it reads a plan and assigns it to an account,
+    # so every account is either listed below or applied with the new values.
+    with mutation_lock(), write_session() as session:
         plan = session.get(Plan, plan_id)
         if plan is None:
             raise NotFoundError(f"plan {plan_id} not found")
@@ -162,7 +221,7 @@ def update_plan(params: dict) -> dict:
         if "name" in params:
             new_name = _validate_name(params["name"])
             if new_name != plan.name and session.scalar(select(Plan).where(Plan.name == new_name)) is not None:
-                raise ValidationError(f"a plan named '{new_name}' already exists")
+                raise ConflictError(f"a plan named '{new_name}' already exists")
             plan.name = new_name
 
         cpu_pct = int(params.get("cpu_pct", plan.cpu_pct))
@@ -170,7 +229,6 @@ def update_plan(params: dict) -> dict:
         io_mb = int(params.get("io_mb", plan.io_mb))
         pids_max = int(params.get("pids_max", plan.pids_max))
         handlers_account._validate_limits(cpu_pct, mem_mb, io_mb, pids_max)
-        plan.cpu_pct, plan.mem_mb, plan.io_mb, plan.pids_max = cpu_pct, mem_mb, io_mb, pids_max
 
         quota_soft_mb, quota_hard_mb = _validate_quota(
             params.get("quota_soft_mb", plan.quota_soft_mb), params.get("quota_hard_mb", plan.quota_hard_mb)
@@ -195,8 +253,12 @@ def update_plan(params: dict) -> dict:
         ))
         resource_input = ({field: getattr(policy, field) for field in resource_manager.POLICY_FIELDS}
                           if policy is not None else {})
+        resource_input.update(_legacy_only_edits(params, resource_input))
         resource_input.update(params)
         values = _resource_values(resource_input, cpu_pct=cpu_pct, mem_mb=mem_mb, io_mb=io_mb, pids_max=pids_max)
+        plan.cpu_pct, plan.mem_mb, plan.io_mb, plan.pids_max = _legacy_limits(
+            {"cpu_pct": cpu_pct, "mem_mb": mem_mb, "io_mb": io_mb, "pids_max": pids_max, **values}
+        )
         if policy is None:
             policy = ResourcePolicy(scope_type="plan", scope_id=plan.id)
             session.add(policy)
@@ -214,15 +276,26 @@ def update_plan(params: dict) -> dict:
     # only the cgroup policy. Quota, inode, usage and Redis settings used to
     # stay at the values copied when the plan was first applied. Per-account
     # limit overrides (account.set_limits) are kept.
+    #
+    # Each account is updated on its own, under its own short hold of the
+    # lock, like one plan.apply. Holding it across the whole loop made every
+    # other database operation wait (and fail with BusyError after 30 s) while
+    # a large plan propagated. The loop waits for the lock for at most
+    # REQUEST_WAIT_SECONDS in total, so a long backup cannot hold the request
+    # once per account; accounts it could not reach are reported.
     failures = []
+    updated = 0
+    deadline = time.monotonic() + mutation_locks.REQUEST_WAIT_SECONDS
     for username in assigned:
         try:
-            _apply_to_account(username, plan_id, redis=redis_changed)
+            with mutation_lock(timeout=max(0.0, deadline - time.monotonic())):
+                if _apply_to_account(username, plan_id, redis=redis_changed, propagating=True) is not None:
+                    updated += 1
         except Exception as exc:  # noqa: BLE001 - report, keep updating the other accounts
             logger.exception("could not propagate plan %s to %s", plan_id, username)
             failures.append({"username": username, "error": str(exc) if isinstance(exc, ValidationError)
                              else "internal failure; see the daemon log"})
-    result["accounts_updated"] = len(assigned) - len(failures)
+    result["accounts_updated"] = updated
     result["propagation_failures"] = failures
     return result
 
@@ -276,28 +349,48 @@ def apply_plan(params: dict) -> dict:
 
 
 def _legacy_limits(plan_values: dict) -> tuple[int, int, int, int]:
-    """Account columns that mirror what the plan's policy enforces.
+    """Legacy columns (cpu_pct, mem_mb, io_mb, pids_max) mirroring a policy.
 
-    Backups, restores and the no-policy fallback read these columns, so they
-    should describe the enforced cpu/memory/IO/process values (the policy),
-    not the plan's separate legacy defaults (25%/512 MB unless edited).
-    Values a column cannot express (Unlimited, out of range) keep the plan's
-    legacy value.
+    Backups, restores, the no-policy fallback and a new account's starting
+    limits (account_seed) read these columns, so they describe the enforced
+    cpu/memory/IO/process values (the policy), not the plan's separate
+    legacy defaults (25%/512 MB unless edited). Each value a column cannot
+    express (Unlimited, out of its range) keeps the given legacy value; CPU
+    above this server's capacity is recorded as the capacity, which is what
+    the slice receives.
     """
-    legacy = (plan_values["cpu_pct"], plan_values["mem_mb"], plan_values["io_mb"], plan_values["pids_max"])
+    neutral = {"cpu_pct": cgroups.DEFAULT_CPU_PCT, "mem_mb": cgroups.DEFAULT_MEM_MB,
+               "io_mb": cgroups.DEFAULT_IO_MB, "pids_max": cgroups.DEFAULT_PIDS_MAX}
     cpu, memory, read_bps, nproc = (plan_values.get(field) for field in
                                     ("cpu_cores", "memory_max_mb", "io_read_bps", "nproc"))
-    candidate = (
-        legacy[0] if cpu is None else round(cpu * 100),
-        legacy[1] if memory is None else int(memory),
-        legacy[2] if read_bps is None else max(1, round(read_bps / 1048576)),
-        legacy[3] if nproc is None else int(nproc),
-    )
-    try:
-        handlers_account._validate_limits(*candidate)
-    except ValidationError:
-        return legacy
-    return candidate
+    derived = {
+        "cpu_pct": None if cpu is None else round(min(float(cpu), resource_manager.available_cpu_cores()) * 100),
+        "mem_mb": None if memory is None else int(memory),
+        "io_mb": None if read_bps is None else max(1, round(read_bps / 1048576)),
+        "pids_max": None if nproc is None else int(nproc),
+    }
+    result = []
+    for column in ("cpu_pct", "mem_mb", "io_mb", "pids_max"):
+        value = derived[column]
+        if value is not None:
+            try:
+                handlers_account._validate_limits(**{**neutral, column: value})
+            except ValidationError:
+                value = None
+        result.append(plan_values[column] if value is None else value)
+    return tuple(result)
+
+
+def account_seed(session, plan: Plan) -> dict:
+    """A new account's starting limits on ``plan`` (handlers_account.plan_seed)."""
+    policy = session.scalar(select(ResourcePolicy).where(
+        ResourcePolicy.scope_type == "plan", ResourcePolicy.scope_id == plan.id,
+    ))
+    values = _plan_to_dict(plan, policy)
+    return {field: values[field] for field in (
+        "quota_soft_mb", "quota_hard_mb", "cpu_pct", "mem_mb", "io_mb", "pids_max",
+        "inode_soft_limit", "inode_hard_limit",
+    )}
 
 
 def _sync_redis(username: str, enabled: bool) -> None:
@@ -312,16 +405,23 @@ def _sync_redis(username: str, enabled: bool) -> None:
         redisacct.disable_redis({"username": username})
 
 
-def _apply_to_account(username: str, plan_id: int, *, reset_override: bool = False, redis: bool = True) -> dict:
+def _apply_to_account(username: str, plan_id: int, *, reset_override: bool = False, redis: bool = True,
+                      propagating: bool = False) -> dict | None:
     """Make one account match a plan (plan.apply, and every plan.update).
 
     reset_override: an explicit plan.apply resets the account to the
     package, dropping a per-account limits override; propagation of a plan
     edit keeps it. redis: whether to reconcile Redis (propagation does so
     only when the plan's Redis setting changed, to avoid restarts).
+    propagating: a plan.update pass; an account that left the plan (or was
+    terminated) since it was listed is skipped and None returned, instead
+    of being moved back onto the plan.
     """
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
+        if propagating and (account is None or account.plan_id != plan_id
+                            or account.status not in ("active", "suspended")):
+            return None
         if account is None:
             raise NotFoundError(f"account '{username}' not found")
         if account.status not in ("active", "suspended"):
@@ -350,6 +450,9 @@ def _apply_to_account(username: str, plan_id: int, *, reset_override: bool = Fal
             ))
             if override is not None:
                 session.delete(override)
+        # setquota writes the inode limits with the block limits; omitting
+        # them turned an enforced inode limit off on every plan apply.
+        inode_soft, inode_hard = inode_quotas.in_force(account)
         session.flush()
         account_snapshot = account
 
@@ -363,7 +466,8 @@ def _apply_to_account(username: str, plan_id: int, *, reset_override: bool = Fal
     # External side effects: cgroups, quota, Redis.
     for hook in handlers_account.LIMITS_HOOKS:
         hook(account_snapshot)
-    sysops.set_quota(username, plan_values["quota_soft_mb"], plan_values["quota_hard_mb"])
+    sysops.set_quota(username, plan_values["quota_soft_mb"], plan_values["quota_hard_mb"],
+                     inode_soft=inode_soft, inode_hard=inode_hard)
 
     if redis:
         _sync_redis(username, bool(plan_values["redis_enabled"]))

@@ -214,3 +214,38 @@ def test_reconcile_script_reports_errors(monkeypatch):
     assert module.main([]) == 0
     seen.clear()
     assert module.main(["--recheck-active"]) == 1
+
+
+def test_public_lookup_is_short_cached_and_bounded(monkeypatch):
+    """Readiness queries public DNS on every page load: answers are reused
+    briefly, failures for a shorter time, and a passed deadline queries nothing."""
+    import time
+
+    monkeypatch.setattr(mld, "_public_cache", {})
+    answers = {("example.test", "MX"): ("ok", ["10 mail.example.test."])}
+    queried = []
+
+    def query(name, rtype):
+        queried.append((name, rtype))
+        return answers.get((name, rtype), ("error", []))
+
+    monkeypatch.setattr(mld, "_public_query", query)
+    assert mld.public_lookup("Example.Test.", "mx") == ("ok", ["10 mail.example.test."])
+    assert mld.public_lookup("example.test", "MX") == ("ok", ["10 mail.example.test."])
+    assert queried == [("example.test", "MX")]
+    assert mld.public_lookup("down.example", "TXT", time.monotonic() + 5) == ("error", [])
+    assert mld.public_lookup("late.example", "TXT", time.monotonic() - 1) == ("error", [])
+    assert ("late.example", "TXT") not in queried
+    expiry = {key: value[0] for key, value in mld._public_cache.items()}
+    assert expiry[("down.example", "TXT")] < expiry[("example.test", "MX")]
+
+
+def test_public_query_maps_resolver_outcomes(monkeypatch):
+    resolver = FakeResolver({
+        ("gone.example", "TXT"): dns.resolver.NXDOMAIN,
+        ("slow.example", "TXT"): dns.exception.Timeout,
+    })
+    monkeypatch.setattr(mld, "_resolver", lambda: resolver)
+    assert mld._public_query("gone.example", "TXT") == ("nxdomain", [])
+    assert mld._public_query("empty.example", "TXT") == ("noanswer", [])
+    assert mld._public_query("slow.example", "TXT") == ("error", [])

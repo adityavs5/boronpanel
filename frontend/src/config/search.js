@@ -12,6 +12,7 @@ const synonyms = {
   '/email/settings': 'email settings mail forwarder forwarding catch all spam filter autoresponder routing smtp imap migration',
   '/databases': 'database mysql mariadb sql phpmyadmin db users',
   '/files': 'file manager upload download folders permissions documents',
+  '/files?tool=permissions': 'file permissions chmod permissions mode 644 755',
   '/ssl': 'ssl tls https certificate lets encrypt certbot renew wildcard domain security',
   '/backup-jobs': 'backup restore recovery snapshots jetbackup incremental schedules jobs destinations ssh retention',
   '/backups': 'backup restore recovery snapshots archive',

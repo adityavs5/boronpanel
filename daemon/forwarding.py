@@ -15,6 +15,8 @@ from sqlalchemy import select
 from shared.db import write_session
 from shared.models import Account, Domain, DomainForwarding
 from shared.validation import (
+    NotFoundError,
+    ValidationError,
     validate_domain,
     validate_redirect_status_code,
     validate_redirect_target,
@@ -38,10 +40,10 @@ def _row_to_dict(row: DomainForwarding | None) -> dict | None:
 def _owned_domain(session, username: str, domain_name: str) -> Domain:
     account = session.scalar(select(Account).where(Account.username == username))
     if account is None:
-        raise RuntimeError(f"account '{username}' not found")
+        raise NotFoundError(f"account '{username}' not found")
     domain = session.scalar(select(Domain).where(Domain.domain == domain_name, Domain.account_id == account.id))
     if domain is None:
-        raise RuntimeError(f"domain '{domain_name}' not found for account '{username}'")
+        raise NotFoundError(f"domain '{domain_name}' not found for account '{username}'")
     return domain
 
 
@@ -57,7 +59,7 @@ def set_forwarding(params: dict) -> dict:
     with write_session() as session:
         domain = _owned_domain(session, username, domain_name)
         if domain.kind == "parked":
-            raise RuntimeError("cannot forward a parked domain -- remove the park first")
+            raise ValidationError("cannot forward a parked domain -- remove the park first")
         account = session.scalar(select(Account).where(Account.id == domain.account_id))
         row = session.scalar(select(DomainForwarding).where(DomainForwarding.domain == domain_name))
         if row is None:

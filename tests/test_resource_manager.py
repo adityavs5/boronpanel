@@ -160,3 +160,23 @@ def test_compaction_preserves_newer_sample_in_boundary_hour(isolated_db):
         assert len(rows) == 2
         assert rows[0].period_seconds == 3600
         assert rows[1].sampled_at.minute == 45
+
+
+def test_upgrade_reapplies_live_account_limits_and_skips_failures(isolated_db, monkeypatch):
+    account_id, _ = _account_and_plan()
+    with write_session() as db:
+        db.get(Account, account_id).uid = 2001
+        db.add(Account(username="resource2", status="active", uid=2002, cpu_pct=25, mem_mb=512, io_mb=50, pids_max=50))
+        db.add(Account(username="resource3", status="terminated", uid=None, cpu_pct=25, mem_mb=512, io_mb=50, pids_max=50))
+    applied = []
+
+    def apply(username, values):
+        if username == "resource1":
+            raise RuntimeError("systemd temporarily unavailable")
+        applied.append((username, values["cpu_cores"]))
+
+    monkeypatch.setattr(resource_manager.cgroups, "apply_policy", apply)
+    # A slice written by an older release gets today's properties; one
+    # account failing does not stop the others, and tombstones are skipped.
+    assert resource_manager.reapply_all() == 1
+    assert applied == [("resource2", .25)]

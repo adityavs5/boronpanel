@@ -28,9 +28,20 @@ export function registerAuthHandlers({ unauthorized, maintenance }) {
   if (maintenance) onMaintenance = maintenance
 }
 
+// A 409 whose detail ends in "Try again shortly." is the daemon's BusyError: a
+// server-wide mutation lock (DNS, databases, account backups) stayed busy past
+// its bounded wait, so the request changed nothing and normally succeeds a
+// moment later. It is sent once more after BUSY_RETRY_MS; a second refusal
+// reaches the caller like any other error, with `busy` set.
+export const BUSY_RETRY_MS = 3000
+
+export function isBusyConflict(status, detail) {
+  return status === 409 && typeof detail === 'string' && /try again shortly\.?(\s*\(reference:\s*[a-f0-9]{16}\))?$/i.test(detail.trim())
+}
+
 api.interceptors.response.use(
   (res) => res,
-  (error) => {
+  async (error) => {
     const status = error.response?.status
     if (status === 401) {
       onUnauthorized()
@@ -39,6 +50,11 @@ api.interceptors.response.use(
     } else if (status === 402 && error.response?.data?.detail === 'license_required') {
       // Administration is restricted until the server license is usable.
       if (!window.location.pathname.startsWith(`${BASE_PATH}/license`)) window.location.assign(`${BASE_PATH}/license`)
+    }
+    const config = error.config
+    if (config && !config.busyRetried && isBusyConflict(status, error.response?.data?.detail)) {
+      await new Promise((resolve) => window.setTimeout(resolve, BUSY_RETRY_MS))
+      return api.request({ ...config, busyRetried: true })
     }
     return Promise.reject(normalizeError(error))
   },
@@ -88,6 +104,7 @@ export function normalizeError(error) {
   err.reference = reference || null
   err.status = status
   err.fields = fields
+  err.busy = isBusyConflict(status, data?.detail)
   return err
 }
 
@@ -100,6 +117,38 @@ function responseError(response, fallback) {
   return Object.assign(new Error(message), { status: response.status, reference })
 }
 
+function waitText(seconds) {
+  if (seconds < 60) return `${seconds} second${seconds === 1 ? '' : 's'}`
+  const minutes = Math.ceil(seconds / 60)
+  return `${minutes} minute${minutes === 1 ? '' : 's'}`
+}
+
+// Sign-in refusals. 401 is a wrong password or code. 403 is a refusal with a
+// reason: a suspended or removed hosting account (account_unavailable) or the
+// administrator 2FA policy. 429 comes from the per-IP and per-name limits,
+// which send Retry-After in seconds, or from the daemon's lockout, which only
+// says "try again in N minute(s)"; `retryAfter` carries the wait in seconds
+// either way so the login page can count down instead of inviting retries.
+function signInError(response, fallback) {
+  const data = response.data && typeof response.data === 'object' ? response.data : {}
+  const status = response.status
+  if (status === 429) {
+    const header = Number.parseInt(response.headers?.['retry-after'], 10)
+    const minutes = Number.parseInt(String(data.detail || '').match(/try again in (\d+) minute/i)?.[1], 10)
+    const retryAfter = header > 0 ? header : minutes > 0 ? minutes * 60 : null
+    const message = `Too many sign-in attempts. ${retryAfter ? `Try again in ${waitText(retryAfter)}.` : 'Wait a few minutes, then try again.'}`
+    return Object.assign(new Error(message), { status, retryAfter, reference: null })
+  }
+  if (status === 401) return Object.assign(new Error(fallback), { status, reference: null })
+  const detail = typeof data.account_unavailable === 'string' ? data.account_unavailable : data.detail
+  // Sentence case for the short sign-in refusals ("administrator 2FA is required; …").
+  const error = responseError({ ...response, data: { ...data, detail: typeof detail === 'string' && detail ? detail.charAt(0).toUpperCase() + detail.slice(1) : undefined } }, fallback)
+  // A suspended or removed hosting account: the password (and code) were
+  // right, so the sign-in ends here and a 2FA pending token is used up.
+  error.accountUnavailable = status === 403 && !!data.account_unavailable
+  return error
+}
+
 // --- thin verb helpers ----------------------------------------------------
 export const get = (url, config) => api.get(url, config).then((r) => r.data)
 export const post = (url, body, config) => api.post(url, body, config).then((r) => r.data)
@@ -109,9 +158,11 @@ export const del = (url, config) => api.delete(url, config).then((r) => r.data)
 
 // --- auth -----------------------------------------------------------------
 // The login endpoints return JSON now (no server-rendered pages):
-//   401/429           -> rejected / locked out ({detail})
+//   401/403/429       -> rejected, refused with a reason, or rate limited ({detail})
 //   {needs_2fa, ...}  -> a TOTP step is required
 //   303 -> /app + Set-Cookie -> success; we then read identity from whoami().
+// Every 4xx/5xx must stop here: whoami() after a refusal only answers 401,
+// which would replace the server's reason with "authentication required".
 export async function whoami() {
   return api.get('/api/v1/whoami').then((r) => r.data)
 }
@@ -123,8 +174,8 @@ export async function login(username, password) {
     validateStatus: () => true,
   })
 
-  if (res.status === 429 || res.status === 401) {
-    throw responseError(res, 'Invalid username or password.')
+  if (res.status >= 400) {
+    throw signInError(res, 'Invalid username or password.')
   }
   if (res.data && res.data.needs_2fa) {
     return { needs2fa: true, pendingToken: res.data.pending_token }
@@ -141,7 +192,7 @@ export async function loginVerify2fa(pendingToken, code) {
     validateStatus: () => true,
   })
   if (res.status >= 400) {
-    throw responseError(res, 'Invalid or expired code.')
+    throw signInError(res, 'Invalid or expired code.')
   }
   const me = await whoami()
   return { role: me.role, username: me.username, installProfile: me.install_profile, capabilities: me.capabilities }

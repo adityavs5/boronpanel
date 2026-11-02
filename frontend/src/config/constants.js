@@ -64,3 +64,7 @@ export const WEBHOOK_EVENTS = [
   'host.service_down',
   'host.service_recovered',
 ]
+
+// What suspending a hosting account does, for every suspend confirmation
+// (account page, bulk actions, reseller dashboard).
+export const SUSPEND_EFFECTS = "Suspending ends everything the account is running: SSH sessions and what was started from them, running cron jobs and PHP workers. Node.js and Python apps, Redis and the file manager keep running but are not reachable through the website. Suspending also blocks the account's email logins (IMAP, POP3, SMTP and webmail). Incoming mail is still accepted and delivered."

@@ -52,7 +52,9 @@ def _principal(params: dict) -> tuple[str, str, str | None]:
     role = str(params.pop("_authenticated_role", "") or "")
     source_ip = params.pop("_source_ip", None)
     params.pop("_authenticated_account_id", None)
-    if role not in {"admin", "customer"} or not actor:
+    # rpc_authority has already checked the caller owns the target account
+    # (resellers may add domains to the accounts they resell).
+    if role not in {"admin", "customer", "reseller"} or not actor:
         raise ValidationError("Authenticated panel session required")
     return actor, role, source_ip
 

@@ -535,16 +535,18 @@ def test_install_package_refreshes_stale_package_lists_once(tmp_path, monkeypatc
     assert calls == []
 
 
-def test_provision_publishes_only_when_a_hostname_is_configured(monkeypatch):
+def test_provision_publishes_only_when_a_hostname_is_configured(isolated_db, monkeypatch):
     published = []
-    monkeypatch.setattr(pma, "install_package", lambda: True)
+    monkeypatch.setattr(pma, "install_package", lambda **kwargs: True)
     monkeypatch.setattr(pma, "bootstrap_pma", lambda: published.append(True))
     monkeypatch.setattr(settings, "pma_hostname", "")
-    assert pma.provision() == {"installed": True, "published": False}
+    assert pma.provision() == {"installed": True, "published": False, "hostname": None}
     assert published == []
+    assert pma.provision_state()["status"] == "installed"
     monkeypatch.setattr(settings, "pma_hostname", "phpmyadmin.example.com")
-    assert pma.provision() == {"installed": True, "published": True}
+    assert pma.provision() == {"installed": True, "published": True, "hostname": "phpmyadmin.example.com"}
     assert published == [True]
+    assert pma.provision_state()["status"] == "published"
 
 
 @pytest.mark.parametrize("components,has_mariadb,expected", [
@@ -556,16 +558,25 @@ def test_upgrade_provisions_phpmyadmin_only_on_database_servers(monkeypatch, com
     from scripts import upgrade_runtime
     calls = []
     monkeypatch.setattr(settings, "enabled_components", components)
-    monkeypatch.setattr(pma, "provision", lambda: calls.append(True) or {})
+    monkeypatch.setattr(pma, "provision", lambda **kwargs: calls.append(kwargs) or {})
     monkeypatch.setattr(upgrade_runtime.shutil, "which", lambda name: "/usr/bin/mariadb" if has_mariadb else None)
     monkeypatch.setattr(upgrade_runtime.Path, "exists", lambda self: False)
     upgrade_runtime.configure_phpmyadmin()
-    assert len(calls) == expected
+    assert calls == [{"source": "upgrade", "budget_seconds": pma.UPGRADE_INSTALL_BUDGET_SECONDS}] * expected
 
 
 def test_fresh_install_provisions_phpmyadmin_for_the_database_profile():
     from pathlib import Path
     source = (Path(__file__).resolve().parent.parent / "scripts" / "install.sh").read_text()
-    assert 'pma_hostname = "${PMA_DOMAIN}"' in source
+    # boron.toml gets the hostname only once the package is installed: the
+    # phpMyAdmin vhost it adds would otherwise fail bootstrap_baseline's
+    # OLS config test on the missing document root.
+    assert 'pma_hostname = ""' in source and 'pma_hostname = "${PMA_DOMAIN}"' not in source
     assert "profile_has database && setup_phpmyadmin" in source
-    assert "from daemon.pma import provision" in source
+    body = source[source.index("setup_phpmyadmin() {"):]
+    body = body[:body.index("\n}\n")]
+    assert "from daemon.pma import provision" in body
+    assert "provision(os.environ.get('BORON_PMA_HOSTNAME') or None)" in body
+    # The daemon reloads the saved hostname; a failed install only warns.
+    assert "run systemctl restart boron-provisiond" in body
+    assert 'warn "phpMyAdmin could not be installed' in body and "die " not in body

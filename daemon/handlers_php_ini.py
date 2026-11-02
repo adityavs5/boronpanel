@@ -101,8 +101,13 @@ def get_php_ini(params: dict) -> dict:
         legacy = _row_to_dict(row) if row else None
         versions = list(settings.php_versions)
         states = {item["version"]: item for item in php_lifecycle.get_policy({})["versions"]}
+        from daemon.resource_manager import effective_for_account
+
         return {
             "username": username,
+            # set_php_ini refuses a memory_limit above the account's memory
+            # limit (None: Unlimited, only the general bound applies).
+            "memory_limit_max_mb": effective_for_account(session, account)["values"].get("memory_max_mb"),
             "php_versions": versions,
             "new_domain_php_versions": php_lifecycle.versions_for_new_domain(versions),
             "php_lifecycle": [states.get(version, php_lifecycle.lifecycle(version)) for version in versions],
@@ -196,6 +201,12 @@ def set_php_ini(params: dict) -> dict:
         current = _row_to_dict(row) if row else dict(DEFAULTS)
         account_id = account.id
         account_snapshot = account
+        from daemon.resource_manager import effective_for_account
+
+        # Plans carry no PHP memory_limit of their own; the account's memory
+        # limit (cgroup memory.max, None = Unlimited) is what one request can
+        # really use.
+        memory_cap_mb = effective_for_account(session, account)["values"].get("memory_max_mb")
 
     # Only touch the legacy PhpIniOverride row when a legacy field was
     # actually sent -- a PATCH that only flips max_input_vars must not
@@ -203,6 +214,15 @@ def set_php_ini(params: dict) -> dict:
     touch_legacy = any(field in params for field in LEGACY_FIELDS)
 
     memory_limit = validate_php_memory_limit(params.get("memory_limit", current["memory_limit"]))
+    # Only a changed value is checked: the settings form sends every field,
+    # and a value saved (or defaulted) before the cap, or before an admin
+    # lowered the account's memory, must not block unrelated edits.
+    if (memory_limit != current["memory_limit"] and memory_cap_mb is not None
+            and _php_size_to_mb(memory_limit) > memory_cap_mb):
+        raise ValidationError(
+            f"memory_limit cannot be higher than this account's memory limit ({memory_cap_mb}M): "
+            "PHP would be stopped by the account limit before reaching it"
+        )
     upload_max_filesize = validate_php_size(params.get("upload_max_filesize", current["upload_max_filesize"]), "upload_max_filesize")
     post_max_size = validate_php_size(params.get("post_max_size", current["post_max_size"]), "post_max_size")
     max_execution_time = validate_php_max_execution_time(params.get("max_execution_time", current["max_execution_time"]))

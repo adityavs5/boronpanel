@@ -23,6 +23,10 @@ class _Cursor:
     def execute(self, sql, params=None):
         self.calls.append((sql, params))
 
+    def executemany(self, sql, rows):
+        for params in rows:
+            self.calls.append((sql, params))
+
 
 class _Connection:
     def __init__(self, calls):
@@ -143,3 +147,46 @@ def test_cross_account_mailbox_is_rejected(mailbox):
         db.add(other)
     with pytest.raises(ValidationError, match="does not belong"):
         webmail_sso.create_launch({"username": "mailtwo", "mailbox": "hello@example.test"})
+
+
+def _launch_rows():
+    with write_session() as db:
+        return sorted((row.account_id, row.mailbox) for row in db.scalars(select(WebmailLaunch)).all())
+
+
+def test_purge_domain_deletes_launches_and_credentials_of_that_domain_only(mailbox):
+    account_id, calls = mailbox
+    webmail_sso.create_launch({"username": "mailone", "mailbox": "hello@example.test"})
+    with write_session() as db:
+        db.add(WebmailLaunch(token_hash="b" * 64, account_id=account_id, mailbox="hi@other.test",
+                             credential_hash="x", credential_enc="x",
+                             expires_at=dt.datetime.now(dt.timezone.utc)))
+    calls.clear()
+    webmail_sso.purge_domain("example.test")
+    assert _launch_rows() == [(account_id, "hi@other.test")]
+    assert calls == [("DELETE FROM webmail_session WHERE mailbox LIKE %s", ("%@example.test",))]
+
+    calls.clear()
+    webmail_sso.purge_domain("example.test")  # nothing left: no MariaDB round trip
+    assert calls == []
+
+
+def test_purge_account_deletes_every_launch_of_the_account(mailbox):
+    account_id, calls = mailbox
+    first = webmail_sso.create_launch({"username": "mailone", "mailbox": "hello@example.test"})
+    webmail_sso.revoke(webmail_sso.redeem(first["token"])["launch_id"])
+    webmail_sso.create_launch({"username": "mailone", "mailbox": "hello@example.test"})
+    with write_session() as db:
+        ids = sorted(db.scalars(select(WebmailLaunch.id).where(WebmailLaunch.account_id == account_id)).all())
+        other = Account(username="mailtwo", status="active")
+        db.add(other)
+        db.flush()
+        db.add(WebmailLaunch(token_hash="c" * 64, account_id=other.id, mailbox="x@example.test",
+                             credential_hash="x", credential_enc="x",
+                             expires_at=dt.datetime.now(dt.timezone.utc)))
+        other_id = other.id
+    calls.clear()
+    webmail_sso.purge_account(account_id)
+    assert _launch_rows() == [(other_id, "x@example.test")]
+    assert {sql for sql, _params in calls} == {"DELETE FROM webmail_session WHERE launch_id=%s"}
+    assert sorted(params for _sql, params in calls) == [(item,) for item in ids]

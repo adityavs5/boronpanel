@@ -57,12 +57,10 @@ def login_submit(request: Request, username: str = Form(...), password: str = Fo
         user_agent=request.headers.get("user-agent", ""),
     )
     if result.get("locked"):
-        retry_minutes = result.get("retry_after_seconds", 0) // 60 + 1
-        return JSONResponse(
-            {"detail": f"too many failed attempts -- try again in {retry_minutes} minute(s)"},
-            status_code=429,
-        )
+        return _locked_response(result)
     if not result.get("valid") and not result.get("needs_2fa"):
+        if result.get("account_unavailable"):
+            return _account_unavailable(request, result["account_unavailable"], username)
         if result.get("two_factor_setup_required"):
             return JSONResponse(
                 {"detail": "administrator 2FA is required; ask a root operator to reset the policy or enroll during the grace period"},
@@ -77,6 +75,27 @@ def login_submit(request: Request, username: str = Form(...), password: str = Fo
     if result.get("needs_2fa"):
         return JSONResponse({"needs_2fa": True, "pending_token": result["pending_token"]})
     return _complete_login(result["session_id"])
+
+
+def _locked_response(result: dict) -> JSONResponse:
+    """The daemon's lockout: 429 with Retry-After in whole seconds, like the
+    rate-limit middleware, and the same wait in minutes in the text."""
+    seconds = max(1, int(result.get("retry_after_seconds") or 0))
+    retry_minutes = seconds // 60 + 1
+    return JSONResponse(
+        {"detail": f"too many failed attempts -- try again in {retry_minutes} minute(s)"},
+        status_code=429,
+        headers={"Retry-After": str(seconds)},
+    )
+
+
+def _account_unavailable(request: Request, message: object, username: str | None = None) -> JSONResponse:
+    """The password (and second factor) were right, but the hosting account
+    is suspended or terminated: say so, and set no session cookie. A right
+    password is no guess, so, as in the daemon, the attempt is refunded;
+    otherwise a customer retrying would get 429 instead of the reason."""
+    ratelimit.login_succeeded(request.client.host if request.client else None, username)
+    return JSONResponse({"detail": str(message), "account_unavailable": True}, status_code=403)
 
 
 def _complete_login(session_id: str):
@@ -127,12 +146,10 @@ def login_2fa_submit(request: Request, pending_token: str = Form(...), code: str
         user_agent=request.headers.get("user-agent", ""),
     )
     if result.get("locked"):
-        retry_minutes = result.get("retry_after_seconds", 0) // 60 + 1
-        return JSONResponse(
-            {"detail": f"too many failed attempts -- try again in {retry_minutes} minute(s)"},
-            status_code=429,
-        )
+        return _locked_response(result)
     if not result.get("valid"):
+        if result.get("account_unavailable"):
+            return _account_unavailable(request, result["account_unavailable"])
         return JSONResponse({"detail": "invalid code"}, status_code=401)
     from api.security import enforce_listener_role
     enforce_listener_role(Identity(-1, "", result["role"], result.get("account_id"), "session"), request)

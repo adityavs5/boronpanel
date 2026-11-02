@@ -21,6 +21,7 @@ import secrets
 import shutil
 import tempfile
 import tarfile
+import threading
 import time
 import uuid
 from urllib.parse import urlencode, urlsplit
@@ -35,7 +36,7 @@ from daemon.database_operations import serialized_worker
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, AppInstall, BackupJob, RestoreJob, DatabaseGrant, Domain, FtpAccount, GitRepo, MailDomain, NodeApp, PythonApp, RedisInstance, SnapshotDestination, SnapshotDestinationOperation, SnapshotDownload, SnapshotOAuthState, SnapshotPolicy, SnapshotRun, SnapshotRestore, WordPressInstall, utcnow
-from shared.validation import NotFoundError, ValidationError, validate_username
+from shared.validation import ConflictError, NotFoundError, ValidationError, validate_username
 
 logger = logging.getLogger('borond.snapshot_jobs')
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='snapshots')
@@ -88,13 +89,38 @@ def download_directory(*parts):
     return target
 
 
+_held_locks = threading.local()
+
+
 @contextmanager
-def lock(name, *, blocking=True):
+def lock(name, *, blocking=True, allow_nested=False, reentrant=False):
+    """Exclusive cross-process lock on ``name``.
+
+    An flock is not re-entrant: a second acquisition conflicts even in the
+    thread that already holds the lock. A holder whose own work calls code
+    that takes the same lock (the archive restore worker recreating domains
+    and the account through their settings handlers) acquires it with
+    ``allow_nested=True``; an acquisition with ``reentrant=True`` from that
+    same thread then runs inside the holder's critical section. Every other
+    thread and process, and every other holder, is still excluded.
+    """
+    nested = getattr(_held_locks, 'names', None)
+    if nested is None:
+        nested = _held_locks.names = []
+    if reentrant and name in nested:
+        yield
+        return
     path = private_directory('locks') / name
     fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
-        yield
+        if allow_nested:
+            nested.append(name)
+        try:
+            yield
+        finally:
+            if allow_nested:
+                nested.remove(name)
     finally:
         os.close(fd)
 
@@ -409,14 +435,29 @@ def set_destination(params):
 
 
 def delete_destination(params):
+    """Remove a destination's configuration; its remote backup data is kept.
+
+    Only an enabled backup job using the destination blocks this. Disabled
+    jobs still naming it are refused with their names unless delete_jobs is
+    true: each then drops this destination, and a job left with none is
+    deleted (or retired, keeping its run history) as delete_policy does.
+    """
     ident=storage._positive(params['id'])
-    with lock('configuration'),write_session() as session:
+    delete_jobs=params.get('delete_jobs',False)
+    if not isinstance(delete_jobs,bool):raise ValidationError('Invalid delete_jobs value')
+    with lock('configuration'),lock('queue'),write_session() as session:
         row=session.get(SnapshotDestination,ident)
-        if row is None:raise ValidationError('Backup destination not found')
-        policies=[policy for policy in session.scalars(select(SnapshotPolicy)).all()
+        if row is None:raise NotFoundError('Backup destination not found')
+        policies=[policy for policy in session.scalars(select(SnapshotPolicy).order_by(SnapshotPolicy.id)).all()
                   if not policy_deleted(policy) and (policy.destination_id==ident
                       or ident in (policy.options or {}).get('destination_ids',[]))]
-        if policies:raise ValidationError('Remove this destination from backup jobs before deleting it')
+        enabled=sorted(policy.name for policy in policies if policy.enabled)
+        if enabled:
+            raise ConflictError('Disable or delete the backup jobs that use this destination first: '+', '.join(enabled))
+        if policies and not delete_jobs:
+            raise ConflictError('Disabled backup jobs still use this destination: '
+                                +', '.join(sorted(policy.name for policy in policies))
+                                +'. Delete them together with the destination, or delete them first.')
         if session.scalar(select(SnapshotRun.id).where(SnapshotRun.destination_id==ident,SnapshotRun.status.in_(ACTIVE))):
             raise ValidationError('Wait for active backup or restore work to finish')
         if session.scalar(select(SnapshotRestore.id).join(SnapshotRun,SnapshotRun.id==SnapshotRestore.run_id).where(
@@ -428,7 +469,21 @@ def delete_destination(params):
         if session.scalar(select(SnapshotDestinationOperation.id).where(
                 SnapshotDestinationOperation.destination_id==ident,SnapshotDestinationOperation.status.in_(ACTIVE))):
             raise ValidationError('Wait for the destination operation to finish')
-        has_history=session.scalar(select(SnapshotRun.id).where(SnapshotRun.destination_id==ident)) is not None
+        jobs_deleted,jobs_updated=[],[]
+        for policy in policies:
+            options=dict(policy.options or {})
+            remaining=[value for value in options.get('destination_ids') or [policy.destination_id] if value!=ident]
+            if remaining:
+                # A disabled multi-destination job keeps its other destinations.
+                options['destination_ids']=remaining;policy.options=options
+                if policy.destination_id==ident:policy.destination_id=remaining[0]
+                session.flush();jobs_updated.append(policy.name)
+            else:
+                jobs_deleted.append(policy.name);_remove_policy(session,policy)
+        # Runs and retired jobs keep referencing the row (foreign keys), so
+        # it is kept as a deleted entry; otherwise it is removed.
+        has_history=(session.scalar(select(SnapshotRun.id).where(SnapshotRun.destination_id==ident)) is not None
+                     or session.scalar(select(SnapshotPolicy.id).where(SnapshotPolicy.destination_id==ident)) is not None)
         namespace=row.namespace
         if has_history:
             row.enabled=False;row.customer_visible=False;row.status='deleted';row.error='Destination configuration removed; remote backup data was not deleted'
@@ -439,7 +494,8 @@ def delete_destination(params):
             session.delete(row)
     credentials=private_directory('repositories')/namespace
     if credentials.exists() and not credentials.is_symlink():shutil.rmtree(credentials)
-    return {'id':ident,'status':'configuration_removed','remote_data_deleted':False}
+    return {'id':ident,'status':'configuration_removed','remote_data_deleted':False,
+            'jobs_deleted':jobs_deleted,'jobs_updated':jobs_updated}
 
 
 def _operation_dict(row):
@@ -647,7 +703,7 @@ def account_catalog(params):
             # The former-account recovery view is a disaster-recovery catalog,
             # not a second copy of every terminated account. Keep former rows
             # only while they still have a usable recovery point.
-            if account_group=='former' and not usable:continue
+            if account_group=='former' and (not usable or '~' in account.username):continue  # 'name~id': a reused name's tombstone (handlers_account.release_terminated_username) no restore can address by name
             result.append({'account_id':account.id,'username':account.username,'primary_domain':account.primary_domain,
                 'account_status':account.status,'account_group':account_group,
                 'recovery_point_count':len(usable),
@@ -756,17 +812,28 @@ def delete_policy(params):
     ident=storage._positive(params['id'])
     with lock('configuration'), lock('queue'), write_session() as session:
         row=_live_policy(session,ident)
-        if session.scalar(select(SnapshotRun.id).where(SnapshotRun.policy_id==ident,SnapshotRun.status.in_(ACTIVE))):
-            raise ValidationError('Wait for this job\'s active backups to finish before deleting it')
         name=row.name
-        if session.scalar(select(SnapshotRun.id).where(SnapshotRun.policy_id==ident)) is None:
-            session.delete(row)
-            return {'id':ident,'name':name,'status':'deleted','history_kept':False}
-        options=dict(row.options or {});options['deleted_at']=utcnow().isoformat();options['deleted_name']=name
-        row.options=options;row.enabled=False;row.frequency='manual'
-        row.name=f'{name[:70]} (deleted job {ident})'
+        history_kept=_remove_policy(session,row)
+        return {'id':ident,'name':name,'status':'deleted','history_kept':history_kept}
+
+
+def _remove_policy(session, row):
+    """Delete a job row, or retire it when runs reference it; True if retired.
+
+    The caller holds the configuration and queue locks.
+    """
+    if session.scalar(select(SnapshotRun.id).where(SnapshotRun.policy_id==row.id,SnapshotRun.status.in_(ACTIVE))):
+        raise ValidationError(f'Wait for the active backups of job "{row.name}" to finish before deleting it')
+    if session.scalar(select(SnapshotRun.id).where(SnapshotRun.policy_id==row.id)) is None:
+        session.delete(row)
         session.flush()
-        return {'id':ident,'name':name,'status':'deleted','history_kept':True}
+        return False
+    name=row.name
+    options=dict(row.options or {});options['deleted_at']=utcnow().isoformat();options['deleted_name']=name
+    row.options=options;row.enabled=False;row.frequency='manual'
+    row.name=f'{name[:70]} (deleted job {row.id})'
+    session.flush()
+    return True
 
 
 def save_policy(params):

@@ -240,6 +240,20 @@ def test_require_domain_access_customer_other_domain_denied(isolated_db, monkeyp
     assert exc_info.value.status_code == 403
 
 
+@pytest.mark.parametrize("role", ["customer", "reseller"])
+def test_require_domain_access_malformed_domain_is_400_not_403(isolated_db, monkeypatch, role):
+    """Regression (round 1 web review): a malformed {domain} in the URL was
+    refused as "not authorized"; the daemon already answers 400."""
+    from fastapi import HTTPException
+
+    account, user = _make_account_and_customer(isolated_db, monkeypatch)
+    identity = sec.Identity(user["id"], "custlogin", role, account["id"] if role == "customer" else None, "session")
+    with pytest.raises(HTTPException) as exc_info:
+        sec.require_domain_access(identity, "bad_domain..com")
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail.startswith("domain 'bad_domain..com' is not")
+
+
 def test_require_customer_self_access_allows_own_customer(isolated_db, monkeypatch):
     account, user = _make_account_and_customer(isolated_db, monkeypatch)
     identity = sec.Identity(user["id"], "custlogin", "customer", account["id"], "session")

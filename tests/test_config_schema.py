@@ -47,6 +47,29 @@ def test_previous_config_loads_and_migrates_without_losing_unknown_values(tmp_pa
     assert migrate_config_file(config)["changed"] is False
 
 
+def test_empty_placeholder_config_loads_without_a_migration_warning(tmp_path, caplog):
+    """The mail signing filter loads BORON_CONFIG=/dev/null; Postfix copied
+    the v0->v1 warning into every bounce (live finding C2)."""
+    import logging
+    from pathlib import Path
+
+    empty = tmp_path / "empty.toml"
+    empty.write_text("")
+    with caplog.at_level(logging.WARNING, logger="boron.config"):
+        for path in (empty, Path("/dev/null"), tmp_path / "missing.toml"):
+            loaded = load_settings(path, Path("/dev/null"), Path("/dev/null"))
+            assert loaded.config_schema_version == CURRENT_CONFIG_SCHEMA_VERSION
+            assert loaded.config_warnings == ()
+    assert "migrated" not in caplog.text
+
+
+def test_v0_document_with_settings_still_reports_its_migration(tmp_path):
+    config = tmp_path / "boron.toml"
+    config.write_text('panel_hostname = "panel.example.test"\n')
+    loaded = load_settings(config, tmp_path / "none", tmp_path / "none-api")
+    assert "configuration schema was migrated from v0 to v1" in loaded.config_warnings
+
+
 def test_removed_config_key_is_mapped_and_persisted(tmp_path):
     config = tmp_path / "boron.toml"
     config.write_text("config_version = 0\npanel_hostname = \"panel.example.test\"\n")

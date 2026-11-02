@@ -413,7 +413,7 @@ def _cpanel_record_params(zone: str, rr: dict, value: str) -> dict:
         params.update(priority=priority, weight=weight, port=port, target=target)
     elif rtype == "CAA":
         flag, tag, target = value.split(maxsplit=2)
-        params.update(flag=flag, tag=tag, value=target.strip('"'))
+        params.update(flag=flag, tag=tag, value=dnsprovider.txt_text(target))  # resolves its escapes
     return params
 
 

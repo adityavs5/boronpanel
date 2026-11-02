@@ -6,7 +6,7 @@ import {
   History, FileCode2, Cloud, Layers, Palette, AlertOctagon, BookOpen, ArrowUpCircle,
   DatabaseZap, Construction, BarChart3, ArrowRightLeft, Ban, ShieldBan, FileText, Store,
   ExternalLink, Zap, Shield, GaugeCircle, Route, ServerCog, Stethoscope,
-  ArchiveRestore, BadgeCheck,
+  ArchiveRestore, BadgeCheck, FileLock,
 } from 'lucide-react'
 import { WordPressIcon, RedisIcon, NodeIcon, PythonIcon, GitIcon } from '@/components/icons/BrandIcons'
 
@@ -42,6 +42,7 @@ export const customerNav = [
   { label: 'Backups', to: '/backups', icon: Archive },
   { section: 'Site tools' },
   { label: 'File manager', to: '/files', icon: FolderOpen },
+  { label: 'File permissions', to: '/files?tool=permissions', icon: FileLock },
   { label: 'PHP settings', to: '/php', icon: FileCode2 },
   { label: 'Cron jobs', to: '/cron', icon: Clock },
   { label: 'Git', to: '/git', icon: GitIcon },

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Cpu, Database, Gauge, HardDrive, Layers, Mail, MemoryStick, Save, Server } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Cpu, Database, Gauge, HardDrive, Layers, Mail, MemoryStick, Save, Server } from 'lucide-react'
 import { get, patch, post } from '@/lib/api'
 import { PLAN_PRESETS } from './Plans'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -37,18 +37,46 @@ function PlanEditorForm() {
   const form = draft ?? initialForm
   const setForm = update => setDraft(previous => typeof update === 'function' ? update(previous ?? initialForm) : update)
   useEffect(() => { if (draft === null) { const value = initialForm.cpu_cores === '' || initialForm.cpu_cores == null ? 'unlimited' : String(initialForm.cpu_cores); setCpuMode(CPU_PRESETS.includes(value) ? value : 'custom') } }, [initialForm, draft])
-  const save = useMutation({ mutationFn: body => editing ? patch(`/api/v1/admin/plans/${planId}`, body) : post('/api/v1/admin/plans', body), onSuccess: (_, submitted) => { toast.success(editing ? 'Plan updated' : 'Plan created'); qc.invalidateQueries({ queryKey: ['plans'] }); setSaved(submitted) }, onError: error => toast.error('Could not save plan', error.message) })
+  // An edit is propagated to every assigned account; the response counts the
+  // accounts updated and lists the ones that kept their previous values.
+  const [propagation, setPropagation] = useState(null)
+  const save = useMutation({ mutationFn: body => { setPropagation(null); return editing ? patch(`/api/v1/admin/plans/${planId}`, body) : post('/api/v1/admin/plans', body) }, onSuccess: (result, submitted) => {
+    qc.invalidateQueries({ queryKey: ['plans'] })
+    const updated = typeof result?.accounts_updated === 'number' ? result.accounts_updated : null
+    const failures = Array.isArray(result?.propagation_failures) ? result.propagation_failures : []
+    if (editing && failures.length) {
+      toast.warning('Plan saved; some accounts were not updated', `${failures.length} of ${failures.length + (updated ?? 0)} assigned accounts could not be updated.`)
+      setPropagation({ updated: updated ?? 0, failures })
+    } else {
+      toast.success(editing ? 'Plan updated' : 'Plan created', editing && updated !== null ? (updated ? `Applied to ${updated} assigned account${updated === 1 ? '' : 's'}.` : 'No hosting accounts use this plan yet.') : undefined)
+    }
+    setSaved(submitted)
+  }, onError: error => toast.error('Could not save plan', error.message) })
+  // A failed account (for example while a database backup holds its lock)
+  // can be brought onto the saved plan again one by one.
+  const reapply = useMutation({ mutationFn: username => post(`/api/v1/admin/accounts/${encodeURIComponent(username)}/apply-plan/${planId}`, {}), onSuccess: (_result, username) => {
+    toast.success('Plan applied', `${username} now uses the saved plan.`)
+    qc.invalidateQueries({ queryKey: ['account', username] })
+    setPropagation(current => current && ({ updated: current.updated + 1, failures: current.failures.filter(failure => failure.username !== username) }))
+  }, onError: (error, username) => toast.error(`Could not apply the plan to ${username}`, error.message) })
   const dirty = JSON.stringify(payload(form)) !== JSON.stringify(saved ?? payload(initialForm))
   const savePlan = () => {
     if (!formRef.current?.reportValidity()) return
     return save.mutateAsync(payload(form))
   }
   useDraftSection('hosting-plan', { dirty, busy: save.isPending, disabled: !form.name.trim(), label: 'Hosting plan', saveLabel: 'Save plan', onSave: savePlan, onDiscard: () => { setDraft(saved ? fromPlan(saved) : null); setTemplate('wordpress') } })
-  useEffect(() => { if (saved && !dirty) navigate('/plans') }, [saved, dirty, navigate])
+  // Stay on the editor while accounts it could not update are listed.
+  useEffect(() => { if (saved && !dirty && !propagation) navigate('/plans') }, [saved, dirty, propagation, navigate])
   if (editing && query.isLoading) return <CenteredSpinner />
   if (editing && query.error) return <ErrorState error={query.error} onRetry={query.refetch} />
   return <form ref={formRef} className="plan-editor" onSubmit={event => { event.preventDefault(); savePlan()?.catch(() => {}) }}>
     <PageHeader title={editing ? `Edit ${query.data?.name || 'plan'}` : 'Create hosting plan'} description="Set account resources and service limits in clearly separated sections." icon={Layers} primaryAction={<Button type="submit" loading={save.isPending} disabled={!form.name.trim()}><Save className="h-4 w-4" /> Save plan</Button>} moreActions={[{label:'Plans',icon:<ArrowLeft className="h-4 w-4"/>,onSelect:()=>navigate('/plans')}]} />
+    {propagation && <section role="alert" aria-label="Accounts not updated" className="rounded-card border border-warning/40 bg-warning/10 p-4 text-sm text-foreground">
+      <h2 className="flex items-center gap-2 font-semibold"><AlertTriangle className="h-4 w-4 shrink-0 text-warning" aria-hidden="true" />{propagation.failures.length ? <>The plan was saved, but {propagation.failures.length} assigned account{propagation.failures.length === 1 ? ' was' : 's were'} not updated</> : 'The plan was saved'}</h2>
+      <p className="mt-1 text-muted-foreground">{propagation.updated} account{propagation.updated === 1 ? ' was' : 's were'} updated. Fix the problem shown for each account below, then apply the plan to it again.</p>
+      {propagation.failures.length ? <ul className="mt-3 space-y-2">{propagation.failures.map(failure => <li key={failure.username} className="flex flex-wrap items-center gap-x-3 gap-y-1 break-words"><span className="min-w-0 flex-1"><Link className="font-medium text-link hover:underline" to={`/accounts/${encodeURIComponent(failure.username)}?tab=settings`}>{failure.username}</Link>: {failure.error}</span><Button type="button" size="sm" variant="secondary" loading={reapply.isPending && reapply.variables === failure.username} disabled={reapply.isPending} onClick={() => reapply.mutate(failure.username)}>Re-apply plan</Button></li>)}</ul> : <p className="mt-3">Every assigned account now uses the saved plan.</p>}
+      <Button className="mt-3" size="sm" variant="secondary" onClick={() => navigate('/plans')}><ArrowLeft className="h-4 w-4" /> Back to plans</Button>
+    </section>}
     <fieldset className="contents" disabled={save.isPending} aria-label="Hosting plan settings">
     {!editing && <Section icon={Layers} title="Plan template" description="Start with sensible values, then adjust any limit."><FormField label="Starting template"><Select value={template} onChange={event => { const id = event.target.value; setTemplate(id); if (PLAN_PRESETS[id]) { const next = fromPlan(PLAN_PRESETS[id].values); setForm(next); const cores = next.cpu_cores === '' ? 'unlimited' : String(next.cpu_cores); setCpuMode(CPU_PRESETS.includes(cores) ? cores : 'custom') } }}>{Object.entries(PLAN_PRESETS).map(([id, item]) => <option key={id} value={id}>{item.label} — {item.description}</option>)}</Select></FormField><FormField label="Plan name"><Input autoFocus required value={form.name} onChange={event => setForm(value => ({ ...value, name: event.target.value }))} /></FormField></Section>}
     {editing && <Section icon={Layers} title="Plan identity" description="The name administrators see when assigning this package."><FormField label="Plan name"><Input autoFocus required value={form.name} onChange={event => setForm(value => ({ ...value, name: event.target.value }))} /></FormField></Section>}

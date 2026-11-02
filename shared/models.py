@@ -125,6 +125,9 @@ class Domain(Base):
     ols_log_level: Mapped[str] = mapped_column(String(16), default="WARN")
     ols_log_previous_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
     ols_log_debug_until: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Schema revision 7: redirect plain HTTP to HTTPS (daemon/handlers_force_https.py).
+    # Rendered only for names a valid installed certificate covers.
+    force_https: Mapped[bool] = mapped_column(default=False, server_default="0")
 
     account: Mapped[Account] = relationship(back_populates="domains")
 

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from daemon import dnsprovider, mail_hardening
+from daemon import dnsprovider, mail_hardening, mail_identity
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 from daemon.procutil import run
 from shared.config import settings
@@ -35,6 +35,20 @@ SIGN_SERVICE = (
     "argv=/opt/boron/.venv/bin/python /opt/boron/scripts/mail_sign_filter.py "
     "--sender ${sender} --login=${sasl_username} --recipient ${recipient}"
 )
+SUBMISSIONS_SERVICE = "submissions/inet"
+
+
+def submission_policy() -> dict[str, str]:
+    """Every authenticated submission port: only an authenticated mailbox may
+    relay, only as itself, and every message passes the signing filter."""
+    return {
+        "smtpd_sasl_auth_enable": "yes",
+        "smtpd_client_restrictions": "permit_sasl_authenticated,reject",
+        "content_filter": "boron-sign:",
+        "smtpd_sender_login_maps": f"mysql:{SENDER_LOGIN_MAP}",
+        "smtpd_sender_restrictions": "reject_authenticated_sender_login_mismatch",
+        "smtpd_relay_restrictions": "permit_sasl_authenticated,reject",
+    }
 
 
 class DkimError(Exception):
@@ -202,16 +216,33 @@ def _configure_postfix_milter() -> None:
         mail_hardening.configure_postfix_policy(run)
     except mail_hardening.MailHardeningError as exc:
         raise DkimError(str(exc)) from exc
+    # HELO, Received headers and bounces use the canonical mail hostname.
+    mail_identity.configure_postfix_identity(run)
     run(["postconf", "-Me", SIGN_SERVICE], timeout=15, check=True)
-    submission_overrides = {
-        "content_filter": "boron-sign:",
-        "smtpd_sender_login_maps": f"mysql:{SENDER_LOGIN_MAP}",
-        "smtpd_sender_restrictions": "reject_authenticated_sender_login_mismatch",
-        "smtpd_relay_restrictions": "permit_sasl_authenticated,reject",
-    }
-    for name, value in submission_overrides.items():
-        run(["postconf", "-P", f"submission/inet/{name}={value}"], timeout=15, check=True)
+    _configure_submission_services()
     run(["postconf", "-P", "smtp/inet/smtpd_sasl_auth_enable=no"], timeout=15, check=True)
+
+
+def _implicit_tls_service() -> str:
+    """The master.cf entry for port 465: an operator's existing smtps entry
+    is reused (two entries would both bind the port), else submissions."""
+    for service in ("submissions/inet", "smtps/inet"):
+        if run(["postconf", "-M", service], timeout=15).stdout.strip():
+            return service
+    run(["postconf", "-Me", f"{SUBMISSIONS_SERVICE}=submissions inet n - y - - smtpd"], timeout=15, check=True)
+    return SUBMISSIONS_SERVICE
+
+
+def _configure_submission_services() -> None:
+    """Port 587 (STARTTLS) and 465 (implicit TLS, RFC 8314) get exactly the
+    same authentication, sender-identity and DKIM signing rules."""
+    services = {
+        "submission/inet": {"syslog_name": "postfix/submission", "smtpd_tls_security_level": "encrypt"},
+        _implicit_tls_service(): {"syslog_name": "postfix/submissions", "smtpd_tls_wrappermode": "yes"},
+    }
+    for service, transport in services.items():
+        for name, value in {**transport, **submission_policy()}.items():
+            run(["postconf", "-P", f"{service}/{name}={value}"], timeout=15, check=True)
 
 
 def configure_signer() -> dict:
@@ -264,7 +295,9 @@ def signer_status(domain: str | None = None) -> dict:
 
 
 def _quote(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    """TXT presentation in strings of at most 255 octets (a 2048-bit key
+    is ~410 octets); dnsprovider normalizes every write the same way."""
+    return dnsprovider.txt_presentation(value.encode("utf-8"))
 
 
 def setup_dns_signing(domain: str, selector: str = DEFAULT_SELECTOR) -> dict:

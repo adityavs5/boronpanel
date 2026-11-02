@@ -38,6 +38,199 @@ def stub_zone_creation(monkeypatch):
         "_create_managed_zone",
         lambda username, domain: {"zone": domain},
     )
+    # No public DNS from unit tests: www aliases do not resolve unless a
+    # test says otherwise.
+    monkeypatch.setattr(fssl, "_public_addresses", lambda hostname: set())
+    monkeypatch.setattr(fssl, "_server_addresses", lambda: {SERVER_IP})
+
+
+SERVER_IP = "192.0.2.10"
+
+
+def _capture_certbot(monkeypatch):
+    from daemon.procutil import ProcResult
+
+    monkeypatch.setattr(fssl.settings, "letsencrypt_email", "ops@example.com")
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return ProcResult(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(fssl, "run", fake_run)
+    return calls
+
+
+def _requested_names(args):
+    return [args[index + 1] for index, value in enumerate(args) if value == "-d"]
+
+
+def test_www_is_on_the_certificate_when_it_resolves_here(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    """Live finding UW H1: certbot ran with -d <apex> only, so
+    https://www.<domain> failed with a name mismatch although the vhost
+    serves www and www resolved to the server."""
+    calls = _capture_certbot(monkeypatch)
+    lookups = []
+    monkeypatch.setattr(fssl, "_public_addresses", lambda hostname: lookups.append(hostname) or {SERVER_IP})
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+
+    result = fssl.issue_certificate({"domain": "demo1.example"})
+
+    assert _requested_names(calls[0]) == ["demo1.example", "www.demo1.example"]
+    assert "--expand" in calls[0] and calls[0][calls[0].index("--cert-name") + 1] == "demo1.example"
+    assert result["names"] == ["demo1.example", "www.demo1.example"]
+    assert "skipped_names" not in result
+    assert lookups == ["www.demo1.example"]
+
+
+@pytest.mark.parametrize("answer,reason", [
+    ({"198.51.100.7"}, "does not point to this server"),
+    ({SERVER_IP, "198.51.100.7"}, "does not point to this server"),
+    (set(), "does not point to this server"),
+    (None, "could not be checked in public DNS"),
+])
+def test_www_is_left_out_when_it_does_not_resolve_here(isolated_db, stub_sysops, stub_filesystem, monkeypatch,
+                                                       answer, reason):
+    calls = _capture_certbot(monkeypatch)
+    monkeypatch.setattr(fssl, "_public_addresses", lambda hostname: answer)
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+
+    result = fssl.issue_certificate({"domain": "demo1.example"})
+
+    assert _requested_names(calls[0]) == ["demo1.example"]
+    assert "--expand" not in calls[0]
+    assert result["skipped_names"] == [{"name": "www.demo1.example", "reason": reason}]
+
+
+def test_reissue_keeps_www_when_public_dns_cannot_be_asked(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    """Renewals keep their names: a resolver outage during a panel renew
+    must not drop www from a certificate that already covers it."""
+    calls = _capture_certbot(monkeypatch)
+    monkeypatch.setattr(fssl, "_public_addresses", lambda hostname: None)
+    monkeypatch.setattr(fssl, "_certificate_san", lambda domain: {"demo1.example", "www.demo1.example"})
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+
+    fssl.issue_certificate({"domain": "demo1.example", "force": True})
+
+    assert _requested_names(calls[0]) == ["demo1.example", "www.demo1.example"]
+
+
+def test_www_of_a_separate_site_is_never_requested(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    calls = _capture_certbot(monkeypatch)
+    monkeypatch.setattr(fssl, "_public_addresses", lambda hostname: pytest.fail("no lookup for a separate site"))
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    hd.add_domain({"username": "demo1", "domain": "www.demo1.example", "kind": "addon"})
+
+    fssl.issue_certificate({"domain": "demo1.example"})
+    fssl.issue_certificate({"domain": "www.demo1.example"})
+
+    assert [_requested_names(args) for args in calls] == [["demo1.example"], ["www.demo1.example"]]
+
+
+def test_service_hostname_certificate_has_one_name(isolated_db, monkeypatch):
+    calls = _capture_certbot(monkeypatch)
+    monkeypatch.setattr(fssl.settings, "webmail_hostname", "webmail.example.com")
+    monkeypatch.setattr(fssl.settings, "mail_hostname", "webmail.example.com")
+    monkeypatch.setattr(fssl, "service_certificate_diagnostics", lambda params: {
+        "dns": {"ok": True}, "http_challenge": {"ok": True}, "sni": {"ok": True}})
+    from scripts import ssl_deploy_hook
+    monkeypatch.setattr(ssl_deploy_hook, "_deploy_mail_service_certificate", lambda domain: None)
+
+    fssl.issue_certificate({"domain": "webmail.example.com"})
+
+    assert _requested_names(calls[0]) == ["webmail.example.com"]
+
+
+def test_cloudflare_proxied_www_counts_as_pointing_here(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    """A proxied name resolves to Cloudflare's edge; the zone's own record
+    content says whether it reaches this server."""
+    from shared.models import CloudflareZone
+
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    with write_session() as session:
+        session.add(DnsZone(account_id=1, zone="demo1.example"))
+        session.add(CloudflareZone(account_id=1, zone="demo1.example", cf_zone_id="z1", status="active",
+                                   name_servers=[], cf_account_id=None))
+    records = [
+        {"name": "demo1.example", "type": "A", "values": [SERVER_IP], "proxied": True},
+        {"name": "www.demo1.example", "type": "CNAME", "values": ["demo1.example."], "proxied": True},
+        {"name": "shop.demo1.example", "type": "A", "values": ["198.51.100.7"], "proxied": True},
+    ]
+    monkeypatch.setattr(fssl.dnsprovider, "list_records", lambda zone: records)
+    monkeypatch.setattr(fssl, "_public_addresses", lambda hostname: {"104.16.0.1"})
+
+    assert fssl._points_here("www.demo1.example", {SERVER_IP}) is True
+    assert fssl._points_here("shop.demo1.example", {SERVER_IP}) is False
+    assert fssl._points_here("www.other.example", {SERVER_IP}) is False
+
+
+def test_prepare_https_uses_a_covering_certificate_or_issues_one(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    """Live finding UW L4: a clone or staging site configured with an https
+    address got no certificate, so its sign-in failed until SSL was issued."""
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    issued = []
+    covered = {"names": set()}
+    monkeypatch.setattr(fssl, "_cert_file_details", lambda domain: {"cert_status": "valid"} if covered["names"] else None)
+    monkeypatch.setattr(fssl, "_certificate_san", lambda domain: covered["names"])
+
+    def issue(params):
+        issued.append(params["domain"])
+        covered["names"] = {"demo1.example", "www.demo1.example"}
+        _activate_domain_ssl("demo1.example")
+        return {"status": "issued"}
+
+    monkeypatch.setattr(fssl, "issue_certificate", issue)
+
+    monkeypatch.setattr(fssl, "_public_addresses", lambda hostname: {"198.51.100.7"})
+    assert fssl.prepare_https("demo1.example", "www.demo1.example") == {
+        "https": False, "certificate": None, "detail": "www.demo1.example does not point to this server yet"}
+    monkeypatch.setattr(fssl, "_public_addresses", lambda hostname: None)
+    assert fssl.prepare_https("demo1.example")["detail"] == "public DNS for demo1.example could not be checked"
+    assert issued == []
+
+    monkeypatch.setattr(fssl, "_public_addresses", lambda hostname: {SERVER_IP})
+    assert fssl.prepare_https("demo1.example", "www.demo1.example") == {
+        "https": True, "certificate": "issued", "detail": None}
+    assert fssl.prepare_https("demo1.example", "www.demo1.example")["certificate"] == "existing"
+    assert issued == ["demo1.example"]
+
+
+def test_prepare_https_reports_a_failed_issuance(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    monkeypatch.setattr(fssl, "_public_addresses", lambda hostname: {SERVER_IP})
+    monkeypatch.setattr(fssl, "issue_certificate", lambda params: (_ for _ in ()).throw(fssl.SslError("certbot failed")))
+    assert fssl.prepare_https("demo1.example") == {
+        "https": False, "certificate": None, "detail": "a certificate for demo1.example could not be issued"}
+
+
+def test_delete_certificate_removes_a_leftover_lineage(isolated_db, monkeypatch, tmp_path):
+    from shared.models import SslExpiryNotice
+
+    calls = []
+    monkeypatch.setattr(fssl, "run", lambda args, **kwargs: calls.append(args) or type("R", (), {"ok": True})())
+    monkeypatch.setattr(fssl, "RENEWAL_CONF_DIR", tmp_path)
+    with write_session() as session:
+        session.add(SslExpiryNotice(domain="gone.example", expiry_date="2026-12-01"))
+    fssl.delete_certificate("gone.example")
+    assert calls == []  # no lineage: nothing to delete
+    with write_session() as session:
+        assert session.scalars(fssl.select(SslExpiryNotice)).all() == []
+
+    (tmp_path / "gone.example.conf").write_text("# renewal")
+    fssl.delete_certificate("gone.example")
+    assert calls == [[fssl.settings.certbot_bin, "delete", "--cert-name", "gone.example", "--non-interactive"]]
+
+    monkeypatch.setattr(fssl.settings, "webmail_hostname", "webmail.example.com")
+    (tmp_path / "webmail.example.com.conf").write_text("# renewal")
+    fssl.delete_certificate("webmail.example.com")
+    assert len(calls) == 1  # a service hostname's lineage is never a site's
 
 
 def test_challenge_plan_http01_when_zone_not_managed(isolated_db, stub_sysops, stub_filesystem):
@@ -187,10 +380,11 @@ def test_terminate_account_certs_skips_domains_without_active_ssl(isolated_db, s
 def test_terminate_account_certs_deletes_active_cert(isolated_db, stub_sysops, stub_filesystem, monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(fssl, "run", lambda args, timeout=30: calls.append(args))
-    monkeypatch.setattr(fssl.Path, "exists", lambda self: True)
 
     ha.create_account({"username": "demo1"})
     hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    # Only now: domain add also deletes a leftover lineage of the name.
+    monkeypatch.setattr(fssl.Path, "exists", lambda self: True)
 
     from shared.models import Account, Domain
     with write_session() as session:

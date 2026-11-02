@@ -82,6 +82,78 @@ def _mods_available_dir(php_version: str) -> Path:
     return Path(f"{LSWS_BASE}/lsphp{nodot}/etc/php/{php_version}/mods-available")
 
 
+def php_ini_path(php_version: str) -> Path:
+    """The php.ini an lsphp build reads under OpenLiteSpeed (LSAPI)."""
+    nodot = php_version.replace(".", "")
+    return Path(f"{LSWS_BASE}/lsphp{nodot}/etc/php/{php_version}/litespeed/php.ini")
+
+
+_INI_SECTION_RE = re.compile(r"^\s*\[(?P<name>[^\]]*)\]\s*$")
+
+
+def apply_php_ini_defaults(text: str) -> str:
+    """php.ini text with phpdirectives.PHP_INI_DEFAULTS in force. Active
+    lines are rewritten in place (PHP uses the last one, so every one is);
+    a missing directive is added right after the [PHP] header, never at the
+    end, where it could land in a [PATH=]/[HOST=] section that PHP applies
+    only to matching scripts."""
+    lines = text.splitlines(keepends=True)
+    missing = []
+    for name, value in phpdirectives.PHP_INI_DEFAULTS:
+        pattern = re.compile(rf"^\s*{re.escape(name)}\s*=")
+        wanted = f"{name} = {value}"
+        found = False
+        for index, line in enumerate(lines):
+            if pattern.match(line):
+                ending = line[len(line.rstrip("\r\n")):] or "\n"
+                lines[index] = wanted + ending
+                found = True
+        if not found:
+            missing.append(wanted + "\n")
+    if missing:
+        header = next((index for index, line in enumerate(lines)
+                       if (match := _INI_SECTION_RE.match(line)) and match["name"].strip().upper() == "PHP"), None)
+        position = 0 if header is None else header + 1
+        if position and not lines[header].endswith("\n"):
+            lines[header] += "\n"
+        lines[position:position] = missing
+    return "".join(lines)
+
+
+def reconcile_php_ini_defaults(versions: tuple[str, ...] | None = None) -> list[str]:
+    """Write phpdirectives.PHP_INI_DEFAULTS into every installed lsphp
+    php.ini (fresh installs and every upgrade). Returns the files that
+    changed; running PHP workers only see a change once restarted."""
+    changed = []
+    for version in versions or settings.php_versions:
+        path = php_ini_path(version)
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            logger.warning("not editing %s: it is not a regular file", path)
+            continue
+        text = path.read_text()
+        updated = apply_php_ini_defaults(text)
+        if updated == text:
+            continue
+        temporary = path.with_name(f".{path.name}.boron-{os.getpid()}")
+        try:
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+            with os.fdopen(fd, "w") as stream:
+                stream.write(updated)
+                stream.flush()
+                os.fsync(stream.fileno())
+                os.fchown(stream.fileno(), info.st_uid, info.st_gid)
+                os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode))
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        changed.append(str(path))
+    return changed
+
+
 def _so_names(php_version: str) -> set[str]:
     """Installed shared-object extensions for one lsphp build. The .so files
     live in lib/php/<API-date>/ where the date differs per build -- glob it

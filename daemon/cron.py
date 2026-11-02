@@ -22,7 +22,7 @@ import uuid
 
 from croniter import croniter
 
-from shared.validation import ValidationError, validate_cron_mailto, validate_username
+from shared.validation import NotFoundError, ValidationError, validate_cron_mailto, validate_username
 
 from daemon.procutil import run
 
@@ -50,6 +50,10 @@ _STEP_RE = re.compile(r"\*/(\d+)")
 
 class CronError(ValidationError):
     """An invalid cron request; the message is shown to the caller."""
+
+
+class CronJobNotFoundError(CronError, NotFoundError):
+    """The job id names no job in the account's crontab (HTTP 404)."""
 
 
 class CrontabCommandError(RuntimeError):
@@ -288,7 +292,7 @@ def update_job(username: str, job_id: str, schedule: str, command: str, label: s
         i += 1
 
     if not found:
-        raise CronError(f"cron job '{job_id}' not found for '{username}'")
+        raise CronJobNotFoundError(f"cron job '{job_id}' not found for '{username}'")
     _write_raw(username, new_lines)
     return {"id": job_id, "label": label, "schedule": schedule, "command": command, "description": describe_schedule(schedule)}
 
@@ -308,7 +312,7 @@ def delete_job(username: str, job_id: str) -> None:
         i += 1
 
     if not found:
-        raise CronError(f"cron job '{job_id}' not found for '{username}'")
+        raise CronJobNotFoundError(f"cron job '{job_id}' not found for '{username}'")
     _write_raw(username, new_lines)
 
 

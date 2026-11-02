@@ -12,10 +12,10 @@ from shared.models import Account, AccountResourceLimits
 def stub_sysops(monkeypatch):
     monkeypatch.setattr(ha.sysops, "create_linux_user", lambda username: (5001, 5001))
     monkeypatch.setattr(ha.sysops, "set_initial_password", lambda username, password: None)
-    monkeypatch.setattr(ha.sysops, "set_quota", lambda username, soft, hard: None)
+    monkeypatch.setattr(ha.sysops, "set_quota", lambda username, soft, hard, **inodes: None)
     monkeypatch.setattr(ha.sysops, "lock_user", lambda username: None)
     monkeypatch.setattr(ha.sysops, "unlock_user", lambda username: None)
-    monkeypatch.setattr(plans.sysops, "set_quota", lambda username, soft, hard: None)
+    monkeypatch.setattr(plans.sysops, "set_quota", lambda username, soft, hard, **inodes: None)
 
 
 @pytest.fixture()
@@ -238,7 +238,7 @@ def test_apply_plan_rejects_terminated_account(isolated_db, stub_sysops):
 def test_plan_quota_failure_is_not_reported_as_success(isolated_db, stub_sysops, stub_redis, monkeypatch):
     ha.create_account({'username': 'demo1'})
     created = plans.create_plan({'name': 'Test quota'})
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise RuntimeError('quota unavailable')
     monkeypatch.setattr(plans.sysops, 'set_quota', fail)
     with pytest.raises(RuntimeError, match='quota unavailable'):
@@ -250,7 +250,7 @@ def test_plan_quota_failure_is_not_reported_as_success(isolated_db, stub_sysops,
 
 def test_plan_update_propagates_quota_inode_and_usage_limits(isolated_db, stub_sysops, stub_redis, monkeypatch):
     quotas = []
-    monkeypatch.setattr(plans.sysops, "set_quota", lambda username, soft, hard: quotas.append((username, soft, hard)))
+    monkeypatch.setattr(plans.sysops, "set_quota", lambda username, soft, hard, **inodes: quotas.append((username, soft, hard)))
     ha.create_account({"username": "demo1"})
     ha.create_account({"username": "demo2"})
     created = plans.create_plan(dict(BASIC))
@@ -315,3 +315,180 @@ def test_plan_update_keeps_per_account_override(isolated_db, stub_sysops, stub_r
     assert ha.get_account({"username": "demo1"})["mem_mb"] == 768
     with write_session() as session:
         assert session.scalar(select(ResourcePolicy).where(ResourcePolicy.scope_type == "account")) is not None
+
+
+# --- round 2: limit conversion, inode limits on apply, propagation locking ---
+
+
+def test_plan_legacy_columns_mirror_the_enforced_policy(isolated_db, monkeypatch):
+    """[UW L10] cpu_cores 1.0 was saved next to the cpu_pct 25 default."""
+    from shared.models import Plan, ResourcePolicy
+    monkeypatch.setattr("daemon.resource_manager.available_cpu_cores", lambda: 4)
+    created = plans.create_plan({"name": "Core", "cpu_cores": 1.0, "memory_max_mb": 2048, "nproc": 80})
+    assert (created["cpu_pct"], created["cpu_cores"]) == (100, 1.0)
+    assert (created["mem_mb"], created["pids_max"]) == (2048, 80)
+    # The soft memory limit follows the hard one, not the legacy 512 MB default.
+    assert created["memory_high_mb"] == int(2048 * .9)
+    with write_session() as session:
+        plan = session.get(Plan, created["id"])
+        assert (plan.cpu_pct, plan.mem_mb, plan.pids_max) == (100, 2048, 80)
+        plan.cpu_pct = 25  # a row saved by an older release
+        session.scalar(select(ResourcePolicy).where(ResourcePolicy.scope_id == plan.id)).cpu_cores = 1.0
+    assert plans.get_plan({"plan_id": created["id"]})["cpu_pct"] == 100
+
+
+def test_unlimited_policy_keeps_the_legacy_column(isolated_db, monkeypatch):
+    monkeypatch.setattr("daemon.resource_manager.available_cpu_cores", lambda: 4)
+    created = plans.create_plan({"name": "Open", "cpu_pct": 40, "cpu_cores": None})
+    assert (created["cpu_pct"], created["cpu_cores"]) == (40, None)
+
+
+def test_legacy_only_plan_edit_changes_what_accounts_enforce(isolated_db, monkeypatch):
+    """Editing only cpu_pct changed the column and left the policy as it was."""
+    monkeypatch.setattr("daemon.resource_manager.available_cpu_cores", lambda: 4)
+    created = plans.create_plan({"name": "Core", "cpu_cores": 1.0, "memory_max_mb": 2048, "memory_high_mb": 1800})
+    updated = plans.update_plan({"plan_id": created["id"], "cpu_pct": 50, "mem_mb": 1024, "io_mb": 20})
+    assert (updated["cpu_cores"], updated["cpu_pct"]) == (0.5, 50)
+    assert (updated["memory_max_mb"], updated["mem_mb"]) == (1024, 1024)
+    assert updated["memory_high_mb"] <= 1024
+    assert updated["io_read_bps"] == updated["io_write_bps"] == 20 * 1048576
+    # A policy field named in the same edit wins over its legacy form.
+    updated = plans.update_plan({"plan_id": created["id"], "cpu_pct": 75, "cpu_cores": 2.0})
+    assert (updated["cpu_cores"], updated["cpu_pct"]) == (2.0, 200)
+
+
+def test_create_route_derives_the_limit_form_the_request_left_out():
+    from api.routers.plans import PlanBody, _create_fields
+    fields = _create_fields(PlanBody(name="Core", cpu_cores=1.0))
+    assert "cpu_pct" not in fields and fields["cpu_cores"] == 1.0
+    fields = _create_fields(PlanBody(name="Small", mem_mb=512))
+    assert fields["mem_mb"] == 512 and "memory_max_mb" not in fields and "memory_high_mb" not in fields
+    # Untouched limits keep both documented defaults.
+    assert fields["cpu_pct"] == 25 and fields["cpu_cores"] == .5
+
+
+def _recording_quota(monkeypatch):
+    calls = []
+
+    def set_quota(username, soft, hard, *, inode_soft=0, inode_hard=0):
+        calls.append((username, soft, hard, inode_soft, inode_hard))
+
+    monkeypatch.setattr(plans.sysops, "set_quota", set_quota)
+    return calls
+
+
+def test_plan_apply_keeps_enforced_inode_limits_on_the_quota(isolated_db, stub_sysops, stub_redis, monkeypatch):
+    """setquota writes inode and block limits together; plan apply used to
+    rewrite the block quota with inode limits 0 (unlimited) for good."""
+    calls = _recording_quota(monkeypatch)
+    ha.create_account({"username": "demo1"})
+    assert ha.get_account({"username": "demo1"})["inode_enforcement_state"] == "enforced"
+    created = plans.create_plan(dict(BASIC))
+    calls.clear()
+    plans.apply_plan({"username": "demo1", "plan_id": created["id"]})
+    assert calls == [("demo1", BASIC["quota_soft_mb"], BASIC["quota_hard_mb"], 450_000, 500_000)]
+
+
+def test_raised_inode_limits_need_no_warning_period(isolated_db, stub_sysops, stub_redis, monkeypatch):
+    calls = _recording_quota(monkeypatch)
+    ha.create_account({"username": "demo1"})
+    created = plans.create_plan({**BASIC, "inode_soft_limit": 900_000, "inode_hard_limit": 1_000_000})
+    calls.clear()
+    result = plans.apply_plan({"username": "demo1", "plan_id": created["id"]})
+    assert result["inode_enforcement_state"] == "enforced"
+    assert calls[-1][3:] == (900_000, 1_000_000)
+    # Lowering them still gives the customer the warning period first.
+    lower = plans.create_plan({**BASIC, "name": "Lower", "inode_soft_limit": 1000, "inode_hard_limit": 2000})
+    assert plans.apply_plan({"username": "demo1", "plan_id": lower["id"]})["inode_enforcement_state"] == "warning"
+
+
+def _two_accounts_on(plan_values):
+    ha.create_account({"username": "demo1"})
+    ha.create_account({"username": "demo2"})
+    created = plans.create_plan(plan_values)
+    for username in ("demo1", "demo2"):
+        plans.apply_plan({"username": username, "plan_id": created["id"]})
+    return created
+
+
+def test_plan_update_takes_the_database_lock_per_account(isolated_db, stub_sysops, stub_redis, monkeypatch):
+    """The lock was held across the whole propagation, so a large plan made
+    every other database operation wait and fail with BusyError."""
+    from contextlib import contextmanager
+    created = _two_accounts_on(dict(BASIC))
+    events = []
+    real_lock = plans.mutation_lock
+
+    @contextmanager
+    def lock(**kwargs):
+        with real_lock(**kwargs):
+            events.append("hold")
+            yield
+            events.append("release")
+
+    real_apply = plans._apply_to_account
+    monkeypatch.setattr(plans, "mutation_lock", lock)
+    monkeypatch.setattr(plans, "_apply_to_account",
+                        lambda username, *args, **kwargs: events.append(username) or real_apply(username, *args, **kwargs))
+
+    result = plans.update_plan({"plan_id": created["id"], "database_limit": 9})
+
+    assert result["accounts_updated"] == 2 and result["propagation_failures"] == []
+    assert events == ["hold", "release", "hold", "demo1", "release", "hold", "demo2", "release"]
+
+
+def test_busy_lock_is_reported_per_account_without_waiting_for_each(isolated_db, stub_sysops, stub_redis, monkeypatch):
+    import threading
+    import time
+    from contextlib import contextmanager
+    from daemon import database_operations, mutation_locks
+    created = _two_accounts_on(dict(BASIC))
+    monkeypatch.setattr(mutation_locks, "REQUEST_WAIT_SECONDS", 1.0)
+    held, release = threading.Event(), threading.Event()
+
+    def backup():
+        with database_operations.mutation_lock(blocking=True):
+            held.set()
+            release.wait(10)
+
+    real_lock = plans.mutation_lock
+    calls = []
+
+    @contextmanager
+    def lock(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 2:  # the plan is saved; a backup takes the lock now
+            threading.Thread(target=backup, daemon=True).start()
+            held.wait(5)
+        with real_lock(**kwargs):
+            yield
+
+    monkeypatch.setattr(plans, "mutation_lock", lock)
+    started = time.monotonic()
+    try:
+        result = plans.update_plan({"plan_id": created["id"], "database_limit": 9})
+    finally:
+        release.set()
+    elapsed = time.monotonic() - started
+
+    assert result["accounts_updated"] == 0
+    assert [failure["username"] for failure in result["propagation_failures"]] == ["demo1", "demo2"]
+    assert all("in progress" in failure["error"] for failure in result["propagation_failures"])
+    assert elapsed < 1.9  # one bounded wait for the whole loop, not one per account
+
+
+def test_propagation_skips_an_account_that_left_the_plan(isolated_db, stub_sysops, stub_redis, monkeypatch):
+    created = _two_accounts_on(dict(BASIC))
+    other = plans.create_plan(dict(PRO))
+    real_apply = plans._apply_to_account
+
+    def apply(username, plan_id, **kwargs):
+        if username == "demo1":  # moved to another plan while the edit runs
+            real_apply("demo2", other["id"])
+        return real_apply(username, plan_id, **kwargs)
+
+    monkeypatch.setattr(plans, "_apply_to_account", apply)
+    result = plans.update_plan({"plan_id": created["id"], "database_limit": 9})
+    assert result["accounts_updated"] == 1 and result["propagation_failures"] == []
+    with write_session() as session:
+        assert session.scalar(select(Account.plan_id).where(Account.username == "demo2")) == other["id"]

@@ -15,7 +15,7 @@ import logging
 
 from daemon import account_mutation, audit, database_operations, dns_operations, domain_ownership
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from shared.config import settings
 from shared.db import write_session
@@ -75,6 +75,15 @@ def _delete_managed_zone(domain_name: str) -> dict:
     return handlers_dns.delete_zone({"domain": domain_name})
 
 
+def domain_in_use_error(domain_name: str, owner_id: int, account_id: int) -> ConflictError:
+    """409 for a name that already has a Domain row (shared with parked
+    domains). Checked before domain_ownership's zone and overlap rules so
+    another tenant's exact name is a conflict, not a validation error."""
+    if owner_id != account_id:
+        return ConflictError(f"domain '{domain_name}' already belongs to another account")
+    return ConflictError(f"domain '{domain_name}' is already in use")
+
+
 @database_operations.serialized
 @account_mutation.locked
 def add_domain(params: dict) -> dict:
@@ -82,7 +91,7 @@ def add_domain(params: dict) -> dict:
     domain_name = domain_ownership.require_not_reserved(params["domain"])
     kind = params.get("kind", "addon")
     if kind not in ("primary", "addon", "subdomain"):
-        raise ValueError("kind must be primary, addon, or subdomain")
+        raise ValidationError("kind must be primary, addon, or subdomain")
     audit.change("domain", None, domain_name)
 
     with write_session() as session:
@@ -91,11 +100,10 @@ def add_domain(params: dict) -> dict:
             raise NotFoundError(f"account '{username}' not found")
         if account.status not in ("active", "suspended"):
             raise ConflictError(f"cannot add a domain to an account in status '{account.status}'")
-        domain_ownership.require_available(session, domain_name, account.id)
-
         existing = session.scalar(select(Domain).where(Domain.domain == domain_name))
         if existing is not None:
-            raise ConflictError(f"domain '{domain_name}' is already in use")
+            raise domain_in_use_error(domain_name, existing.account_id, account.id)
+        domain_ownership.require_available(session, domain_name, account.id)
         if kind == "subdomain":
             resource_limits.require_capacity(session, account.id, "subdomain")
 
@@ -172,7 +180,7 @@ def add_domain(params: dict) -> dict:
     # The name had no Domain row, so any settings rows still keyed by it are
     # leftovers of an earlier removal (older releases could abort before
     # cleaning them up) and must not be inherited by this new domain.
-    _purge_domain_settings(domain_name)
+    purge_domain_settings(domain_name)
     try:
         # These lookups can touch the database too; keep them inside the same
         # compensation boundary as docroot/DNS/OLS so an exception here cannot
@@ -234,14 +242,26 @@ def add_domain(params: dict) -> dict:
     return domain_dict
 
 
-def _purge_domain_settings(domain_name: str) -> list[str]:
-    """Drop every per-domain settings row keyed only by the domain NAME
+def purge_domain_settings(domain_name: str, *, refresh_waf: bool = False) -> list[str]:
+    """Drop every per-domain setting keyed only by the domain NAME
     (redirects, LSCache, forwarding, email routing, maintenance, wildcard,
-    staging bookkeeping). Each step runs even if an earlier one failed, so
-    a removed domain never leaves rows that a later re-add of the same name
-    -- by this or another account -- would silently inherit. Returns the
-    steps that failed."""
-    from daemon import forwarding, handlers_email_routing, handlers_maintenance, handlers_wildcard
+    staging bookkeeping, WAF policy, admin PHP function overrides, the
+    .htaccess access-rule cache, the certificate). Each step runs even if
+    an earlier one failed, so a removed domain never leaves state that a
+    later re-add of the same name -- by this or another account -- would
+    silently inherit. Domain removal, parked-domain removal, termination
+    and domain add (for leftovers) all use this one list, so a setting
+    registered here is covered on every path. Returns the steps that failed.
+
+    WAF rows are rendered into the server-wide httpd_config.conf. With
+    refresh_waf the configuration is re-rendered when some went away (a
+    removed child of a wildcard parent is served by the parent next);
+    otherwise the next vhost change renders it without them."""
+    from daemon import forwarding, handlers_email_routing, handlers_maintenance, handlers_wildcard, htaccess, ssl, waf
+
+    def purge_waf(name: str) -> None:
+        if waf.delete_for_domain(name) and refresh_waf:
+            ols.refresh_main_config()
 
     steps = (
         ("redirects", handlers_redirect.delete_redirects_for_domain),
@@ -255,6 +275,12 @@ def _purge_domain_settings(domain_name: str) -> list[str]:
         ("maintenance mode", handlers_maintenance.delete_maintenance_for_domain),
         ("wildcard routing", handlers_wildcard.delete_wildcard_for_domain),
         ("staging bookkeeping", _delete_staging_rows_for_domain),
+        ("WAF settings", purge_waf),
+        ("PHP function overrides", _delete_php_function_overrides),
+        # The watcher re-renders a domain's vhost only when its translated
+        # access rules differ from the last ones it saw for that name.
+        (".htaccess access rules", lambda name: htaccess.watcher.access_signatures.pop(name, None)),
+        ("SSL certificate", ssl.delete_certificate),
     )
     failed = []
     for label, step in steps:
@@ -264,6 +290,16 @@ def _purge_domain_settings(domain_name: str) -> list[str]:
             logger.exception("could not remove %s for domain '%s'", label, domain_name)
             failed.append(label)
     return failed
+
+
+def _delete_php_function_overrides(domain_name: str) -> None:
+    """Administrator disable_functions overrides for one domain
+    (daemon/phpfunctions.py). They can only be set for an existing domain,
+    so any row left for the name belongs to a removed one."""
+    from shared.models import PhpFunctionOverride
+
+    with write_session() as session:
+        session.execute(delete(PhpFunctionOverride).where(PhpFunctionOverride.domain == domain_name))
 
 
 def _delete_staging_rows_for_domain(domain_name: str) -> None:
@@ -278,6 +314,26 @@ def _delete_staging_rows_for_domain(domain_name: str) -> None:
         )).all()
         for row in rows:
             session.delete(row)
+
+
+def require_no_dependents(session, account_id: int, domain_name: str) -> None:
+    """Refuse to remove a domain that other records still route through.
+    An app's proxy mapping is keyed by the name (daemon/ols.py
+    _app_proxy_map), so a later owner of the name would be routed to this
+    account's app; parked aliases would keep serving a removed site."""
+    from shared.models import NodeApp, ParkedDomain, PythonApp
+
+    for model, label in ((NodeApp, "Node.js"), (PythonApp, "Python")):
+        app = session.scalar(select(model).where(model.domain == domain_name))
+        if app is not None:
+            raise ConflictError(f"The {label} app '{app.name}' runs on {domain_name}. "
+                                "Delete the app first, then remove the domain.")
+    aliases = session.scalars(select(ParkedDomain.parked_domain).where(
+        ParkedDomain.account_id == account_id, ParkedDomain.target_domain == domain_name,
+    ).order_by(ParkedDomain.parked_domain)).all()
+    if aliases:
+        raise ConflictError(f"Parked domains point to {domain_name}: {', '.join(aliases)}. "
+                            "Remove them first, then remove the domain.")
 
 
 def remove_domain_dns(account_id: int, domain_name: str) -> list[str]:
@@ -351,6 +407,7 @@ def _remove_domain_locked(username: str, domain_name: str) -> dict:
             raise NotFoundError(f"domain '{domain_name}' not found for account '{username}'")
         if domain.kind == "primary":
             raise ValidationError("cannot remove an account's primary domain -- terminate or reassign the account instead")
+        require_no_dependents(session, account.id, domain_name)
         kind = domain.kind
         account_snapshot = account
         # Keep every persisted value so an OLS failure can restore the exact
@@ -381,7 +438,7 @@ def _remove_domain_locked(username: str, domain_name: str) -> dict:
         raise
 
     failed = remove_domain_dns(account_snapshot.id, domain_name)
-    failed += _purge_domain_settings(domain_name)
+    failed += purge_domain_settings(domain_name, refresh_waf=True)
     result = {"domain": domain_name, "kind": kind, "status": "removed"}
     if failed:
         result["cleanup_failed"] = failed

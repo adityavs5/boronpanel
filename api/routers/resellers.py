@@ -54,6 +54,24 @@ class AccountMoveBody(BaseModel):
     reseller_id: int | None = None
 
 
+# A limit given in one form (account_cpu_cores) must not be stored next to
+# the other form's default (account_cpu_pct 50); the daemon derives it.
+_LIMIT_GROUPS = (
+    {"account_cpu_pct", "account_cpu_cores"},
+    {"account_mem_mb", "account_memory_high_mb"},
+    {"account_io_mb", "account_io_write_mb"},
+)
+
+
+def _plan_fields(body: PlanBody) -> dict:
+    fields = body.model_dump()
+    for group in _LIMIT_GROUPS:
+        if group & body.model_fields_set:
+            for name in group - body.model_fields_set:
+                fields.pop(name)
+    return fields
+
+
 @admin_router.get("/plans")
 def plans(identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -63,13 +81,13 @@ def plans(identity: Identity = Depends(get_identity)):
 @admin_router.post("/plans")
 def create_plan(body: PlanBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
-    return call_daemon("reseller.plan.create", identity, **body.model_dump())
+    return call_daemon("reseller.plan.create", identity, **_plan_fields(body))
 
 
 @admin_router.put("/plans/{plan_id}")
 def update_plan(plan_id: int, body: PlanBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
-    return call_daemon("reseller.plan.update", identity, plan_id=plan_id, **body.model_dump())
+    return call_daemon("reseller.plan.update", identity, plan_id=plan_id, **_plan_fields(body))
 
 
 @admin_router.delete("/plans/{plan_id}")

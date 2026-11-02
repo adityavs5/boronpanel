@@ -23,15 +23,22 @@ subdomain of managed domain" instruction.
 from __future__ import annotations
 
 import ipaddress
+import logging
 
 from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Domain
+from shared.models import DnsZone, Domain
 from shared.validation import ValidationError, validate_domain
 
-from daemon import dns_operations, dnsprovider, dnssetup
+from daemon import dns_operations, dnsprovider, dnssetup, powerdns
+from daemon.dns_zone_lookup import find_managed_zone
+
+logger = logging.getLogger("borond.nameservers")
+# Rows one cross-zone reference search may return. A full page cannot prove
+# that no other zone uses a host, so its address is then kept.
+REFERENCE_SEARCH_LIMIT = 1000
 
 
 class NameserverError(ValidationError):
@@ -78,10 +85,17 @@ def list_nameservers(params: dict) -> dict:
         return {
             "domain": domain,
             "provider": "cloudflare",
+            "managed": True,
             "cloudflare_status": cf_row.status,
             "nameservers": [ns.rstrip(".") for ns in (cf_row.name_servers or [])],
             "glue": {},
         }
+    if not dnsprovider.zone_exists(domain):
+        # A hosted name inside another zone (an addon or subdomain) has no
+        # delegation of its own; reading one used to turn PowerDNS's 404
+        # into an internal error. Same shape as dns.list_records.
+        return {"domain": domain, "provider": None, "managed": False,
+                "parent_zone": find_managed_zone(domain), "nameservers": [], "glue": {}}
 
     records = dnsprovider.list_records(domain)
     ns_rrset = next((r for r in records if r["type"] == "NS" and r["name"] == domain), None)
@@ -97,7 +111,7 @@ def list_nameservers(params: dict) -> dict:
                 "a": a_rrset["values"] if a_rrset else [],
                 "aaaa": aaaa_rrset["values"] if aaaa_rrset else [],
             }
-    return {"domain": domain, "provider": "local", "nameservers": nameservers, "glue": glue}
+    return {"domain": domain, "provider": "local", "managed": True, "nameservers": nameservers, "glue": glue}
 
 
 def default_delegation(domain: str) -> tuple[list[str], dict[str, str]]:
@@ -133,13 +147,59 @@ def _glue_still_used(domain: str, ns: str, records: list[dict]) -> str | None:
     return None
 
 
+def _reference_reason(domain: str, zone: str, name: str, rtype: str) -> str:
+    """The kept-glue reason for a record in another zone. Customers read it,
+    so a zone is named only when the same account owns it: which domains a
+    server hosts, and where their mail points, is not another tenant's to see."""
+    with write_session() as session:
+        owners = dict(session.execute(
+            select(DnsZone.zone, DnsZone.account_id).where(DnsZone.zone.in_([domain, zone]))
+        ).all())
+    if domain in owners and owners.get(zone) == owners[domain]:
+        return f"{name} {rtype} points at it"
+    return f"a {rtype} record in another account's zone on this server points at it"
+
+
+def _used_by_other_zones(domain: str, ns: str) -> str | None:
+    """Why another zone on this server still needs the host's address, or
+    None. A reseller's vanity nameserver lives in the reseller's own zone,
+    yet every customer zone delegated to it (or pointing MX, CNAME or SRV
+    at it) depends on that A/AAAA. One PowerDNS search covers every hosted
+    zone, the local copies of Cloudflare zones included; an answer that
+    cannot be complete keeps the address."""
+    unverified = "the other zones on this server could not all be checked"
+    try:
+        rows = powerdns.search_records(f"*{ns}", REFERENCE_SEARCH_LIMIT)
+    except Exception:  # noqa: BLE001 -- keeping the address is the safe outcome
+        logger.exception("Could not search the hosted zones for records that use %s", ns)
+        return unverified
+    found_own = False
+    for row in rows:
+        zone = str(row.get("zone", "")).rstrip(".").lower()
+        name = str(row.get("name", "")).rstrip(".").lower()
+        if zone == domain:
+            # This zone's own records were checked by _glue_still_used.
+            found_own = found_own or name == ns
+            continue
+        if row.get("type") in ("NS", "MX", "CNAME", "SRV"):
+            target = str(row.get("content", "")).split()[-1:]  # the hostname is the last field
+            if target and target[0].rstrip(".").lower() == ns:
+                return _reference_reason(domain, zone, name, row["type"])
+    # A backend without search support returns no rows at all (not even the
+    # address records being removed), and a full page may be cut short.
+    if not found_own or len(rows) >= REFERENCE_SEARCH_LIMIT:
+        return unverified
+    return None
+
+
 def _remove_stale_glue(domain: str, records: list[dict], previous: list[str], keep: set[str]) -> tuple[list[str], list[dict]]:
     """Delete the glue A/AAAA of in-zone nameservers that are no longer
     delegated to. Glue only exists because the host was a nameserver; left
     behind it keeps answering with an address nobody manages any more.
     The zone apex, hosted website names, the server's own configured
-    nameservers (other zones delegate to them) and hosts other records
-    still use are never touched -- they are reported as kept instead."""
+    nameservers (other zones delegate to them) and hosts that records in
+    this or any other zone on the server still use are never touched --
+    they are reported as kept instead."""
     with write_session() as session:
         hosted = set(session.scalars(select(Domain.domain).where(Domain.domain.in_(previous or [""]))).all())
     server_nameservers = {name.rstrip(".").lower() for name in dnssetup.local_nameservers()}
@@ -153,7 +213,7 @@ def _remove_stale_glue(domain: str, records: list[dict], previous: list[str], ke
             continue
         reason = ("it is a hosted website name" if ns in hosted
                   else "it is one of this server's nameservers" if ns in server_nameservers
-                  else _glue_still_used(domain, ns, records))
+                  else _glue_still_used(domain, ns, records) or _used_by_other_zones(domain, ns))
         if reason:
             kept.append({"name": ns, "types": present, "reason": reason})
             continue
@@ -165,6 +225,13 @@ def _remove_stale_glue(domain: str, records: list[dict], previous: list[str], ke
 
 def _apply_delegation(domain: str, nameservers: list[str], glue: dict[str, str]) -> tuple[list[str], list[dict]]:
     records = dnsprovider.list_records(domain)
+    for ns in glue:
+        # PowerDNS refuses an address beside a CNAME; say so instead of a 502.
+        if any(r["type"] == "CNAME" and r["name"].rstrip(".").lower() == ns for r in records):
+            raise NameserverError(
+                f"'{ns}' is a CNAME in this zone, but a nameserver needs its own A/AAAA glue record. "
+                "Remove the CNAME first."
+            )
     previous = _current_nameservers(domain, records)
     with dnsprovider.batch_cluster_notifications():
         for ns, ip in glue.items():
