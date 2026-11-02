@@ -68,8 +68,13 @@ def _http_challenge_preflight(hostname: str, addresses: list[str]) -> dict:
     token = "boron-preflight-" + secrets.token_hex(8)
     directory = Path(settings.webmail_docroot) / ".well-known" / "acme-challenge"
     directory.mkdir(parents=True, exist_ok=True)
+    # The daemon runs with UMask=0027; the web server (nobody) must be able
+    # to traverse the directories and read the probe, as it reads certbot's.
+    for part in (directory.parent, directory):
+        os.chmod(part, 0o755)
     probe = directory / token
     probe.write_text(token)
+    os.chmod(probe, 0o644)
     try:
         for address in addresses:
             if ":" in address:
@@ -424,13 +429,14 @@ def issue_certificate(params: dict) -> dict:
     if _service_hostname(domain):
         with audit.step("SSL: verify service hostname preflight"):
             preflight = service_certificate_diagnostics({"domain": domain})
+        # Both refusals are for the administrator to fix, so they answer 400.
         if not preflight["dns"]["ok"]:
-            raise SslError(
+            raise ValidationError(
                 f"DNS for '{domain}' must point only to this server before issuance "
                 f"(resolved: {', '.join(preflight['dns']['resolved']) or 'nothing'})"
             )
         if domain == settings.webmail_hostname and not preflight["http_challenge"]["ok"]:
-            raise SslError(preflight["http_challenge"].get("detail", "Webmail ACME preflight failed"))
+            raise ValidationError(preflight["http_challenge"].get("detail", "Webmail ACME preflight failed"))
 
     with audit.step("SSL: choose certificate names"):
         names, skipped_names = _certificate_names(domain)
