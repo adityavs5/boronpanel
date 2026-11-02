@@ -1,6 +1,21 @@
 # Changelog
 
-## 3.3.5 — Stable
+## 3.3.6 — Stable
+
+### New
+
+- Panel settings → Hostname & SSL now sets the phpMyAdmin hostname. Until
+  now only Server Setup could, and it reaches service hostnames only after
+  its DNS provider step, which a server whose DNS is hosted elsewhere cannot
+  complete; phpMyAdmin then stayed installed but unreachable for customers.
+  Saving installs the package if needed and publishes phpMyAdmin; issue its
+  certificate from SSL/TLS.
+
+### Upgrade notes
+
+- No schema or configuration change.
+
+## 3.3.5
 
 ### Fixed
 

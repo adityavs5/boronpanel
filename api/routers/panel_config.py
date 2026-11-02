@@ -42,6 +42,12 @@ def change_hostname(body: HostnameBody, identity: Identity = Depends(get_identit
     return call_daemon('panel.config.hostname', identity, hostname=body.hostname)
 
 
+@api_router.post('/pma-hostname')
+def change_pma_hostname(body: HostnameBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('panel.config.pma_hostname', identity, hostname=body.hostname)
+
+
 @api_router.get('/certificate')
 def certificate_status(identity: Identity = Depends(get_identity)):
     require_admin(identity)

@@ -744,7 +744,7 @@ def readiness_check() -> dict:
     """Diagnostics row (and so an update advisory) for phpMyAdmin."""
     from daemon.diagnostics import _result
     label = "phpMyAdmin"
-    retry = "then save the phpMyAdmin hostname in Server Setup (Service hostnames) again to retry."
+    retry = "then save the phpMyAdmin hostname in Panel settings (Hostname & SSL) again to retry."
     if not database_component_enabled():
         return _result("phpmyadmin", label, "pass",
                        "The database component is not enabled on this server, so phpMyAdmin is not used.")
@@ -771,7 +771,7 @@ def readiness_check() -> dict:
         return _result("phpmyadmin", label, "pass", f"phpMyAdmin is installed and published at https://{host}.")
     if not status["installed"]:
         return _result("phpmyadmin", label, "warn", "phpMyAdmin is not installed.",
-                       "Choose a phpMyAdmin hostname in Server Setup (Service hostnames); the panel installs and "
+                       "Choose a phpMyAdmin hostname in Panel settings (Hostname & SSL); the panel installs and "
                        "publishes it.")
     if not host:
         # Publishing it is the administrator's choice. Every update installs
@@ -779,7 +779,7 @@ def readiness_check() -> dict:
         # as advisories, so a warning here would follow every update.
         return _result("phpmyadmin", label, "pass",
                        "phpMyAdmin is installed but not published: no phpMyAdmin hostname is configured.",
-                       "To publish it, choose a phpMyAdmin hostname in Server Setup (Service hostnames).")
+                       "To publish it, choose a phpMyAdmin hostname in Panel settings (Hostname & SSL).")
     return _result("phpmyadmin", label, "warn",
                    f"phpMyAdmin is installed but not published at https://{host}: its sign-on script is missing.",
-                   "Save the phpMyAdmin hostname in Server Setup (Service hostnames) again to republish it.")
+                   "Save the phpMyAdmin hostname in Panel settings (Hostname & SSL) again to republish it.")

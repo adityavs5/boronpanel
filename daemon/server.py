@@ -136,6 +136,7 @@ OP_TABLE = {
     "apps.node.admin_list": nodeapps.list_all_apps,
     "apps.python.admin_list": pythonapps.list_all_apps,
     "panel.config.hostname": lambda params: panel_config.apply_hostname(params["hostname"]),
+    "panel.config.pma_hostname": lambda params: panel_config.apply_pma_hostname(params["hostname"]),
     "panel.tls.status": panel_tls.certificate_status,
     "panel.tls.issue": panel_tls.issue_from_rpc,
     "templates.suspension_designs.get": site_templates.get_suspension_designs,

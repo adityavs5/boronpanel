@@ -110,7 +110,7 @@ def test_a_failed_background_install_is_reported_and_saves_nothing(server, monke
     check = pma.readiness_check()
     assert check["status"] == "warn" and not check["critical"]
     assert check["explanation"] == "phpMyAdmin could not be installed from Server Setup: E: Unable to locate package phpmyadmin"
-    assert "save the phpMyAdmin hostname in Server Setup" in check["suggested_fix"]
+    assert "save the phpMyAdmin hostname in Panel settings" in check["suggested_fix"]
 
 
 def test_the_latest_choice_wins_while_the_package_installs(server, monkeypatch):
@@ -258,3 +258,18 @@ def test_status_route_is_for_administrators(monkeypatch):
     assert pma_router.phpmyadmin_status(Identity(1, "root", "admin", None, "session")) == {"op": "pma.status"}
     assert POLICY_BY_OPERATION["pma.status"] == "global_admin" and "pma.status" in READ_ONLY_OPERATIONS
     assert daemon_server.OP_TABLE["pma.status"] is pma.provisioning_status
+
+
+def test_panel_settings_saves_the_hostname_without_server_setup(server, monkeypatch):
+    # Server Setup reaches service hostnames only after its DNS steps, which a
+    # server with DNS hosted elsewhere cannot complete; Panel settings can.
+    server.docroot.mkdir()
+    (server.docroot / "index.php").write_text("<?php\n")
+    monkeypatch.setattr(pma, "vhost_config_exists", lambda: True)
+
+    assert panel_config.apply_pma_hostname(" PMA.Example.com ")["status"] == "completed"
+    assert f'pma_hostname = "{HOST}"' in server.config.read_text() and settings.pma_hostname == HOST
+    assert server.published == [HOST]
+    assert panel_config.apply_pma_hostname(HOST) == {"status": "unchanged", "hostname": HOST}
+    with pytest.raises(ValidationError):
+        panel_config.apply_pma_hostname("panel.example.com")

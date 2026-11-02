@@ -465,6 +465,7 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'apps.node.admin_list': 'global_admin',
     'apps.python.admin_list': 'global_admin',
     'panel.config.hostname': 'global_admin',
+    'panel.config.pma_hostname': 'global_admin',
     'panel.tls.status': 'global_admin',
     'panel.tls.issue': 'global_admin',
     'services.control': 'global_admin',

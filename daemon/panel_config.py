@@ -186,6 +186,21 @@ def _defer_pma_hostname(clean: dict) -> str | None:
     return None
 
 
+def apply_pma_hostname(hostname: str) -> dict:
+    """Set the phpMyAdmin hostname outside Server Setup.
+
+    Server Setup reaches its service hostnames only after the DNS steps, which
+    a server whose DNS is hosted elsewhere cannot complete. This saves through
+    the same transaction, so a missing package is installed in the background
+    and the hostname published when it is ready.
+    """
+    hostname = validate_domain(str(hostname or "").strip())
+    if hostname == settings.pma_hostname:
+        return {"status": "unchanged", "hostname": hostname}
+    outcome = apply_setup_values({"pma_hostname": hostname}, reload_services=True)
+    return {**outcome, "hostname": hostname}
+
+
 def apply_hostname(hostname: str, *, config_path=CONFIG_PATH) -> dict:
     """Atomically change the panel hostname and its dedicated ACME route."""
     from daemon import panel_tls
