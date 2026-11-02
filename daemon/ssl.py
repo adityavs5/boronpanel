@@ -100,9 +100,9 @@ def _sni_probe(hostname: str, addresses: list[str], port: int = 443) -> dict:
     for address in addresses:
         try:
             with socket.create_connection((address, port), timeout=5) as raw:
+                # The default context verifies the chain and the hostname in
+                # the handshake (ssl.match_hostname is gone in Python 3.12).
                 with context.wrap_socket(raw, server_hostname=hostname) as secure:
-                    cert = secure.getpeercert()
-                    ssl_library.match_hostname(cert, hostname)
                     return {"ok": True, "address": address, "protocol": secure.version()}
         except (OSError, ssl_library.SSLError, ssl_library.CertificateError) as exc:
             errors.append(f"{address}: {type(exc).__name__}")

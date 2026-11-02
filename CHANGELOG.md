@@ -1,6 +1,20 @@
 # Changelog
 
-## 3.3.4 — Stable
+## 3.3.5 — Stable
+
+### Fixed
+
+- Service certificate diagnostics, and the result of issuing a webmail,
+  mail or phpMyAdmin certificate, no longer fail with an internal error
+  once a valid certificate is installed. The check used a function that
+  Python 3.12 removed; the certificate itself was always issued and
+  deployed.
+
+### Upgrade notes
+
+- No schema or configuration change.
+
+## 3.3.4
 
 ### Fixed
 

@@ -61,3 +61,37 @@ def test_failed_webmail_preflight_is_a_user_error(monkeypatch):
     })
     with pytest.raises(ValidationError, match="not served by the webmail vhost"):
         ssl.issue_certificate({"domain": "webmail.example.test"})
+
+
+def test_sni_probe_accepts_a_trusted_certificate_for_the_name(monkeypatch):
+    # Python 3.12 removed ssl.match_hostname; the probe used to crash with
+    # AttributeError as soon as a valid certificate was installed.
+    calls = {}
+
+    class Secure:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def version(self):
+            return "TLSv1.3"
+
+    class Context:
+        def wrap_socket(self, raw, server_hostname):
+            calls["sni"] = server_hostname
+            return Secure()
+
+    class Raw:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(ssl.ssl_library, "create_default_context", lambda: Context())
+    monkeypatch.setattr(ssl.socket, "create_connection", lambda address, timeout: Raw())
+    result = ssl._sni_probe("webmail.example.test", ["192.0.2.10"])
+    assert result == {"ok": True, "address": "192.0.2.10", "protocol": "TLSv1.3"}
+    assert calls["sni"] == "webmail.example.test"
