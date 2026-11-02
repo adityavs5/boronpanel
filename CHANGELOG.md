@@ -1,6 +1,9 @@
 # Changelog
 
-## 3.3.2 (unreleased)
+## 3.3.2 — Stable
+
+A large maintenance release. Every customer, reseller and administrator
+flow was tested on a live server, and the panel has a new design.
 
 ### Security
 
@@ -22,13 +25,114 @@
 - Sign-in attempts for login names that do not exist or are disabled now take
   as long as attempts for real accounts, so response time no longer shows
   which login names exist.
+- Domains on public providers and infrastructure, and names that overlap
+  another account's domains, can no longer be claimed. Local mail for a
+  domain becomes active only once its MX points to this server.
+- Senders must own the address they send from on SMTP submission, local
+  injection and loopback. Hosting users can no longer send directly to
+  remote port 25.
+- A suspended or terminated customer is refused at sign-in with the reason,
+  and an administrator's "log in as customer" session ends when the account
+  stops being active or suspended.
+- Suspension now also blocks the account's email logins (IMAP, POP3, SMTP
+  and webmail), closes open mail sessions and ends processes the customer
+  left running (SSH background jobs, running cron jobs, systemd user
+  services, PHP workers). Incoming mail is still delivered.
+- Redirect, forwarding and branding URLs may no longer contain control
+  characters, and redirect paths may no longer contain "." or "..".
+- PHP scan directories, cPanel import uploads, certificate writes and web
+  server logs moved out of locations the account can write to. Notification
+  secrets are redacted from logs.
+- Internal errors no longer show raw text, tar output or server paths; they
+  show a reference that the Error Log can find.
+
+### New
+
+- New design for both skins (Evo tile grid and Paper list): navy brand
+  chrome, a blue default accent with presets, one icon family, and every
+  screen checked at 375 px wide in light and dark mode.
+- Force HTTPS per domain, once the domain has a valid certificate.
+- One-click staging sites (create, sync, delete) on the domain page.
+- Autoresponders with optional start and end dates.
+- POP3 (110 with STARTTLS, 995) and SMTP on port 465. The Email page lists
+  the mail app settings for each domain.
+- Customers can download their own backups. Backup jobs, legacy schedules
+  and unused snapshot destinations can be deleted.
+- Administrators can restore or release an account's SQL import recovery
+  copies.
+- File Manager "Change permissions", a per-domain .htaccess report,
+  editable Node.js and Python app settings with "Install dependencies".
+- Diagnostics checks for the mail hostname and certificate, and for
+  phpMyAdmin.
+- Resellers can add subdomains and addon domains to their accounts through
+  the task flow and see those accounts' tasks.
+
+### Fixed and changed
+
+- User errors (not found, conflicts, limits) answer 400, 404 or 409 with a
+  readable message instead of 502. Database, DNS and account locks wait for
+  a bounded time instead of failing at once.
+- Cron entries run through the panel's Python again, so scheduled backups,
+  usage snapshots, inode reconciliation and SSL checks run.
+- Mail: DKIM signing for all outgoing mail, Sieve filters and spam
+  preferences on delivery, forwarders keep the local copy, DMARC defaults,
+  Postfix greets with the mail hostname, mail readiness checks public DNS
+  when the zone is hosted elsewhere, "Add missing records" keeps unrelated
+  TXT records, and a separate mail hostname can get its certificate.
+- Databases: SQL import keeps unmentioned tables and rolls back on failure,
+  uploads up to 2 GiB, phpMyAdmin installs in the background when its
+  hostname is saved, and MariaDB errors are shown.
+- Accounts: plan limits are enforced consistently (CPU, memory, I/O,
+  processes, inodes), plans in use cannot be deleted, resellers can be
+  deleted, terminated usernames can be reused, and restoring or importing a
+  terminated account works even when its uid changes.
+- Web: .htaccess access rules are enforced, removing a domain cleans up its
+  WAF rules, PHP overrides, certificate and DNS, Python apps start, staging
+  and WordPress clones work in new domains, certificates include www when it
+  points here, parked domains get DNS, and PHP errors go to a log instead
+  of the page.
+- DNS: shared record validation in both editors, apex NS and glue handling,
+  CNAMEs with underscores, a real SOA primary nameserver, long TXT records
+  split into 255-byte strings, Cloudflare TXT round-trips, and cPanel or
+  DirectAdmin imports skip and report records they cannot use.
+- Backups: selective and full restores recreate deleted mailboxes,
+  databases, domains, parked domains and cron jobs; a domain now owned by
+  another account is skipped and listed; a failed restore of a terminated
+  account terminates it again.
+- Sign-in shows how long to wait after too many attempts; the lock-out
+  response carries Retry-After.
+- Bandwidth and site statistics include rotated, compressed logs.
 
 ### Upgrade notes
 
-- Database schema revision 6 (additive) adds the token creator. **Existing API
-  tokens have no recorded creator, so the upgrade revokes all of them, both
-  administrator and customer tokens.** After updating, create new tokens under
-  Admin > API tokens and update any integrations that use them.
+- Database schema revision 6 (additive) adds the token creator. **Existing
+  API tokens have no recorded creator, so the upgrade revokes all of them,
+  both administrator and customer tokens.** After updating, create new
+  tokens under Admin > API tokens and update any integrations that use them.
+- Schema revision 7 (additive) adds per-domain Force HTTPS; older releases
+  ignore it.
+- Web server logs move to `/var/log/boron-vhosts`. Each log rolls at 50 MB
+  and keeps at most 10 archives for 90 days. Check free space on /var first.
+- Admin PHP `disable_functions` overrides are now enforced; the upgrade
+  merges each stored override once with the default list, so no account
+  becomes less restricted. `display_errors` is set to Off in the lsphp
+  php.ini files.
+- The update installs missing packages (opendkim, dovecot-pop3d and others)
+  and adds the port 465 submission service; where UFW is active it opens
+  465. Close 110, 995 or 465 if you do not want to offer them.
+- The update re-applies every live account's resource limits and blocks the
+  mail logins and processes of accounts that are already suspended.
+- phpMyAdmin is installed within 5 minutes on servers with a database; a
+  failure appears as an update advisory and in Diagnostics.
+- Existing certificates gain www only when reissued. Parked domains added
+  earlier keep their DNS until parked again. Copies left by failed 3.3.1
+  staging runs are not deleted automatically.
+- Rollback caveat: after rolling back to 3.3.1, accounts suspended under
+  3.3.2 can sign in to email again and keep an expired Linux login after
+  unsuspension. Unsuspend them before rolling back, or run
+  `usermod --expiredate '' <username>` afterwards.
+- The update reloads OpenLiteSpeed, Dovecot and Postfix and restarts the
+  panel services.
 
 ## 3.3.1 — Stable
 
