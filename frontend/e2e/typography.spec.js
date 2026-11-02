@@ -2,7 +2,7 @@ import {test,expect} from '@playwright/test'
 for(const role of ['admin','customer']) for(const skin of ['evolution','paper-lantern']) {
  test(`${role} ${skin}: readable labels and local font budget`,async({page},info)=>{
   const remote=[]
-  page.on('request',request=>{if(!request.url().startsWith('http://127.0.0.1:4173')&&!request.url().startsWith('data:'))remote.push(request.url())})
+  page.on('request',request=>{if(!request.url().startsWith(`http://127.0.0.1:${process.env.E2E_PORT || 4173}`)&&!request.url().startsWith('data:'))remote.push(request.url())})
   await page.addInitScript(({role,skin})=>{
    localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme:'light'},version:0}))
    localStorage.setItem('boron.auth',JSON.stringify({state:{role,username:'qa'},version:0}))
