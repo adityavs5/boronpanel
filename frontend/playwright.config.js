@@ -10,6 +10,6 @@ export default defineConfig({
   fullyParallel: false,
   workers: 2,
   reporter: [['list'], ['html', { open: 'never' }]],
-  use: { baseURL: `http://127.0.0.1:${port}`, viewport: { width: 1440, height: 1000 }, screenshot: 'only-on-failure', trace: 'retain-on-failure' },
+  use: { channel: process.env.E2E_CHANNEL || undefined, baseURL: `http://127.0.0.1:${port}`, viewport: { width: 1440, height: 1000 }, screenshot: 'only-on-failure', trace: 'retain-on-failure' },
   webServer: { command: 'node e2e/serve.mjs', url: `http://127.0.0.1:${port}/app`, reuseExistingServer: !process.env.CI },
 })

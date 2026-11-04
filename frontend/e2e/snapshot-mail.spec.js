@@ -1,10 +1,10 @@
 import { test, expect } from '@playwright/test'
 
-for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light', 'dark']) {
+for (const skin of ['modern', 'classic', 'grid']) for (const theme of ['light', 'dark']) {
   test(`${skin} ${theme}: select and queue mailbox restore`, async ({ page }, info) => {
     const errors = []; page.on('pageerror', error => errors.push(error.message))
     await page.addInitScript(({ skin, theme }) => {
-      localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
+      localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
       localStorage.setItem('boron.auth', JSON.stringify({ state: { role: 'customer', username: 'alpha' }, version: 0 }))
     }, { skin, theme })
     let request = null

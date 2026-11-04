@@ -4,7 +4,7 @@ async function fixture(page,skin,theme='light') {
   const paths=[];const plans=[]
   const account={id:1,username:'alpha',status:'active',uid:2000,gid:2000,primary_domain:'example.com',php_version:'8.3',email:'owner@example.com',cpu_pct:22200,cpu_cores:12,configured_cpu_cores:222,host_cpu_cores:12,host_memory_gb:7.7,mem_mb:1024,io_mb:50,pids_max:100,quota_soft_mb:10240,quota_hard_mb:12288}
   await page.addInitScript(({skin,theme})=>{
-    localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme},version:0}))
+    localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme},version:0}))
     localStorage.setItem('boron.auth',JSON.stringify({state:{role:'admin',username:'admin'},version:0}))
   },{skin,theme})
   await page.route('**/api/**',async route=>{
@@ -30,7 +30,7 @@ async function fixture(page,skin,theme='light') {
   return {paths,plans,account}
 }
 
-for(const skin of ['evolution','paper-lantern']) {
+for(const skin of ['modern', 'classic', 'grid']) {
  test(`${skin}: every hosting template is valid and saves`,async({page})=>{
    test.setTimeout(90000)
    const {plans}=await fixture(page,skin)

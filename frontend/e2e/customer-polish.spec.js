@@ -5,7 +5,7 @@ const account = 'customer'
 async function mockCustomer(page, skin, theme) {
   const writes = []
   await page.addInitScript(({skin, theme}) => {
-    localStorage.setItem('boron.ui', JSON.stringify({state:{skin,theme},version:0}))
+    localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui', JSON.stringify({state:{skin,theme},version:0}))
     localStorage.setItem('boron.auth', JSON.stringify({state:{role:'customer',username:'customer'},version:0}))
   }, {skin, theme})
   await page.route('**/api/**', async route => {
@@ -34,7 +34,7 @@ async function mockCustomer(page, skin, theme) {
   return writes
 }
 
-for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light', 'dark']) {
+for (const skin of ['modern', 'classic', 'grid']) for (const theme of ['light', 'dark']) {
   test(`${skin} ${theme}: domain context, mailbox policy and compact tools`, async ({page}, info) => {
     test.setTimeout(90_000)
     const writes = await mockCustomer(page, skin, theme)

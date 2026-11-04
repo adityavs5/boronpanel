@@ -1,12 +1,4 @@
 /* Element defaults. Self-hosted fonts only (CSP: no remote font requests). */
-@import '@fontsource/open-sans/latin-400.css';
-@import '@fontsource/open-sans/latin-500.css';
-@import '@fontsource/open-sans/latin-600.css';
-@import '@fontsource/open-sans/latin-700.css';
-@import '@fontsource/inter/latin-400.css';
-@import '@fontsource/inter/latin-500.css';
-@import '@fontsource/inter/latin-600.css';
-@import '@fontsource/inter/latin-700.css';
 
 @tailwind base;
 @tailwind components;

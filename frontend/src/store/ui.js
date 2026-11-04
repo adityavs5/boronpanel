@@ -1,27 +1,26 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
-import { normalizeSkin, normalizeMode } from '../config/themes'
+import { currentThemeId, normalizeMode, themeInfo } from '../themes/registry'
 
 // Applying another tab’s preferences must not persist them back and echo a storage event.
 let syncingPreferences = false
 
-// Keep the existing light/dark key for backwards compatibility. A skin changes
-// layout, while theme changes color mode. Neither touches session state.
+// `theme` keeps its old storage key but is the personal light/dark choice. The
+// panel theme itself is server-wide (themes/registry.js) and is not stored here.
 export const useUI = create(
   persist(
     (set, get) => ({
       sidebarCollapsed: false,
       theme: 'light',
-      skin: 'evolution',
       appearance: window.BoronAppearance.normalize(),
       setAppearance: (patch) => {
         const appearance = window.BoronAppearance.normalize({ ...get().appearance, ...patch })
         set({ appearance })
-        applyTheme(get().theme, get().skin)
+        applyTheme(get().theme)
       },
       resetAppearance: () => {
         set({ appearance: window.BoronAppearance.normalize() })
-        applyTheme(get().theme, get().skin)
+        applyTheme(get().theme)
       },
       closedToolGroups: {},
       navigationGroups: {},
@@ -38,12 +37,7 @@ export const useUI = create(
       setTheme: (value) => {
         const theme = normalizeMode(value)
         set({ theme })
-        applyTheme(theme, get().skin)
-      },
-      setSkin: (value) => {
-        const skin = normalizeSkin(value)
-        set({ skin })
-        applyTheme(get().theme, skin)
+        applyTheme(theme)
       },
       toggleToolGroup: (key) => set({ closedToolGroups: { ...get().closedToolGroups, [key]: !get().closedToolGroups[key] } }),
       setNavigationGroup: (key, closed) => set({ navigationGroups: { ...get().navigationGroups, [key]: closed } }),
@@ -60,11 +54,11 @@ export const useUI = create(
         setItem: (key, value) => { try { if (!syncingPreferences) localStorage.setItem(key, value) } catch { /* Session-only preferences when storage is blocked. */ } },
         removeItem: (key) => { try { localStorage.removeItem(key) } catch { /* Storage may be unavailable. */ } },
       })),
-      partialize: (s) => ({ appearance: s.appearance, sidebarCollapsed: s.sidebarCollapsed, theme: s.theme, skin: s.skin, closedToolGroups: s.closedToolGroups, navigationGroups: s.navigationGroups, domainContexts: s.domainContexts }),
+      partialize: (s) => ({ appearance: s.appearance, sidebarCollapsed: s.sidebarCollapsed, theme: s.theme, closedToolGroups: s.closedToolGroups, navigationGroups: s.navigationGroups, domainContexts: s.domainContexts }),
       merge: (saved, current) => ({ ...current,
         appearance: window.BoronAppearance.normalize(saved?.appearance),
         sidebarCollapsed: Boolean(saved?.sidebarCollapsed),
-        theme: normalizeMode(saved?.theme), skin: normalizeSkin(saved?.skin),
+        theme: normalizeMode(saved?.theme),
         closedToolGroups: saved?.closedToolGroups && typeof saved.closedToolGroups === 'object' && !Array.isArray(saved.closedToolGroups) ? saved.closedToolGroups : {},
         navigationGroups: saved?.navigationGroups && typeof saved.navigationGroups === 'object' && !Array.isArray(saved.navigationGroups) ? saved.navigationGroups : {},
         domainContexts: saved?.domainContexts && typeof saved.domainContexts === 'object' && !Array.isArray(saved.domainContexts) ? saved.domainContexts : {},
@@ -73,15 +67,17 @@ export const useUI = create(
   ),
 )
 
-export function applyTheme(theme, skin = 'evolution') {
+export function applyTheme(mode) {
   const root = document.documentElement
-  root.classList.toggle('dark', normalizeMode(theme) === 'dark')
-  root.dataset.skin = normalizeSkin(skin)
-  root.style.colorScheme = normalizeMode(theme)
-  window.BoronAppearance.apply(useUI.getState().appearance, normalizeSkin(skin), normalizeMode(theme) === "dark")
+  const id = currentThemeId()
+  // Only a theme with a dark palette can follow the personal dark-mode choice.
+  const dark = themeInfo(id).darkMode && normalizeMode(mode) === 'dark'
+  root.classList.toggle('dark', dark)
+  root.style.colorScheme = dark ? 'dark' : 'light'
+  window.BoronAppearance.apply(useUI.getState().appearance, id, dark)
 }
 
-// Rehydrate only preferences, never auth, when another tab changes its skin.
+// Rehydrate only preferences, never auth, when another tab changes them.
 export function syncUIPreferences(event) {
   if (event.key !== 'boron.ui' || event.storageArea !== localStorage) return
   try {
@@ -89,11 +85,10 @@ export function syncUIPreferences(event) {
     // not a stale event payload, so an older colour cannot replace a newer one.
     const saved = JSON.parse(localStorage.getItem('boron.ui') || '{}').state || {}
     const theme = normalizeMode(saved.theme)
-    const skin = normalizeSkin(saved.skin)
     const domainContexts = saved.domainContexts && typeof saved.domainContexts === 'object' && !Array.isArray(saved.domainContexts) ? saved.domainContexts : {}
     syncingPreferences = true
-    useUI.setState({ theme, skin, domainContexts, appearance: window.BoronAppearance.normalize(saved.appearance) })
-    applyTheme(theme, skin)
+    useUI.setState({ theme, domainContexts, appearance: window.BoronAppearance.normalize(saved.appearance) })
+    applyTheme(theme)
   } catch { /* Ignore invalid storage from extensions or old clients. */ }
   finally { syncingPreferences = false }
 }

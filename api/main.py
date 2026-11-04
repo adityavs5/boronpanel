@@ -640,7 +640,12 @@ def spa(spa_path: str = ""):
         # index.html must revalidate on every load: its asset URLs are content-
         # hashed, so a cached copy keeps serving an entire stale bundle after a
         # deploy. The hashed assets themselves stay long-cacheable.
-        name = branding.get_branding()["panel_name"]
+        current = branding.get_branding()
+        name = current["panel_name"]
         content = re.sub(r"<title>.*?</title>", lambda match: f"<title>{html.escape(name)}</title>", SPA_INDEX.read_text(), count=1, flags=re.DOTALL)
+        # The theme is on the root element before any script runs, so the first
+        # paint is already the server's theme. get_branding() returns only known
+        # ids, so this is safe to place in the attribute.
+        content = content.replace("<html ", f'<html data-theme="{current["theme"]}" ', 1)
         return HTMLResponse(content, headers={"Cache-Control": "no-cache"})
     return PlainTextResponse("SPA build not found. Run `npm run build` in frontend/.", status_code=503)

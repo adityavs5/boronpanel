@@ -13,6 +13,7 @@ import { Maintenance, NotFound, RouteError } from '@/pages/system'
 const Dashboard = lazy(() => import('@/components/themes/ToolDashboard'))
 const PanelSettings = lazy(() => import('@/pages/admin/PanelSettings'))
 const Appearance = lazy(() => import('@/pages/Appearance'))
+const PanelTheme = lazy(() => import('@/pages/admin/PanelTheme'))
 const Domains = lazy(() => import('@/pages/customer/Domains'))
 const DomainDetail = lazy(() => import('@/pages/customer/DomainDetail'))
 const DomainFeature = lazy(() => import('@/pages/customer/DomainFeature'))
@@ -191,6 +192,7 @@ export const router = createBrowserRouter(
         { path: 'software/node-apps', element: admin(<SoftwareInventory type="node" />) },
         { path: 'software/python-apps', element: admin(<SoftwareInventory type="python" />) },
         { path: 'panel-settings', element: admin(<PanelSettings />) },
+        { path: 'panel-theme', element: admin(<PanelTheme />) },
         { path: 'branding', element: admin(<Branding />) },
         { path: 'templates', element: admin(<Templates />) },
         { path: 'accounts/:username/php', element: admin(<Php />) },

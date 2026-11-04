@@ -1,227 +1,259 @@
 import { test, expect } from '@playwright/test'
 import fs from 'node:fs'
 import vm from 'node:vm'
-const skins = ['evolution', 'paper-lantern']
-const nameOf = (skin) => skin === 'evolution' ? 'Evo' : 'Paper'
 
-async function setup(page, role = 'admin', skin = 'evolution', mode = 'light') {
-  await page.addInitScript(({ role, skin, mode }) => {
-    if (!localStorage.getItem('boron.ui')) localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme: mode }, version: 0 }))
+const themes = ['classic', 'grid', 'modern']
+
+// theme-init.js falls back to the cached public branding when the page was not
+// served by the panel, which is how these tests choose the server's theme.
+async function setup(page, role = 'admin', theme = 'modern', { mode = 'light', handle } = {}) {
+  await page.addInitScript(({ role, theme, mode }) => {
+    if (!sessionStorage.getItem('seeded')) {
+      localStorage.setItem('boron.public-branding.v1', JSON.stringify({ panel_name: 'Boron', theme }))
+      localStorage.setItem('boron.ui', JSON.stringify({ state: { theme: mode }, version: 0 }))
+      sessionStorage.setItem('seeded', '1')
+    }
     localStorage.setItem('boron.auth', JSON.stringify({ state: { role, username: role === 'admin' ? 'admin' : 'hostingdemo' }, version: 0 }))
-  }, { role, skin, mode })
+  }, { role, theme, mode })
   const errors = []
   page.on('pageerror', (error) => errors.push(error.message))
   await page.route('**/api/**', async (route) => {
     const pathname = new URL(route.request().url()).pathname
+    const handled = await handle?.(route, pathname)
+    if (handled === 'done') return undefined
+    if (handled) return route.fulfill({ json: handled })
     let data = {}
     if (pathname.endsWith('/whoami')) data = { role, username: role === 'admin' ? 'admin' : 'hostingdemo' }
-    else if (pathname.endsWith('/branding')) data = { panel_name: 'Boron' }
+    else if (pathname === '/api/v1/branding') data = { panel_name: 'Boron', theme }
+    else if (pathname === '/api/v1/admin/branding') data = { panel_name: 'Boron', theme }
     else if (pathname.endsWith('/version')) data = { version: '1.0.1' }
     else if (pathname.endsWith('/health')) data = { cpu_pct: 12, mem_pct: 32, disks: [{ mount: '/', pct: 24 }], uptime_seconds: 84600 }
     else if (pathname === '/api/v1/accounts') data = [{ username: 'hostingdemo', primary_domain: 'example.com', status: 'active', php_version: '8.3' }]
     else if (pathname.endsWith('/plans')) data = []
     else if (pathname.endsWith('/onboarding')) data = { completed: true }
-    else if (pathname.endsWith('/usage')) data = { current: { disk_total_bytes: 123456789, disk_home_bytes: 100000000, disk_db_bytes: 13456789, disk_mail_bytes: 10000000, inode_count: 4300 }, quota_hard_mb: 5120, bandwidth_month_to_date_bytes: 987654321, resources: { sampled_at: '2026-09-15T12:00:00Z', cpu_usage_usec: 5000000, cpu_limit_cores: 2, memory_current_bytes: 268435456, memory_limit_bytes: 1073741824, io_limit_bytes_per_second: 52428800, read_bytes: 1000, write_bytes: 2000, read_ops: 4, write_ops: 8, domain_count: 2, subdomain_count: 3, subdomain_limit: 10, database_count: 4, database_limit: 10, email_account_count: 8, email_account_limit: 25, ftp_account_count: 2, ftp_account_limit: 5, bandwidth_limit_bytes: 107374182400 } }
-    else if (pathname.endsWith('/domains')) data = { domains: [{ domain: 'example.com', is_primary: true }] }
+    else if (pathname.endsWith('/usage')) data = { current: { disk_total_bytes: 123456789 }, resources: {} }
+    else if (pathname.endsWith('/domains')) data = { domains: [{ domain: 'example.com', kind: 'primary', is_primary: true, created_at: '2026-01-01T00:00:00Z' }], parked: [] }
     else if (pathname.endsWith('/alerts')) data = { active: [] }
-    else if (pathname === '/api/v1/accounts/hostingdemo') data = { username: 'hostingdemo', primary_domain: 'example.com', status: 'active', php_version: '8.3', quota_hard_mb: 5120 }
+    else if (pathname === '/api/v1/accounts/hostingdemo') data = { username: 'hostingdemo', primary_domain: 'example.com', status: 'active', php_version: '8.3' }
     await route.fulfill({ json: data })
   })
   return errors
 }
-async function choose(page, skin) {
-  await page.getByRole('button', { name: 'Choose theme', exact: true }).first().click()
-  await page.getByRole('menuitemradio', { name: new RegExp(nameOf(skin)) }).click()
-  await expect(page.locator('html')).toHaveAttribute('data-skin', skin)
-}
-async function noOverflow(page) {
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth || document.querySelector('main').scrollWidth > document.querySelector('main').clientWidth)
-  expect(overflow).toBe(false)
-}
-for (const role of ['admin', 'customer']) {
-  for (const skin of skins) {
-    test(`${role} ${skin}: dashboard, real tool links, search and collapse`, async ({ page }, testInfo) => {
-      const errors = await setup(page, role, skin)
-      await page.goto(role === 'admin' ? '/app/overview' : '/app/dashboard')
-      await expect(page.getByRole('heading', { name: role === 'admin' ? 'Admin dashboard' : 'Hosting dashboard', exact: true })).toBeVisible()
-      await expect(page.locator('.tool-link').first()).toBeVisible()
-      await expect(page.locator('.query-notice')).toHaveCount(0)
-      if (role === 'customer') {
-        await expect(page.locator('.usage-row').filter({ hasText: 'Memory' })).toContainText('256.0 MB')
-        await expect(page.locator('.usage-row').filter({ hasText: 'Subdomains' })).toContainText('3 / 10')
-        await expect(page.locator('.usage-row').filter({ hasText: 'Email Accounts' })).toContainText('8 / 25')
-        const toolCounts = await page.locator('.tool-grid').evaluateAll(grids => grids.map(grid => grid.querySelectorAll('.tool-link').length))
-        expect(toolCounts).toEqual([7, 6, 6, 7, 5, 7, 6])
-      }
-      if (skin === 'evolution') {
-        const iconSizes = await page.locator('.tool-icon').evaluateAll(items => items.map(item => {
-          const child = item.querySelector(':scope > svg, :scope > img')
-          const outer = item.getBoundingClientRect()
-          const inner = child?.getBoundingClientRect()
-          return [outer.width, outer.height, inner?.width, inner?.height]
-        }))
-        // 44px category chip with a 22px lucide icon, or a 24px product mark.
-        expect(new Set(iconSizes.map(size => size.join('x')))).toEqual(new Set(['44x44x22x22', '44x44x24x24']))
-        const gridRows = await page.locator('.tool-grid').evaluateAll(grids => grids.map(grid => {
-          const left = grid.getBoundingClientRect().left
-          const rows = new Map()
-          for (const item of grid.querySelectorAll('.tool-link')) {
-            const rect = item.getBoundingClientRect()
-            const key = Math.round(rect.top)
-            if (!rows.has(key)) rows.set(key, [])
-            rows.get(key).push(Math.round(rect.left - left))
-          }
-          return [...rows.values()]
-        }))
-        // Evo tiles are ~120px wide and fill the row (auto-fill), so read the column count from the grid.
-        const columns = await page.locator('.tool-grid').first().evaluate(grid => getComputedStyle(grid).gridTemplateColumns.split(' ').length)
-        expect(columns).toBeGreaterThanOrEqual(6)
-        const fullRows = gridRows.flat().filter(row => row.length === columns)
-        // Every row starts on the same column track; full rows share identical offsets.
-        expect(new Set(gridRows.flat().map(row => row[0])).size).toBe(1)
-        if (fullRows.length) expect(new Set(fullRows.map(row => row.join(','))).size).toBe(1)
-        expect(Math.max(...gridRows.flat().map(row => row.length))).toBeLessThanOrEqual(columns)
-        if (role === 'customer') {
-          const heightGap = await page.evaluate(() => {
-            const tools = document.querySelector('.tools-column').getBoundingClientRect()
-            const stats = document.querySelector('.dashboard-stats').getBoundingClientRect()
-            // Guard the reported blank area below the tool column; a shorter
-            // statistics column is allowed because its content differs.
-            return Math.max(0, stats.bottom - tools.bottom)
-          })
-          expect(heightGap).toBeLessThan(24)
-        }
-      }
-      await noOverflow(page)
-      const links = await page.locator('.tool-link').evaluateAll((items) => items.map((item) => item.getAttribute('href')))
-      expect(links).toContain('/app/appearance')
-      expect(links).toContain(role === 'admin' ? '/app/accounts' : '/app/files')
-      if (role === 'customer') expect(links).not.toContain('/app/accounts')
-      await page.screenshot({ path: testInfo.outputPath(`${role}-${skin}.png`), fullPage: true })
-      const section = page.locator('.tool-group').first()
-      await section.locator('button').click()
-      await expect(section.locator('.tool-grid')).toBeHidden()
-      await page.reload()
-      await expect(page.locator('.tool-group').first().locator('.tool-grid')).toBeHidden()
-      const search = page.getByRole('combobox', { name: 'Search hosting tools' })
-      await search.fill(role === 'admin' ? 'accounts' : 'files')
-      await expect(page.getByRole('option').first()).toBeVisible()
-      await search.fill('no-such-tool-xyz')
-      await expect(page.getByText('No matching tool.')).toBeVisible()
-      await page.getByRole('button', { name: 'Clear search' }).click()
-      await expect(search).toHaveValue('')
-      expect(errors).toEqual([])
-    })
-    test(`${role} ${skin}: phone and tablet layouts`, async ({ page }, testInfo) => {
-      const errors = await setup(page, role, skin)
-      for (const width of [320, 390, 768]) {
-        await page.setViewportSize({ width, height: 844 })
-        await page.goto(role === 'admin' ? '/app/overview' : '/app/dashboard')
-        await expect(page.locator('.tool-link').first()).toBeVisible()
-        await noOverflow(page)
-        if (width === 390) await page.screenshot({ path: testInfo.outputPath(`${role}-${skin}-mobile.png`), fullPage: true })
-      }
-      await expect(page.getByRole('button', { name: 'Open navigation' })).toHaveCount(0)
-      await page.getByRole('combobox', { name: 'Search hosting tools' }).fill('change style')
-      await page.getByRole('option').filter({ hasText: 'Appearance' }).click()
-      await expect(page).toHaveURL(/\/appearance$/)
-      expect(errors).toEqual([])
-    })
-  }
-}
-test('theme and color mode persist without losing a password form draft', async ({ page }) => {
-  const errors = await setup(page)
-  await page.goto('/app/change-password')
-  const input = page.locator('input[type="password"]').first()
-  await input.fill('unsaved-test-value')
-  await choose(page, 'paper-lantern')
-  await expect(page).toHaveURL(/\/change-password$/)
-  await expect(input).toHaveValue('unsaved-test-value')
-  await page.getByRole('button', { name: 'Switch to dark mode', exact: true }).click()
-  await expect(page.locator('html')).toHaveClass(/dark/)
-  await page.reload()
-  await expect(page.locator('html')).toHaveAttribute('data-skin', 'paper-lantern')
-  await expect(page.locator('html')).toHaveClass(/dark/)
-  expect(errors).toEqual([])
-})
-for (const skin of skins) {
-  test(`${skin}: appearance previews, switching, and dark surfaces`, async ({ page }, testInfo) => {
-    const errors = await setup(page, 'admin', skin)
-    await page.goto('/app/appearance')
-    await expect(page.getByRole('button', { name: `Use ${nameOf(skin)} theme` })).toHaveAttribute('aria-pressed', 'true')
-    await page.getByRole('button', { name: 'Dark', exact: true }).click()
-    await page.getByRole('link', { name: 'Back to dashboard' }).click()
+const noOverflow = (page) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.querySelector('main').scrollWidth <= document.querySelector('main').clientWidth + 1)
+const home = (role) => role === 'admin' ? '/app/overview' : '/app/dashboard'
+
+for (const role of ['admin', 'customer']) for (const theme of themes) {
+  test(`${role} ${theme}: home has its own frame, icons and working tool links`, async ({ page }) => {
+    const errors = await setup(page, role, theme)
+    await page.goto(home(role))
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
     await expect(page.locator('.tool-link').first()).toBeVisible()
-    await expect(page.locator('html')).toHaveClass(/dark/)
-    expect(await page.locator('main').evaluate((el) => getComputedStyle(el).backgroundColor)).not.toBe('rgb(255, 255, 255)')
-    await page.screenshot({ path: testInfo.outputPath(`${skin}-dark.png`), fullPage: true })
+    if (theme === 'classic') {
+      await expect(page.locator('.persistent-navigation .hosting-sidebar[data-tone=navy]')).toBeVisible()
+      await expect(page.locator('main h1')).toHaveText('Tools')
+    }
+    if (theme === 'grid') {
+      await expect(page.locator('.grid-menu')).toBeVisible()
+      await expect(page.locator('.persistent-navigation')).toHaveCount(0)
+      await expect(page.getByLabel('Navigation filter')).toBeVisible()
+    }
+    if (theme === 'modern') {
+      await expect(page.locator('.persistent-navigation .hosting-sidebar[data-tone=rail]')).toBeVisible()
+      await expect(page.locator('.glance-card').first()).toBeVisible()
+      await expect(page.getByRole('heading', { name: 'All tools' })).toBeVisible()
+    }
+    // Each theme draws from its own icon set: lucide stays in Modern only.
+    expect(await page.locator('svg.theme-icon').count() > 0).toBe(theme !== 'modern')
+    expect(await page.locator('main svg.lucide').count() > 0).toBe(theme === 'modern')
+    const link = page.locator('.tool-link[href$="/ssl"]').first()
+    await link.click()
+    await expect(page).toHaveURL(/\/app\/ssl$/)
+    expect(await noOverflow(page)).toBe(true)
     expect(errors).toEqual([])
   })
+
+  test(`${role} ${theme}: phone and tablet layouts reach every tool`, async ({ page }) => {
+    await setup(page, role, theme)
+    for (const width of [375, 768]) {
+      await page.setViewportSize({ width, height: 900 })
+      await page.goto(home(role))
+      await expect(page.locator('.tool-link').first()).toBeVisible()
+      expect(await noOverflow(page)).toBe(true)
+      await page.locator('.inner-menu-button').click()
+      const drawer = page.locator('#panel-navigation-drawer')
+      await expect(drawer.getByRole('navigation', { name: 'Primary navigation' })).toBeVisible()
+      await drawer.getByRole('button', { name: 'Close navigation' }).click()
+      await expect(drawer).toHaveCount(0)
+    }
+  })
 }
+
+test('internal pages look different in every theme', async ({ browser }) => {
+  const seen = {}
+  for (const theme of themes) {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+    const page = await context.newPage()
+    await setup(page, 'customer', theme)
+    await page.goto('/app/domains')
+    await expect(page.locator('main h1')).toHaveText('Domains')
+    await expect(page.locator('main table').first()).toBeVisible()
+    seen[theme] = await page.evaluate(() => {
+      const css = (selector, property) => { const element = document.querySelector(selector); return element ? getComputedStyle(element)[property] : null }
+      return {
+        font: css('main h1', 'fontFamily'), title: css('main h1', 'fontWeight') + css('main h1', 'fontSize'),
+        button: css('main [data-ui-button=primary]', 'borderRadius') + css('main [data-ui-button=primary]', 'textTransform') + css('main [data-ui-button=primary]', 'backgroundColor'),
+        tableHead: css('main thead th', 'backgroundColor') + css('main thead th', 'color'),
+        icon: document.querySelector('.page-heading-icon svg')?.innerHTML,
+      }
+    })
+    await context.close()
+  }
+  for (const key of ['font', 'title', 'button', 'tableHead', 'icon']) {
+    expect(new Set(themes.map((theme) => seen[theme][key])).size, key).toBe(3)
+  }
+})
+
+test('tabs and forms change with the theme', async ({ browser }) => {
+  const seen = {}
+  for (const theme of themes) {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+    const page = await context.newPage()
+    await setup(page, 'admin', theme)
+    await page.goto('/app/accounts/new')
+    const field = page.locator('.form-field').first()
+    await expect(field).toBeVisible()
+    seen[theme] = await field.evaluate((element) => { const label = getComputedStyle(element.querySelector('label')); return label.fontWeight + label.fontFamily })
+    await context.close()
+  }
+  expect(new Set(Object.values(seen)).size).toBe(3)
+})
+
+test('grid: the top menu reaches a tool from any page, and the filter narrows the tiles', async ({ page }) => {
+  await setup(page, 'customer', 'grid')
+  await page.goto('/app/dashboard')
+  await page.getByLabel('Navigation filter').fill('cron')
+  await expect(page.locator('.tool-link')).toHaveCount(1)
+  await page.getByLabel('Navigation filter').fill('nothing-like-this')
+  await expect(page.getByText(/No tools match/)).toBeVisible()
+  await page.getByLabel('Navigation filter').fill('')
+  await page.goto('/app/domains')
+  await page.locator('.grid-menu').getByRole('button', { name: 'Email' }).click()
+  await page.getByRole('menuitem', { name: 'Email accounts' }).click()
+  await expect(page).toHaveURL(/\/app\/email$/)
+  await expect(page.locator('.grid-menu').getByRole('button', { name: 'Email' })).toHaveAttribute('data-current', 'true')
+})
+
+test('nobody picks a theme for themselves', async ({ page }) => {
+  await setup(page, 'customer', 'classic')
+  await page.goto('/app/appearance')
+  await expect(page.getByRole('heading', { name: 'Display preferences', exact: true })).toBeVisible()
+  await expect(page.getByText('This panel uses the Classic theme, set by the server administrator.')).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Change the panel theme' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Choose theme' })).toHaveCount(0)
+  await expect(page.getByRole('radio')).toHaveCount(0)
+  await page.goto('/app/panel-theme')
+  await expect(page.getByRole('radiogroup', { name: 'Panel theme' })).toHaveCount(0)
+  await page.goto('/app/dashboard')
+  await expect(page.locator('a[href$="/panel-theme"]')).toHaveCount(0)
+})
+
+test('a stored theme from the old per-browser setting is ignored', async ({ page }) => {
+  await setup(page, 'customer', 'grid')
+  await page.addInitScript(() => localStorage.setItem('boron.ui', JSON.stringify({ state: { skin: 'paper-lantern', theme: 'dark' }, version: 0 })))
+  await page.goto('/app/dashboard')
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'grid')
+  await expect(page.locator('html')).not.toHaveClass(/dark/)
+})
+
+test('the login page follows the server theme and offers no choice', async ({ page }) => {
+  for (const theme of themes) {
+    await page.addInitScript((value) => localStorage.setItem('boron.public-branding.v1', JSON.stringify({ panel_name: 'Boron', theme: value })), theme)
+    await page.route('**/api/**', (route) => route.fulfill({ status: new URL(route.request().url()).pathname === '/api/v1/branding' ? 200 : 401, json: { panel_name: 'Boron', theme } }))
+    await page.goto('/app/login')
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Choose theme' })).toHaveCount(0)
+    await page.unrouteAll()
+  }
+})
+
+test('dark mode is offered only by a theme that has one', async ({ page }) => {
+  await setup(page, 'customer', 'modern')
+  await page.goto('/app/dashboard')
+  await page.getByRole('button', { name: 'Switch to dark mode' }).click()
+  await expect(page.locator('html')).toHaveClass(/dark/)
+  await page.reload()
+  await expect(page.locator('html')).toHaveClass(/dark/)
+  const other = await page.context().newPage()
+  await setup(other, 'customer', 'classic', { mode: 'dark' })
+  await other.goto('/app/dashboard')
+  await expect(other.locator('.tool-link').first()).toBeVisible()
+  await expect(other.locator('html')).not.toHaveClass(/dark/)
+  await expect(other.getByRole('button', { name: /Switch to (dark|light) mode/ })).toHaveCount(0)
+})
+
+test('the administrator applies a theme for the whole server', async ({ page }) => {
+  let saved = 'modern'
+  const puts = []
+  await setup(page, 'admin', 'modern', { handle: (route, pathname) => {
+    if (pathname === '/api/v1/admin/branding/theme') { saved = route.request().postDataJSON().theme; puts.push(saved); return { theme: saved } }
+    if (pathname === '/api/v1/admin/branding' || pathname === '/api/v1/branding') return { panel_name: 'Boron', theme: saved }
+    return null
+  } })
+  await page.goto('/app/panel-theme')
+  const options = page.getByRole('radiogroup', { name: 'Panel theme' }).getByRole('radio')
+  await expect(options).toHaveCount(3)
+  await expect(page.getByRole('radio', { name: /Modern/ })).toHaveAttribute('aria-checked', 'true')
+  await expect(page.getByRole('button', { name: 'Apply theme for everyone' })).toBeDisabled()
+  await page.getByRole('radio', { name: /Grid/ }).click()
+  await page.getByRole('button', { name: 'Apply theme for everyone' }).click()
+  await expect.poll(() => puts).toEqual(['grid'])
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'grid')
+  await expect(page.locator('.grid-menu')).toBeVisible()
+})
+
+test('an open page moves to the new theme when the administrator changes it', async ({ page }) => {
+  let server = 'classic'
+  await setup(page, 'customer', 'classic', { handle: (_route, pathname) => pathname === '/api/v1/branding' ? { panel_name: 'Boron', theme: server } : null })
+  await page.goto('/app/dashboard')
+  await expect(page.locator('.persistent-navigation')).toBeVisible()
+  server = 'grid'
+  await page.reload()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'grid')
+  await expect(page.locator('.grid-menu')).toBeVisible()
+})
+
 test('failed statistics offer retry without hiding the tool directory', async ({ page }) => {
-  await setup(page)
-  await page.route('**/api/v1/health', (route) => route.fulfill({ status: 500, json: { detail: 'Unavailable' } }))
+  await setup(page, 'admin', 'classic', { handle: async (route, pathname) => {
+    if (!pathname.endsWith('/health')) return null
+    await route.fulfill({ status: 500, json: { detail: 'down' } })
+    return 'done'
+  } })
   await page.goto('/app/overview')
   await expect(page.getByRole('button', { name: 'Retry server statistics' })).toBeVisible()
   await expect(page.locator('.tool-link').first()).toBeVisible()
-  await page.route('**/api/v1/health', (route) => route.fulfill({ json: { cpu_pct: 0, mem_pct: 0, disks: [] } }))
-  await page.getByRole('button', { name: 'Retry server statistics' }).click()
-  await expect(page.getByRole('progressbar', { name: 'CPU usage' })).toHaveAttribute('aria-valuenow', '0')
-})
-test('preferences synchronize across tabs without navigation', async ({ page, context }) => {
-  await setup(page)
-  await page.goto('/app/overview')
-  const second = await context.newPage()
-  await setup(second)
-  await second.goto('/app/appearance')
-  await choose(page, 'paper-lantern')
-  await expect(second.locator('html')).toHaveAttribute('data-skin', 'paper-lantern')
-  await expect(second).toHaveURL(/\/appearance$/)
-})
-test('prepaint preference loader tolerates old, invalid and unavailable storage', () => {
-  const script = fs.readFileSync('public/theme-init.js', 'utf8')
-  for (const [saved, expectedSkin, expectedDark] of [
-    ['{}', 'evolution', false], ['{bad', 'evolution', false],
-    [JSON.stringify({ state: { theme: 'dark' } }), 'evolution', true],
-    [JSON.stringify({ state: { skin: 'paper-lantern', theme: 'dark' } }), 'paper-lantern', true],
-    [JSON.stringify({ state: { skin: 'unknown', theme: 'invalid' } }), 'evolution', false],
-    [null, 'evolution', false],
-  ]) {
-    let dark
-    const applied = []
-    const root = { dataset: {}, style: {}, classList: { toggle: (_, value) => { dark = value } } }
-    const storage = { getItem: () => { if (saved === null) throw Error('blocked'); return saved } }
-    vm.runInNewContext(script, { window: { BoronAppearance: { apply: (...args) => applied.push(args) } }, document: { documentElement: root }, localStorage: storage })
-    expect(root.dataset.skin).toBe(expectedSkin)
-    expect(dark).toBe(expectedDark)
-    expect(root.style.colorScheme).toBe(expectedDark ? 'dark' : 'light')
-    expect(applied).toEqual([[undefined, expectedSkin, expectedDark]])
-    // The appearance helper is optional; a missing one must not break first paint.
-    const bare = { dataset: {}, style: {}, classList: { toggle: () => {} } }
-    vm.runInNewContext(script, { window: {}, document: { documentElement: bare }, localStorage: storage })
-    expect(bare.dataset.skin).toBe(expectedSkin)
-  }
-  const saved = JSON.stringify({ state: { skin: 'paper-lantern', theme: 'light', appearance: { accent: 'teal' } } })
-  const applied = []
-  vm.runInNewContext(script, { window: { BoronAppearance: { apply: (...args) => applied.push(args) } }, document: { documentElement: { dataset: {}, style: {}, classList: { toggle: () => {} } } }, localStorage: { getItem: () => saved } })
-  expect(applied).toEqual([[{ accent: 'teal' }, 'paper-lantern', false]])
 })
 
-test('keyboard navigation can switch themes and reach Appearance', async ({ page }) => {
-  await setup(page)
-  await page.goto('/app/overview')
-  await page.getByRole('button', { name: 'Choose theme', exact: true }).first().focus()
-  await page.keyboard.press('Enter')
-  const paperTheme = page.getByRole('menuitemradio', { name: /Paper/ })
-  await expect(paperTheme).toBeVisible()
-  await page.keyboard.press('p')
-  await expect(paperTheme).toBeFocused()
-  await page.keyboard.press('Enter')
-  await expect(page.locator('html')).toHaveAttribute('data-skin', 'paper-lantern')
-  const search = page.getByRole('combobox', { name: 'Search hosting tools' })
-  await search.focus()
-  await search.fill('Appearance')
-  await expect(page.getByRole('option').filter({ hasText: 'Appearance' })).toBeVisible()
-  await page.keyboard.press('Enter')
-  await expect(page).toHaveURL(/\/appearance$/)
+test('prepaint loader trusts the server, then the cache, and tolerates bad storage', () => {
+  const script = fs.readFileSync('public/theme-init.js', 'utf8')
+  const run = ({ attribute, ui, branding }) => {
+    let dark
+    const applied = []
+    const root = { dataset: attribute ? { theme: attribute } : {}, style: {}, classList: { toggle: (_, value) => { dark = value } } }
+    const storage = { getItem: (key) => { const value = key === 'boron.ui' ? ui : branding; if (value === null) throw Error('blocked'); return value ?? null } }
+    vm.runInNewContext(script, { window: { BoronAppearance: { apply: (...args) => applied.push(args) } }, document: { documentElement: root }, localStorage: storage })
+    return { theme: root.dataset.theme, dark, scheme: root.style.colorScheme, applied }
+  }
+  const dark = JSON.stringify({ state: { theme: 'dark' } })
+  expect(run({ attribute: 'grid', branding: JSON.stringify({ theme: 'classic' }) }).theme).toBe('grid')
+  expect(run({ branding: JSON.stringify({ theme: 'classic' }) }).theme).toBe('classic')
+  expect(run({ branding: '{bad', ui: '{bad' }).theme).toBe('modern')
+  expect(run({ branding: null, ui: null }).theme).toBe('modern')
+  expect(run({ attribute: 'evolution' }).theme).toBe('modern')
+  expect(run({ attribute: 'modern', ui: dark })).toMatchObject({ dark: true, scheme: 'dark' })
+  expect(run({ attribute: 'classic', ui: dark })).toMatchObject({ dark: false, scheme: 'light' })
+  expect(run({ attribute: 'grid', ui: JSON.stringify({ state: { appearance: { textSize: 'large' } } }) }).applied).toEqual([[{ textSize: 'large' }, 'grid', false]])
+  const bare = { dataset: {}, style: {}, classList: { toggle: () => {} } }
+  vm.runInNewContext(script, { window: {}, document: { documentElement: bare }, localStorage: { getItem: () => null } })
+  expect(bare.dataset.theme).toBe('modern')
 })

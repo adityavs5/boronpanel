@@ -1,60 +1,25 @@
-import { Check, Sun, Moon, Monitor, ArrowRight, Palette } from 'lucide-react'
+import { Sun, Moon, Check, SlidersHorizontal } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useUI } from '@/store/ui'
 import { useAuth } from '@/store/auth'
-import { SKINS } from '@/config/themes'
+import { activeTheme } from '@/themes/runtime'
+import { themeInfo } from '@/themes/registry'
 import { Select } from '@/components/ui/Select'
 import { Button } from '@/components/ui/Button'
 import { PageHeader } from '@/components/ui/PageHeader'
 
-function ThemePreview({ skin }) {
-  const appearance = useUI(s => s.appearance)
-  const tool = (i) => <div className="preview-tool" key={i}><span className={`preview-icon preview-color-${i % 3}`} /><i /></div>
-  return <div style={{ '--preview-accent': appearance.colors[skin] || window.BoronAppearance.defaults[skin] }} className={`theme-preview preview-${skin}`} aria-hidden="true">
-    <div className="preview-frame">
-      <div className="preview-top"><b /><i /><span /><span /></div>
-      <div className="preview-body">
-        {skin === 'evolution' && <div className="preview-side">{[0, 1, 2, 3, 4, 5].map((i) => <i key={i} />)}</div>}
-        <div className="preview-layout">
-          <div className="preview-tools">{[0, 1].map((n) => <div className="preview-group" key={n}><div className="preview-title" /><div className="preview-grid">{(skin === 'evolution' ? [0, 1, 2, 3, 4] : [0, 1, 2, 3, 4, 5]).map(tool)}</div></div>)}</div>
-          <div className="preview-stats">{[0, 1].map((n) => <div key={n}><b />{[0, 1, 2].map((i) => <span key={i}><i /></span>)}</div>)}</div>
-        </div>
-      </div>
-    </div>
-  </div>
-}
+// Personal comfort settings only. The panel theme belongs to the server
+// administrator (Panel theme page).
 export default function Appearance() {
-  const { skin, setSkin, theme, setTheme, appearance, setAppearance, resetAppearance } = useUI()
-  const accent = appearance.colors[skin] || window.BoronAppearance.defaults[skin]
-  const setAccent = color => setAppearance({ colors: { ...appearance.colors, [skin]: color } })
+  const { theme, setTheme, appearance, setAppearance, resetAppearance } = useUI()
   const role = useAuth((s) => s.role)
+  const info = themeInfo(activeTheme()?.id)
   return <div className="appearance-page">
-    <PageHeader title="Appearance" description="Choose the panel theme, colour mode and accent for this browser." icon={Palette} />
-    <div className="theme-choices" role="group" aria-label="Panel theme">
-      {SKINS.map((item) => <button type="button" key={item.id} className={`theme-choice ${skin === item.id ? 'selected' : ''}`} aria-pressed={skin === item.id} aria-label={`Use ${item.name} theme`} onClick={() => setSkin(item.id)}>
-        <ThemePreview skin={item.id} />
-        <div className="theme-choice-info"><div><h2>{item.name}</h2><span>{item.layout}</span></div><p>{item.description}</p><strong>{skin === item.id ? <><Check size={15} /> Active theme</> : <>Use this theme <ArrowRight size={15} /></>}</strong></div>
-      </button>)}
-    </div>
-    <section className="appearance-mode"><div><h2>Colour mode</h2><p>Keep it light or switch to a darker workspace.</p></div><div role="group" aria-label="Colour mode">{[{ id: 'light', label: 'Light', icon: Sun }, { id: 'dark', label: 'Dark', icon: Moon }].map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-pressed={theme === id} onClick={() => setTheme(id)}><Icon size={17} />{label}{theme === id && <Check size={14} />}</button>)}</div></section>
-    <section className="appearance-customization" aria-labelledby="personalize-title">
-      <h2 id="personalize-title">Personalise your workspace</h2>
-      <p>Adjust the accent for each theme and choose the reading style that suits you.</p>
+    <PageHeader title="Display preferences" description="Adjust text size, spacing and motion for this browser." icon={SlidersHorizontal} />
+    {info.darkMode && <section className="appearance-mode"><div><h2>Colour mode</h2><p>Keep it light or switch to a darker workspace.</p></div><div role="group" aria-label="Colour mode">{[{ id: 'light', label: 'Light', icon: Sun }, { id: 'dark', label: 'Dark', icon: Moon }].map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-pressed={theme === id} onClick={() => setTheme(id)}><Icon size={17} />{label}{theme === id && <Check size={14} />}</button>)}</div></section>}
+    <section className="appearance-customization" aria-labelledby="display-title">
+      <h2 id="display-title">Reading and comfort</h2>
       <div className="appearance-settings-grid">
-        <div className="appearance-setting">
-          <label htmlFor="accent-color">{skin === 'evolution' ? 'Evo' : 'Paper'} accent colour</label>
-          <div className="appearance-color-row"><input id="accent-color" type="color" value={accent} onChange={e => setAccent(e.target.value)} />
-          <p>{accent.toUpperCase()} · Text and focus colours adjust for readability.</p></div>
-          <div className="accent-presets" role="group" aria-label="Accent presets">
-            {window.BoronAppearance.presets.map(([name, color]) =>
-              <button key={name} type="button" aria-pressed={accent === color} onClick={() => setAccent(color)}><i style={{ backgroundColor: color }} aria-hidden="true" />{name}</button>)}
-          </div>
-        </div>
-        <div className="appearance-setting"><label htmlFor="appearance-font">Font</label>
-          <Select id="appearance-font" value={appearance.font} onChange={e => setAppearance({ font: e.target.value })}>
-            {Object.entries(window.BoronAppearance.fonts).map(([id, font]) => <option key={id} value={id}>{font.label}</option>)}
-          </Select><p>Fonts are served by this panel, with no external font requests.</p>
-        </div>
         <div className="appearance-setting"><label htmlFor="appearance-text">Text size</label>
           <Select id="appearance-text" value={appearance.textSize} onChange={e => setAppearance({ textSize: e.target.value })}><option value="default">Theme default</option><option value="large">Larger text</option></Select>
         </div>
@@ -65,10 +30,8 @@ export default function Appearance() {
           <Select id="appearance-motion" value={appearance.motion} onChange={e => setAppearance({ motion: e.target.value })}><option value="system">Follow device preference</option><option value="reduced">Reduce motion</option></Select>
         </div>
       </div>
-      <div className="appearance-sample">Your workspace, your style. <span className="appearance-sample-link">Links</span>, buttons and focus rings follow this accent — 0123456789.</div>
-      <div className="appearance-settings-actions"><Button variant="secondary" onClick={resetAppearance}>Reset appearance</Button></div>
+      <div className="appearance-settings-actions"><Button variant="secondary" onClick={resetAppearance}>Reset preferences</Button></div>
     </section>
-    <div className="appearance-note"><Monitor size={17} /><p>Your choice is saved in this browser and applies immediately. Your account, tools, and data stay the same.</p></div>
-    <Link to={role === 'admin' ? '/overview' : role === 'reseller' ? '/reseller' : '/dashboard'} className="appearance-return">Back to dashboard <ArrowRight size={16} /></Link>
+    <p className="appearance-note-text">This panel uses the {info.name} theme, set by the server administrator.{role === 'admin' && <> <Link to="/panel-theme">Change the panel theme</Link></>}</p>
   </div>
 }

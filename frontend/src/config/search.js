@@ -18,7 +18,7 @@ const synonyms = {
   '/backups': 'backup restore recovery snapshots archive',
   '/php': 'php version extensions settings configuration ini memory upload limit',
   '/ftp': 'ftp sftp file transfer accounts', '/cron': 'cron scheduled task jobs automation',
-  '/security': 'security two factor 2fa totp authenticator', '/appearance': 'theme style change style skin appearance evolution paper lantern dark light colour color accent',
+  '/security': 'security two factor 2fa totp authenticator', '/appearance': 'display preferences dark mode text size spacing motion accessibility appearance', '/panel-theme': 'theme skin style layout classic grid modern look change appearance',
   '/accounts': 'hosting users customers accounts domains management', '/updates': 'panel upgrade update version release',
   '/logs': 'logs errors access debug troubleshooting', '/disk-usage': 'disk storage space quota usage',
   '/ssh': 'ssh keys secure shell', '/devtools': 'developer composer wpcli tools',

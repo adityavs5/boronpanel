@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 
 async function session(page, role, skin) {
   await page.addInitScript(({ role, skin }) => {
-    localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme: 'light' }, version: 0 }))
+    localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme: 'light' }, version: 0 }))
     localStorage.setItem('boron.auth', JSON.stringify({ state: { role, username: role === 'admin' ? 'admin' : 'hostingdemo' }, version: 0 }))
   }, { role, skin })
   await page.route('**/api/**', async (route) => {
@@ -35,7 +35,7 @@ const expectedCustomerStart = [
 ]
 const expectedBackupEnd = ['/app/backups', '/app/backups?component=files', '/app/backups?component=databases', '/app/backups?component=mail', '/app/backups?action=create&kind=full', '/app/backups?view=restores']
 
-for (const skin of ['evolution', 'paper-lantern']) {
+for (const skin of ['modern', 'classic', 'grid']) {
   test(`${skin}: requested customer menu order and direct sections`, async ({ page }) => {
     test.setTimeout(90_000) // Covers seven page loads; preserve all assertions on slower runners.
     await session(page, 'customer', skin)
@@ -45,7 +45,8 @@ for (const skin of ['evolution', 'paper-lantern']) {
     expect(links.slice(0, expectedCustomerStart.length)).toEqual(expectedCustomerStart)
     expect(links.slice(-expectedBackupEnd.length)).toEqual(expectedBackupEnd)
 
-    await page.getByRole('combobox', { name: 'Search hosting tools' }).fill('mail deliverability')
+    if(skin==='grid')await page.getByRole('button',{name:'Search the panel'}).click()
+    await page.getByRole('combobox', {name:skin==='grid'?'Search tools and settings':'Search hosting tools'}).fill('mail deliverability')
     await expect(page.getByRole('option').filter({ hasText: 'Email DNS Records' })).toBeVisible()
 
     await page.goto('/app/subdomains')
@@ -75,7 +76,7 @@ for (const skin of ['evolution', 'paper-lantern']) {
 }
 
 test('plan creation is a full page with four editable templates', async ({ page }) => {
-  await session(page, 'admin', 'evolution')
+  await session(page, 'admin', 'modern')
   await page.goto('/app/plans/new')
   const template = page.getByLabel('Starting template')
   await expect(template.locator('option')).toHaveCount(4)
@@ -98,7 +99,7 @@ test('plan creation is a full page with four editable templates', async ({ page 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
 
-for (const skin of ['evolution', 'paper-lantern']) {
+for (const skin of ['modern', 'classic', 'grid']) {
   test(`${skin}: account creation uses a full page and generates credentials`, async ({ page }) => {
     await session(page, 'admin', skin)
     let payload

@@ -1,10 +1,10 @@
 import { test, expect } from '@playwright/test'
 
-for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light', 'dark']) {
+for (const skin of ['modern', 'classic', 'grid']) for (const theme of ['light', 'dark']) {
   test(`update tiers and wordmark ${skin} ${theme}`, async ({ page }) => {
     await page.addInitScript(({ skin, theme }) => {
       localStorage.setItem('boron.auth', JSON.stringify({ state: { role: 'admin', username: 'preview' }, version: 0 }))
-      localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
+      localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
     }, { skin, theme })
     let channel = 'stable'
     const changes = []
@@ -44,7 +44,7 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
     expect(changes).toEqual(['beta', 'stable'])
     await expect(selector.locator('option[value="development"]')).toHaveCount(0)
     const logo = page.locator('.boron-brand-logo img').first()
-    await expect(logo).toHaveAttribute('src', skin === 'evolution' && theme === 'light' ? '/static/dist/brand/boron-logo-navy.svg' : '/static/dist/brand/boron-logo-white.svg')
+    await expect(logo).toHaveAttribute('src', skin === 'classic' || (skin === 'modern' && theme === 'dark') ? '/static/dist/brand/boron-logo-white.svg' : '/static/dist/brand/boron-logo-navy.svg')
     await expect(logo).toHaveCSS('filter', 'none')
     expect(await logo.evaluate(img => img.complete && img.naturalWidth > 0)).toBeTruthy()
     for (const width of [1440, 768, 375]) {

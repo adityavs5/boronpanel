@@ -23,6 +23,7 @@ from sqlalchemy import select
 from shared.config import settings
 from shared.db import read_session
 from shared.models import BrandingSettings
+from shared.panel_themes import DEFAULT_PANEL_THEME, normalize_panel_theme
 
 from api.rpc import call_daemon
 from api.upload_guard import BoundedUploadRoute
@@ -45,7 +46,7 @@ def get_branding():
         if row is None:
             return {
                 "panel_name": "Boron", "support_email": None, "support_url": None,
-                "logo_url": None, "favicon_url": None,
+                "logo_url": None, "favicon_url": None, "theme": DEFAULT_PANEL_THEME,
             }
         return {
             "panel_name": row.panel_name,
@@ -53,6 +54,7 @@ def get_branding():
             "support_url": row.support_url,
             "logo_url": "/api/v1/branding/logo" if row.logo_filename else None,
             "favicon_url": "/api/v1/branding/favicon" if row.favicon_filename else None,
+            "theme": normalize_panel_theme(row.panel_theme),
         }
 
 
@@ -110,6 +112,16 @@ class BrandingBody(BaseModel):
 def set_branding(body: BrandingBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon("branding.set", identity, **body.model_dump(exclude_unset=True))
+
+
+class ThemeBody(BaseModel):
+    theme: str
+
+
+@admin_api_router.put("/theme")
+def set_theme(body: ThemeBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("branding.theme.set", identity, theme=body.theme)
 
 
 async def _upload(op: str, file: UploadFile, identity: Identity):

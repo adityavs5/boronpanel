@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test'
 // Each case has isolated browser storage and API fixtures; two workers can share this matrix safely.
 test.describe.configure({mode:'parallel'})
 
-async function fixture(page, {skin='evolution',mode='light',role='admin'}={}) {
+async function fixture(page, {skin='modern',mode='light',role='admin'}={}) {
   const writes=[]
   const account={id:1,username:'alpha',status:'active',uid:2000,gid:2000,primary_domain:'example.com',php_version:'8.3',email:'owner@example.com',cpu_cores:2,cpu_pct:200,host_cpu_cores:12,host_memory_gb:7.7,mem_mb:1024,io_mb:50,pids_max:100,quota_soft_mb:10240,quota_hard_mb:12288,plan_id:1}
   const domains=[{id:1,domain:'example.com',kind:'primary',docroot:'/home/alpha/public_html',php_version:'8.3',ssl_status:'issued',created_at:'2026-09-30'}, {id:2,domain:'blog.example.com',kind:'subdomain',docroot:'/home/alpha/example.com/subdomains/blog/very-long-folder-name/public_html',php_version:'8.3',ssl_status:'none',created_at:'2026-09-30'}]
@@ -56,7 +56,7 @@ async function sampledContrast(page) {
     return nodes.filter(el=>el.getClientRects().length&&getComputedStyle(el).visibility!=='hidden').map(el=>{const fg=over(parse(getComputedStyle(el).color),background(el));const a=light(fg),b=light(background(el));return {text:el.textContent.trim().slice(0,65),ratio:(Math.max(a,b)+.05)/(Math.min(a,b)+.05)}})
   })
 }
-for(const skin of ['evolution','paper-lantern'])for(const mode of ['light','dark'])for(const width of [1280,768,375])for(const reference of ['account','settings','domains']){
+for(const skin of ['modern', 'classic', 'grid'])for(const mode of ['light','dark'])for(const width of [1280,768,375])for(const reference of ['account','settings','domains']){
  test(`${skin} ${mode} ${width}: ${reference} reference layout`,async({page},info)=>{
   const errors=[];page.on('pageerror',e=>errors.push(e.message))
   await page.setViewportSize({width,height:960})
@@ -85,7 +85,7 @@ for(const skin of ['evolution','paper-lantern'])for(const mode of ['light','dark
 }
 
 test('navigation persists, keyboard search uses synonyms and opens same-page settings',async({page})=>{
- await fixture(page,{skin:'paper-lantern'})
+ await fixture(page,{skin:'classic'})
  await page.goto('/app/panel-settings')
  await page.getByRole('button',{name:'Collapse sidebar',exact:true}).click()
  await page.reload()

@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useNavigate, useLocation, Link, useParams, useMatches } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Palette, Home, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck, Globe2, Search, Menu, ArrowLeft, ChevronRight } from 'lucide-react'
-import { ThemeSelector } from '@/components/themes/ThemeSelector'
+import { SlidersHorizontal, Home, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck, Globe2, Search, Menu, ArrowLeft, ChevronRight } from 'lucide-react'
+import { activeTheme } from '@/themes/runtime'
+import { themeInfo } from '@/themes/registry'
 import { useBranding } from '@/hooks/useBranding'
 import { get } from '@/lib/api'
 import { useUI } from '@/store/ui'
@@ -104,7 +105,7 @@ function AccountSwitcher() {
   )
 }
 
-function DomainSwitcher() {
+export function DomainSwitcher() {
   const username = useAccountUsername()
   const [query, setQuery] = useState('')
   const { data, isLoading } = useQuery({
@@ -147,93 +148,101 @@ function DomainSwitcher() {
   </DropdownMenu>
 }
 
-export function Topbar({ inner = false }) {
-  const theme = useUI((s) => s.theme)
-  const mobileNavOpen = useUI((s) => s.mobileNavOpen)
-  const toggleTheme = useUI((s) => s.toggleTheme)
-  const { role, username, logout, identitySynced } = useAuth()
-  const navigate = useNavigate()
-  const isAdmin = identitySynced && role === 'admin'
-  const isReseller = identitySynced && role === 'reseller'
-  const home = isAdmin ? '/overview' : isReseller ? '/reseller' : '/dashboard'
+// The pieces every theme's layout arranges in its own way.
+export function useHomePath() {
+  const { role, identitySynced } = useAuth()
+  return identitySynced && role === 'admin' ? '/overview' : identitySynced && role === 'reseller' ? '/reseller' : '/dashboard'
+}
+
+export function useIsCustomer() {
+  const { role, identitySynced } = useAuth()
+  return identitySynced && role !== 'admin' && role !== 'reseller'
+}
+
+// Navy wordmark on light chrome, white wordmark on navy or dark chrome.
+export function Brand({ tone = 'navy' }) {
   const { brandingReady, panelName, logoUrl } = useBranding()
-  const skin = useUI((s) => s.skin)
-  // Navy wordmark on light chrome, white wordmark on navy or dark chrome.
-  const wordmark = skin === 'evolution' && theme !== 'dark' ? 'boron-logo-navy.svg' : 'boron-logo-white.svg'
-  const setPaletteOpen = useUI(s => s.setPaletteOpen)
-  const setMobileNavOpen = useUI(s => s.setMobileNavOpen)
+  const mode = useUI((s) => s.theme)
+  const home = useHomePath()
+  const white = tone === 'white' || (themeInfo(activeTheme()?.id).darkMode && mode === 'dark')
+  return <Link to={home} className="panel-brand" aria-label={`${panelName} home`}>
+    {!brandingReady
+      ? <span className="brand-loading-placeholder" aria-hidden="true" />
+      : logoUrl
+      ? <img className="custom-brand-logo" src={logoUrl} alt={panelName} />
+      : <span className="boron-brand-logo"><img src={`/static/dist/brand/boron-logo-${white ? 'white' : 'navy'}.svg`} alt="Boron" /></span>}
+  </Link>
+}
+
+export function MenuButton() {
+  const mobileNavOpen = useUI((s) => s.mobileNavOpen)
+  const setMobileNavOpen = useUI((s) => s.setMobileNavOpen)
+  return <button type="button" className="inner-menu-button" aria-label="Menu" aria-expanded={mobileNavOpen} aria-controls="panel-navigation-drawer" onClick={() => setMobileNavOpen(true)}><Menu aria-hidden="true" /><span>Menu</span></button>
+}
+
+export function SearchBox({ label = 'Search' }) {
+  const setPaletteOpen = useUI((s) => s.setPaletteOpen)
+  return <button type="button" className="global-search-trigger" aria-label="Search the panel" aria-haspopup="dialog" onClick={() => setPaletteOpen(true)}><Search aria-hidden="true" /><span>{label}</span><kbd>Ctrl K</kbd></button>
+}
+
+// Personal light/dark choice, offered only by themes with a dark palette.
+export function ColorModeToggle() {
+  const mode = useUI((s) => s.theme)
+  const toggle = useUI((s) => s.toggleTheme)
+  if (!themeInfo(activeTheme()?.id).darkMode) return null
+  const label = mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
+  return <button onClick={toggle} className="topbar-icon-button topbar-theme-toggle" title={label} aria-label={label}>
+    {mode === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}
+  </button>
+}
+
+export function UserMenu() {
+  const mode = useUI((s) => s.theme)
+  const toggle = useUI((s) => s.toggleTheme)
+  const { role, username, logout } = useAuth()
+  const navigate = useNavigate()
+  const darkMode = themeInfo(activeTheme()?.id).darkMode
 
   async function handleLogout() {
     await logout()
     navigate('/login')
   }
 
-  return (
-    <header className="panel-topbar">
-      <div className="topbar-identity">
-        {inner && <button type="button" className="inner-menu-button" aria-label="Menu" aria-expanded={mobileNavOpen} aria-controls="panel-navigation-drawer" onClick={() => setMobileNavOpen(true)}><Menu aria-hidden="true" /><span>Menu</span></button>}
-        <Link to={home} className="panel-brand" aria-label={`${panelName} home`}>
-          {!brandingReady
-            ? <span className="brand-loading-placeholder" aria-hidden="true" />
-            : logoUrl
-            ? <img className="custom-brand-logo" src={logoUrl} alt={panelName} />
-            : <span className="boron-brand-logo"><img src={`/static/dist/brand/${wordmark}`} alt="Boron" /></span>}
-        </Link>
-      </div>
-
-      <div className="topbar-actions">
-        <button type="button" className={`global-search-trigger ${inner ? '' : 'dashboard-global-search'}`} aria-label="Search the panel" aria-haspopup="dialog" onClick={() => setPaletteOpen(true)}><Search aria-hidden="true" /><span>Search</span><kbd>Ctrl K</kbd></button>
-        {identitySynced && !isAdmin && !isReseller && <DomainSwitcher />}
-        <ThemeSelector compact />
-
-
-        <button
-          onClick={toggleTheme}
-          className="topbar-icon-button topbar-theme-toggle"
-          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-          aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-        >
-          {theme === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}
-        </button>
-
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button type="button" className="topbar-account" aria-label="Open account menu">
-              <span className="topbar-avatar" aria-hidden="true">
-                {(username || role || '?').slice(0, 2).toUpperCase()}
-              </span>
-              <span className="topbar-account-name">{username || role}</span>
-              <ChevronDown aria-hidden="true" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent>
-            <DropdownMenuLabel>
-              <div className="font-medium text-foreground">{username || 'Account'}</div>
-              <div className="text-xs">{role === 'admin' ? 'Administrator' : role === 'reseller' ? 'Reseller' : 'User account'}</div>
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => navigate('/change-password')}>
-              <KeyRound className="h-4 w-4" /> Change password
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => navigate('/security')}>
-              <ShieldCheck className="h-4 w-4" /> Two-factor auth
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => navigate('/appearance')}>
-              <Palette className="h-4 w-4" /> Appearance
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={toggleTheme}>
-              {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              {theme === 'dark' ? 'Light mode' : 'Dark mode'}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem destructive onClick={handleLogout}>
-              <LogOut className="h-4 w-4" /> Log out
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-    </header>
-  )
+  return <DropdownMenu>
+    <DropdownMenuTrigger asChild>
+      <button type="button" className="topbar-account" aria-label="Open account menu">
+        <span className="topbar-avatar" aria-hidden="true">
+          {(username || role || '?').slice(0, 2).toUpperCase()}
+        </span>
+        <span className="topbar-account-name">{username || role}</span>
+        <ChevronDown aria-hidden="true" />
+      </button>
+    </DropdownMenuTrigger>
+    <DropdownMenuContent>
+      <DropdownMenuLabel>
+        <div className="font-medium text-foreground">{username || 'Account'}</div>
+        <div className="text-xs">{role === 'admin' ? 'Administrator' : role === 'reseller' ? 'Reseller' : 'User account'}</div>
+      </DropdownMenuLabel>
+      <DropdownMenuSeparator />
+      <DropdownMenuItem onClick={() => navigate('/change-password')}>
+        <KeyRound className="h-4 w-4" /> Change password
+      </DropdownMenuItem>
+      <DropdownMenuItem onClick={() => navigate('/security')}>
+        <ShieldCheck className="h-4 w-4" /> Two-factor auth
+      </DropdownMenuItem>
+      <DropdownMenuItem onClick={() => navigate('/appearance')}>
+        <SlidersHorizontal className="h-4 w-4" /> Display preferences
+      </DropdownMenuItem>
+      {darkMode && <DropdownMenuItem onClick={toggle}>
+        {mode === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+        {mode === 'dark' ? 'Light mode' : 'Dark mode'}
+      </DropdownMenuItem>}
+      <DropdownMenuSeparator />
+      <DropdownMenuItem destructive onClick={handleLogout}>
+        <LogOut className="h-4 w-4" /> Log out
+      </DropdownMenuItem>
+    </DropdownMenuContent>
+  </DropdownMenu>
 }
 
 export function PageNavigation() {

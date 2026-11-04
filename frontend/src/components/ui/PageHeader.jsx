@@ -1,5 +1,8 @@
 import { useLayoutEffect } from 'react'
+import { useLocation } from 'react-router-dom'
 import { useBranding } from '@/hooks/useBranding'
+import { activeTheme } from '@/themes/runtime'
+import { toolIcon } from '@/config/toolIcons'
 import { cn } from '@/lib/cn'
 import { MoreHorizontal } from 'lucide-react'
 import { Button } from './Button'
@@ -9,6 +12,10 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 // the right. Used at the top of every page.
 export function PageHeader({ title, titleMeta, description, primaryAction, moreActions = [], children, className, icon: Icon }) {
   const { panelName } = useBranding()
+  const { pathname, search } = useLocation()
+  const tools = activeTheme()?.toolIcons
+  // A theme's own pictogram for this tool wins, so every page carries its icon.
+  const Glyph = tools?.[pathname + search] || tools?.[pathname] || Icon || toolIcon(pathname)
   useLayoutEffect(() => {
     document.documentElement.dataset.pageTitle = title
     if (panelName) document.title = `${title} · ${panelName}`
@@ -19,9 +26,9 @@ export function PageHeader({ title, titleMeta, description, primaryAction, moreA
   return (
     <div className={cn('panel-page-heading flex flex-wrap items-start justify-between gap-4', className)}>
       <div className="flex items-start gap-3 min-w-0">
-        {Icon && (
+        {Glyph && (
           <div className="page-heading-icon" aria-hidden="true">
-            <Icon />
+            <Glyph />
           </div>
         )}
         <div className="min-w-0">

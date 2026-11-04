@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test'
 test('custom branding never flashes the default Boron logo during reload', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('boron.auth', JSON.stringify({ state: { role: 'customer', username: 'hostingdemo' }, version: 0 }))
-    localStorage.setItem('boron.ui', JSON.stringify({ state: { skin: 'evolution', theme: 'light' }, version: 0 }))
+    localStorage.setItem('boron.ui', JSON.stringify({ state: { skin: 'modern', theme: 'light' }, version: 0 }))
   })
 
   let brandingCalls = 0
@@ -37,13 +37,13 @@ test('custom branding never flashes the default Boron logo during reload', async
 
   await page.goto('/app/dashboard')
   await expect(page.locator('.boron-brand-logo')).toHaveCount(0)
-  await expect(page.locator('.brand-loading-placeholder')).toBeVisible()
+  await expect(page.locator('.persistent-navigation .brand-loading-placeholder')).toBeVisible()
   releaseFirst()
-  await expect(page.locator('.custom-brand-logo')).toHaveAttribute('alt', 'SiteCountry')
+  await expect(page.locator('.persistent-navigation .custom-brand-logo')).toHaveAttribute('alt', 'SiteCountry')
   await expect(page.locator('.boron-brand-logo')).toHaveCount(0)
 
   await page.reload({ waitUntil: 'domcontentloaded' })
-  await expect(page.locator('.custom-brand-logo')).toHaveAttribute('alt', 'SiteCountry')
+  await expect(page.locator('.persistent-navigation .custom-brand-logo')).toHaveAttribute('alt', 'SiteCountry')
   await expect(page.locator('.boron-brand-logo')).toHaveCount(0)
   releaseReload()
 })

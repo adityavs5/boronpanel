@@ -22,7 +22,7 @@ from version import BORON_VERSION
 
 Compatibility = Literal["additive", "breaking"]
 BASELINE_REVISION = 0
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 8
 SCHEMA_MANIFEST = "schema-compat.json"
 
 
@@ -381,6 +381,16 @@ def _upgrade_api_token_creator_schema(conn) -> None:
     )
 
 
+def _upgrade_panel_theme(conn) -> None:
+    """The server-wide panel theme. NULL means the default theme, and older
+    releases ignore the column."""
+    if "branding_settings" not in set(inspect(conn).get_table_names()):
+        return
+    present = {item["name"] for item in inspect(conn).get_columns("branding_settings")}
+    if "panel_theme" not in present:
+        conn.exec_driver_sql('ALTER TABLE "branding_settings" ADD COLUMN "panel_theme" VARCHAR(32)')
+
+
 def _upgrade_force_https_and_function_defaults(conn) -> None:
     """Per-domain Force HTTPS, and the one-time disable_functions merge.
 
@@ -426,6 +436,7 @@ REVISIONS: tuple[Revision, ...] = (
     Revision(5, "php_lifecycle_isolation", "additive", _upgrade_php_lifecycle_isolation_schema),
     Revision(6, "api_token_creator", "additive", _upgrade_api_token_creator_schema),
     Revision(7, "force_https_function_defaults", "additive", _upgrade_force_https_and_function_defaults),
+    Revision(8, "panel_theme", "additive", _upgrade_panel_theme),
 )
 
 

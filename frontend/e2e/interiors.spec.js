@@ -1,9 +1,9 @@
 import {test,expect} from '@playwright/test'
-for(const skin of ['evolution','paper-lantern']) for(const mode of ['light','dark']) {
+for(const skin of ['modern', 'classic', 'grid']) for(const mode of ['light','dark']) {
  test(`${skin} ${mode}: inner DNS and database pages, forms and mobile`,async({page},info)=>{
   const errors=[];page.on('pageerror',e=>errors.push(e.message))
   await page.addInitScript(({skin,mode})=>{
-   localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme:mode},version:0}))
+   localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme:mode},version:0}))
    localStorage.setItem('boron.auth',JSON.stringify({state:{role:'customer',username:'hostingdemo'},version:0}))
   },{skin,mode})
   await page.route('**/api/**',async route=>{

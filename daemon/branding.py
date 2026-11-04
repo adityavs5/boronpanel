@@ -22,9 +22,11 @@ import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from daemon import audit
 from shared.config import settings
 from shared.db import write_session
 from shared.models import BrandingSettings
+from shared.panel_themes import PANEL_THEMES, normalize_panel_theme
 from shared.terminal_welcome import DEFAULT_TERMINAL_BANNER, validate_terminal_banner
 from shared.validation import ValidationError, validate_email_address, validate_http_url
 
@@ -172,6 +174,7 @@ def _to_dict(row: BrandingSettings) -> dict:
     return {
         "panel_name": row.panel_name,
         "terminal_banner": row.terminal_banner,
+        "theme": normalize_panel_theme(row.panel_theme),
         "default_terminal_banner": DEFAULT_TERMINAL_BANNER,
         "has_logo": row.logo_filename is not None,
         "has_favicon": row.favicon_filename is not None,
@@ -205,6 +208,20 @@ def set_settings(params: dict) -> dict:
             raw = params["support_url"]
             row.support_url = validate_http_url(raw, "support URL") if raw else None
         session.flush()
+        return _to_dict(row)
+
+
+def set_theme(params: dict) -> dict:
+    """Set the theme every user of this server sees."""
+    theme = params.get("theme")
+    if theme not in PANEL_THEMES:
+        raise ValidationError("Choose one of the available panel themes")
+    with write_session() as session:
+        row = _get_row(session)
+        before = normalize_panel_theme(row.panel_theme)
+        row.panel_theme = theme
+        session.flush()
+        audit.change("panel_theme", before, theme)
         return _to_dict(row)
 
 

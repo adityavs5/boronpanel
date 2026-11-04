@@ -2,12 +2,12 @@ import { test, expect } from '@playwright/test'
 
 // Round 2 customer follow-ups: databases, Redis, email, SSH keys and file
 // permissions, against the API shapes in api/routers and the daemon.
-const combos = [['evolution', 'light'], ['paper-lantern', 'dark']]
+const combos = [['modern', 'light'], ['classic', 'dark']]
 const fits = (page) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)
 
 async function customer(page, { skin, mode }, handler, username = 'alpha') {
   await page.addInitScript(({ skin, mode, username }) => {
-    localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme: mode }, version: 0 }))
+    localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme: mode }, version: 0 }))
     localStorage.setItem('boron.auth', JSON.stringify({ state: { role: 'customer', username }, version: 0 }))
   }, { skin, mode, username })
   const calls = []

@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test'
 
-for (const skin of ['evolution', 'paper-lantern']) {
+for (const skin of ['modern', 'classic', 'grid']) {
   test(`${skin}: unavailable PHP settings explain why and retain cron recovery`, async ({ page }) => {
     await page.addInitScript(skin => {
-      localStorage.setItem('boron.ui', JSON.stringify({state: {skin, theme: 'light'}, version: 0}))
+      localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui', JSON.stringify({state: {skin, theme: 'light'}, version: 0}))
       localStorage.setItem('boron.auth', JSON.stringify({state: {role: 'customer', username: 'alpha'}, version: 0}))
     }, skin)
     let mutations = 0

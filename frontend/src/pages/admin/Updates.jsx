@@ -429,7 +429,7 @@ export default function Updates() {
                   </div>
                 )}
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {safeExternalUrl(status.changelog_url) && (
                   <Button variant="outline" asChild>
                     <a href={safeExternalUrl(status.changelog_url)} target="_blank" rel="noopener noreferrer">

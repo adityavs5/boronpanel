@@ -18,10 +18,10 @@ function updateJob(overrides = {}) {
   }
 }
 
-async function mockUpdateStatus(page, { skin = 'evolution', theme = 'light', job = updateJob() } = {}) {
+async function mockUpdateStatus(page, { skin = 'modern', theme = 'light', job = updateJob() } = {}) {
   await page.addInitScript(({ skin, theme }) => {
     localStorage.setItem('boron.auth', JSON.stringify({ state: { role: 'admin', username: 'preview' }, version: 0 }))
-    localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
+    localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
   }, { skin, theme })
   let activeJob = job
   let mutations = 0
@@ -80,7 +80,7 @@ async function expectTopLayout(page, section) {
   expect(geometry.pageOverflows).toBe(false)
 }
 
-for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light', 'dark']) {
+for (const skin of ['modern', 'classic', 'grid']) for (const theme of ['light', 'dark']) {
   test(`top update progress polls accurately without overflow ${skin} ${theme}`, async ({ page }) => {
     const mocked = await mockUpdateStatus(page, { skin, theme })
     await page.goto(process.env.BORON_UI_CHECK_URL || '/app/updates')

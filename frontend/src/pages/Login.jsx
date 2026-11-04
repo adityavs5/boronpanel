@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useLocation, Navigate } from 'react-router-dom'
 import { Eye, EyeOff, ShieldCheck } from 'lucide-react'
-import { ThemeSelector } from '@/components/themes/ThemeSelector'
 import { useAuth } from '@/store/auth'
 import { Button } from '@/components/ui/Button'
 import { Input, FormField } from '@/components/ui/Input'
 import { APP_VERSION } from '@/config/constants'
 import { useBranding } from '@/hooks/useBranding'
+import { activeTheme } from '@/themes/runtime'
 
 // m:ss for the rate-limit countdown on the submit button.
 function clock(seconds) {
@@ -98,12 +98,11 @@ export default function Login() {
 
   return (
     <div className="login-page">
-      <div className="login-theme"><ThemeSelector /></div>
       <main className="login-main">
         <div className="login-brand">
           {!brandingReady ? <span className="brand-loading-placeholder" aria-hidden="true" /> : logoUrl
             ? <img src={logoUrl} alt={panelName} className="login-custom-logo" />
-            : <span className="boron-brand-logo"><img src="/static/dist/brand/boron-logo-white.svg" alt={panelName} /></span>}
+            : <span className="boron-brand-logo"><img src={`/static/dist/brand/boron-logo-${activeTheme()?.id === 'classic' ? 'navy' : 'white'}.svg`} alt={panelName} /></span>}
         </div>
 
         <div className="login-card">

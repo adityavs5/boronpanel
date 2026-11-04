@@ -29,9 +29,9 @@ def _legacy_database(path):
     return engine
 
 
-def test_revision_7_is_the_current_additive_revision():
-    assert CURRENT_SCHEMA_VERSION == 7
-    assert REVISIONS[-1].revision == 7 and REVISIONS[-1].compatibility == "additive"
+def test_revision_7_is_additive():
+    assert CURRENT_SCHEMA_VERSION >= 7
+    assert next(item for item in REVISIONS if item.revision == 7).compatibility == "additive"
 
 
 def test_upgrade_adds_force_https_off_and_merges_old_overrides_with_the_default(tmp_path):

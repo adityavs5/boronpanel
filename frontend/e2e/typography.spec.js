@@ -1,10 +1,10 @@
 import {test,expect} from '@playwright/test'
-for(const role of ['admin','customer']) for(const skin of ['evolution','paper-lantern']) {
+for(const role of ['admin','customer']) for(const skin of ['modern', 'classic', 'grid']) {
  test(`${role} ${skin}: readable labels and local font budget`,async({page},info)=>{
   const remote=[]
   page.on('request',request=>{if(!request.url().startsWith(`http://127.0.0.1:${process.env.E2E_PORT || 4173}`)&&!request.url().startsWith('data:'))remote.push(request.url())})
   await page.addInitScript(({role,skin})=>{
-   localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme:'light'},version:0}))
+   localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme:'light'},version:0}))
    localStorage.setItem('boron.auth',JSON.stringify({state:{role,username:'qa'},version:0}))
   },{role,skin})
   await page.route('**/api/**',async route=>{
@@ -29,8 +29,8 @@ for(const role of ['admin','customer']) for(const skin of ['evolution','paper-la
     sizes:[...document.querySelectorAll('.tool-label')].map(el=>parseFloat(getComputedStyle(el).fontSize)),
     fonts:performance.getEntriesByType('resource').filter(r=>r.name.includes('.woff2')).map(r=>({url:r.name,bytes:r.encodedBodySize}))}
   })
-  expect(metrics.family).toContain('Inter')
-  expect(metrics.sizes.every(size=>size>=(skin==='evolution'?13.5:14))).toBe(true)
+  expect(metrics.family).toContain({modern:'Inter',classic:'Open Sans',grid:'Roboto'}[skin])
+  expect(metrics.sizes.every(size=>size>=13.5)).toBe(true)
   expect(metrics.fonts.length).toBeGreaterThan(0)
   expect(metrics.fonts.length).toBeLessThanOrEqual(4)
   expect(metrics.fonts.reduce((sum,font)=>sum+font.bytes,0)).toBeLessThanOrEqual(80000)

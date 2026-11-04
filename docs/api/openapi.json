@@ -5134,6 +5134,19 @@
         "title": "TemporaryBanBody",
         "type": "object"
       },
+      "ThemeBody": {
+        "properties": {
+          "theme": {
+            "title": "Theme",
+            "type": "string"
+          }
+        },
+        "required": [
+          "theme"
+        ],
+        "title": "ThemeBody",
+        "type": "object"
+      },
       "TriggerBackupBody": {
         "properties": {
           "destination_id": {
@@ -27811,6 +27824,79 @@
           }
         },
         "summary": "Upload Logo",
+        "tags": [
+          "branding"
+        ]
+      }
+    },
+    "/api/v1/admin/branding/theme": {
+      "put": {
+        "operationId": "set_theme_api_v1_admin_branding_theme_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ThemeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Theme",
         "tags": [
           "branding"
         ]
@@ -51046,7 +51132,7 @@
     },
     "/files": {
       "delete": {
-        "operationId": "proxy_files_delete",
+        "operationId": "proxy_files_options",
         "parameters": [
           {
             "in": "query",
@@ -51085,7 +51171,7 @@
         ]
       },
       "get": {
-        "operationId": "proxy_files_delete",
+        "operationId": "proxy_files_options",
         "parameters": [
           {
             "in": "query",
@@ -51124,7 +51210,7 @@
         ]
       },
       "head": {
-        "operationId": "proxy_files_delete",
+        "operationId": "proxy_files_options",
         "parameters": [
           {
             "in": "query",
@@ -51163,7 +51249,7 @@
         ]
       },
       "options": {
-        "operationId": "proxy_files_delete",
+        "operationId": "proxy_files_options",
         "parameters": [
           {
             "in": "query",
@@ -51202,7 +51288,7 @@
         ]
       },
       "patch": {
-        "operationId": "proxy_files_delete",
+        "operationId": "proxy_files_options",
         "parameters": [
           {
             "in": "query",
@@ -51241,7 +51327,7 @@
         ]
       },
       "post": {
-        "operationId": "proxy_files_delete",
+        "operationId": "proxy_files_options",
         "parameters": [
           {
             "in": "query",
@@ -51280,7 +51366,7 @@
         ]
       },
       "put": {
-        "operationId": "proxy_files_delete",
+        "operationId": "proxy_files_options",
         "parameters": [
           {
             "in": "query",
@@ -51321,7 +51407,7 @@
     },
     "/files/{path}": {
       "delete": {
-        "operationId": "proxy_files__path__delete",
+        "operationId": "proxy_files__path__options",
         "parameters": [
           {
             "in": "path",
@@ -51359,7 +51445,7 @@
         ]
       },
       "get": {
-        "operationId": "proxy_files__path__delete",
+        "operationId": "proxy_files__path__options",
         "parameters": [
           {
             "in": "path",
@@ -51397,7 +51483,7 @@
         ]
       },
       "head": {
-        "operationId": "proxy_files__path__delete",
+        "operationId": "proxy_files__path__options",
         "parameters": [
           {
             "in": "path",
@@ -51435,7 +51521,7 @@
         ]
       },
       "options": {
-        "operationId": "proxy_files__path__delete",
+        "operationId": "proxy_files__path__options",
         "parameters": [
           {
             "in": "path",
@@ -51473,7 +51559,7 @@
         ]
       },
       "patch": {
-        "operationId": "proxy_files__path__delete",
+        "operationId": "proxy_files__path__options",
         "parameters": [
           {
             "in": "path",
@@ -51511,7 +51597,7 @@
         ]
       },
       "post": {
-        "operationId": "proxy_files__path__delete",
+        "operationId": "proxy_files__path__options",
         "parameters": [
           {
             "in": "path",
@@ -51549,7 +51635,7 @@
         ]
       },
       "put": {
-        "operationId": "proxy_files__path__delete",
+        "operationId": "proxy_files__path__options",
         "parameters": [
           {
             "in": "path",

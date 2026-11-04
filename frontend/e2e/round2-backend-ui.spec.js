@@ -9,11 +9,11 @@ const reply = (status, json, headers) => ({ fulfill: { status, json, headers } }
 const fits = page => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)
 const toasts = page => page.getByRole('region', { name: 'Notifications (F8)' })
 
-async function session(page, { skin = 'evolution', theme = 'light', role = 'customer', username = 'alpha', handle }) {
+async function session(page, { skin = 'modern', theme = 'light', role = 'customer', username = 'alpha', handle }) {
   const state = { requests: [], errors: [] }
   page.on('pageerror', error => state.errors.push(error.message))
   await page.addInitScript(({ skin, theme, role, username }) => {
-    localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
+    localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
     localStorage.setItem('boron.auth', JSON.stringify({ state: { role, username }, version: 0 }))
   }, { skin, theme, role, username })
   await page.route('**/api/**', async route => {
@@ -34,7 +34,7 @@ const writes = (state, method, suffix) => state.requests.filter(item => item.met
 
 // --- domains ---------------------------------------------------------------
 
-for (const [skin, theme] of [['evolution', 'light'], ['paper-lantern', 'dark']]) {
+for (const [skin, theme] of [['modern', 'light'], ['classic', 'dark']]) {
   test(`${skin} ${theme}: a domain another account holds is refused on the domain field`, async ({ page }) => {
     await session(page, { skin, theme, handle: ({ method, path }) => {
       if (method === 'POST' && path === '/api/v1/task-operations/accounts/alpha/domains') return reply(409, { detail: 'domain already belongs to another account' })
@@ -78,7 +78,7 @@ const mailboxes = hostname => ({
   },
 })
 
-for (const [skin, theme] of [['evolution', 'dark'], ['paper-lantern', 'light']]) {
+for (const [skin, theme] of [['modern', 'dark'], ['classic', 'light']]) {
   test(`${skin} ${theme}: the Email page lists the settings for mail apps`, async ({ page }) => {
     let hostname = 'mail.example.com'
     await session(page, { skin, theme, handle: ({ path }) => {
@@ -111,7 +111,7 @@ const publicReadiness = {
   local_records: [{ key: 'mx', name: '@', type: 'MX', expected: ['10 mail.boron.example.'], actual: ['10 mail.boron.example.'], status: 'present' }],
 }
 
-for (const [skin, theme] of [['evolution', 'light'], ['paper-lantern', 'dark']]) {
+for (const [skin, theme] of [['modern', 'light'], ['classic', 'dark']]) {
   test(`${skin} ${theme}: mail readiness explains a zone public DNS does not use`, async ({ page }, info) => {
     let readiness = publicReadiness
     const state = await session(page, { skin, theme, handle: ({ path }) => {
@@ -149,7 +149,7 @@ for (const [skin, theme] of [['evolution', 'light'], ['paper-lantern', 'dark']])
 // --- DNS ---------------------------------------------------------------------
 
 test('adding a DNS value lists stored values that are not valid', async ({ page }) => {
-  await session(page, { skin: 'paper-lantern', handle: ({ method, path }) => {
+  await session(page, { skin: 'classic', handle: ({ method, path }) => {
     if (method === 'PUT' && path.endsWith('/records')) return { zone: 'example.com', subdomain: '@', type: 'TXT', values: ['"ok"', 'bad value'], ttl: 3600, invalid_existing_values: [{ value: 'bad value', reason: 'TXT strings must be quoted' }] }
     if (path.endsWith('/records')) return { zone: 'example.com', managed: true, provider: 'local', records: [] }
     if (path.endsWith('/domains')) return { domains: [{ domain: 'example.com', kind: 'primary' }] }
@@ -167,7 +167,7 @@ test('adding a DNS value lists stored values that are not valid', async ({ page 
 
 const domainRows = { domains: [{ domain: 'example.com', kind: 'primary', docroot: '/home/alpha/public_html', status: 'active' }] }
 
-for (const [skin, theme] of [['evolution', 'dark'], ['paper-lantern', 'light']]) {
+for (const [skin, theme] of [['modern', 'dark'], ['classic', 'light']]) {
   test(`${skin} ${theme}: Force HTTPS follows the certificate`, async ({ page }) => {
     let status = { domain: 'example.com', enabled: false, active: false, certificate_valid: false, covered_hosts: [], uncovered_hosts: [], reason: null }
     const state = await session(page, { skin, theme, handle: ({ method, path, body }) => {
@@ -211,7 +211,7 @@ for (const [skin, theme] of [['evolution', 'dark'], ['paper-lantern', 'light']])
 test('the staging site is created, refused with a reason, and deleted', async ({ page }, info) => {
   let staging = { exists: false }
   let createAnswer = null
-  const state = await session(page, { skin: 'paper-lantern', theme: 'dark', handle: ({ method, path }) => {
+  const state = await session(page, { skin: 'classic', theme: 'dark', handle: ({ method, path }) => {
     if (path.endsWith('/staging') && method === 'POST') {
       if (createAnswer) return createAnswer
       staging = { exists: true, id: 3, source_domain: 'example.com', staging_domain: 'staging.example.com', staging_url: 'http://staging.example.com', db_name: 'alpha_stg1', created_at: '2026-11-01T10:00:00Z', last_synced_at: null }
@@ -270,7 +270,7 @@ test('nameservers of a name without its own zone point to the parent zone', asyn
 })
 
 test('.htaccess notes without a line number and a reused access check', async ({ page }) => {
-  await session(page, { skin: 'paper-lantern', handle: ({ path }) => {
+  await session(page, { skin: 'classic', handle: ({ path }) => {
     if (path.endsWith('/htaccess-status')) return {
       access_rules: [{ directory: '/private', mode: 'deny', allow: [], deny: [] }],
       unsupported_access_directives: [
@@ -293,7 +293,7 @@ test('.htaccess notes without a line number and a reused access check', async ({
 })
 
 test('LSCache shows a bounded object count and why a purge was refused', async ({ page }) => {
-  await session(page, { skin: 'evolution', theme: 'dark', handle: ({ method, path }) => {
+  await session(page, { skin: 'modern', theme: 'dark', handle: ({ method, path }) => {
     if (path.endsWith('/lscache/purge')) return reply(409, { detail: 'LSCache is not enabled for example.com, so there is no cache to purge. Turn LSCache on first.' })
     if (path.endsWith('/lscache/stats')) return { domain: 'example.com', cached_object_count: 2000, cached_object_count_complete: false, last_purged_at: null }
     if (path.endsWith('/lscache') && method === 'GET') return { domain: 'example.com', enabled: false, ttl_seconds: 3600, exclude_paths: [], last_purged_at: null }
@@ -326,7 +326,7 @@ test('an issued certificate lists the names it covers and the ones left out', as
 // --- PHP and apps ------------------------------------------------------------
 
 test('the PHP memory limit stays within the account memory limit', async ({ page }) => {
-  const state = await session(page, { skin: 'paper-lantern', theme: 'dark', handle: ({ method, path }) => {
+  const state = await session(page, { skin: 'classic', theme: 'dark', handle: ({ method, path }) => {
     if (path === '/api/v1/accounts/alpha/php-ini' && method === 'GET') return {
       username: 'alpha', memory_limit_max_mb: 512, php_versions: ['8.3'], limit_presets: [{ id: 'large', name: 'Large site', description: 'More memory', directives: { memory_limit: '1024M', max_execution_time: 300 } }],
       directives: [{ name: 'memory_limit', type: 'size', value: null, default: '256M', max_mb: 2048 }, { name: 'max_execution_time', type: 'int', value: null, default: 30, min: 1, max: 3600 }],
@@ -451,7 +451,7 @@ test('a destination still used by disabled jobs is deleted together with them', 
 
 const account = { id: 1, username: 'alpha', status: 'active', primary_domain: 'example.com', php_version: '8.3', plan_id: 1, limits_source: 'plan', quota_hard_mb: 10240, inode_enforcement_state: 'warning', inode_enforce_at: '2026-11-09T10:00:00Z' }
 
-for (const [skin, theme] of [['evolution', 'light'], ['paper-lantern', 'dark']]) {
+for (const [skin, theme] of [['modern', 'light'], ['classic', 'dark']]) {
   test(`${skin} ${theme}: an administrator restores and releases database recovery copies`, async ({ page }, info) => {
     let copies = [
       { id: '20261101-a1', db_name: 'alpha_wp', created_at: '2026-11-01T10:00:00+00:00', size_bytes: 2048, origin: 'rollback_failed', description: 'Taken before an import that failed and could not be rolled back', import_error: "ERROR 1064 (42000) at line 3: You have an error in your SQL syntax", rollback_error: 'ERROR 2013: Lost connection during restore', complete: true, database_exists: true, restorable: true, reason: null },

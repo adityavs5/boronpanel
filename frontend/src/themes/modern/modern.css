@@ -1,0 +1,134 @@
+/* Modern: a calm, spacious workspace. Light side menu of hubs with text-only
+   tools beneath them, soft rounded cards, pill tabs, airy borderless tables,
+   line icons, indigo accent, and a dark mode. */
+html[data-theme=modern] {
+  --bg: 247 248 251;
+  --surface: 255 255 255;
+  --card: 255 255 255;
+  --muted: 241 243 248;
+  --hover: 245 246 251;
+  --border: 231 234 241;
+  --border-strong: 212 217 227;
+  --input: 130 138 156;
+  --fg: 28 33 46;
+  --heading: 20 24 36;
+  --muted-fg: 96 104 122;
+  --radius-card: 14px;
+  --radius-btn: 10px;
+  --radius-badge: 8px;
+  --radius-chip: 12px;
+  --shadow-card: 0 1px 2px rgb(20 24 40 / 0.04), 0 4px 16px -6px rgb(20 24 40 / 0.07);
+  --text-title: 26px;
+  --topbar-h: 64px;
+  --nav-width: 268px;
+  --page-pad: 32px;
+  --control-h: 40px;
+  --control-h-sm: 34px;
+  --control-h-lg: 44px;
+  --nav-row: 36px;
+}
+html[data-theme=modern].dark {
+  --bg: 13 15 22;
+  --surface: 21 24 34;
+  --card: 21 24 34;
+  --muted: 30 34 46;
+  --hover: 27 31 42;
+  --border: 39 44 58;
+  --border-strong: 54 60 78;
+  --input: 92 100 120;
+  --input-surface: 17 20 29;
+  --fg: 230 233 240;
+  --heading: 243 245 249;
+  --muted-fg: 150 158 176;
+  --shadow-card: none;
+}
+
+/* Frame */
+html[data-theme=modern] .panel-topbar { background: transparent; border-bottom: 0; padding: 0 var(--page-pad); }
+@media (min-width: 1101px) {
+  html[data-theme=modern] .global-search-trigger { width: min(460px, 100%); height: 42px; border-radius: 12px; border-color: rgb(var(--border)); background: rgb(var(--surface)); box-shadow: var(--shadow-card); }
+}
+html[data-theme=modern] .page-navigation { min-height: 30px; padding-top: 0; padding-bottom: 0; background: transparent; border-bottom: 0; }
+html[data-theme=modern] .persistent-navigation { border-right: 1px solid rgb(var(--border)); }
+
+html[data-theme=modern] .hosting-sidebar { --nav-active-bg: var(--accent-soft); background: rgb(var(--surface)); }
+html[data-theme=modern] .sidebar-brand { padding: 16px 20px 4px; }
+html[data-theme=modern] .sidebar-toolbar { min-height: 32px; padding: 0 12px 0 20px; }
+html[data-theme=modern] .sidebar-toolbar strong { font-size: 12px; font-weight: 500; color: rgb(var(--muted-fg)); }
+html[data-theme=modern] .sidebar-search { border-radius: 10px; background: rgb(var(--muted)); border-color: transparent; }
+html[data-theme=modern] .hosting-sidebar nav { padding: 0 12px var(--space-4); }
+html[data-theme=modern] .sidebar-home { font-size: 14px; font-weight: 500; }
+html[data-theme=modern] .sidebar-section { justify-content: flex-start; gap: 10px; min-height: 38px; padding: 6px 10px; border-radius: 10px; color: rgb(var(--fg)); font-size: 14px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+html[data-theme=modern] .hosting-sidebar .sidebar-section:hover { background: rgb(var(--hover)); color: rgb(var(--heading)); }
+html[data-theme=modern] .sidebar-section > span { flex: 1; text-align: left; }
+html[data-theme=modern] .sidebar-section-icon { width: 18px; height: 18px; color: rgb(var(--muted-fg)); }
+html[data-theme=modern] .hosting-sidebar:not([data-collapsed=true]) section > div { margin: 2px 0 6px 18px; padding-left: 10px; border-left: 1px solid rgb(var(--border)); }
+html[data-theme=modern] .hosting-sidebar:not([data-collapsed=true]) section .sidebar-tool > svg { display: none; }
+html[data-theme=modern] section .sidebar-tool { min-height: 32px; padding: 4px 10px; border-radius: 8px; color: rgb(var(--muted-fg)); font-size: 13.5px; }
+html[data-theme=modern] .sidebar-tool[aria-current=page] { color: rgb(var(--link)); font-weight: 600; }
+html[data-theme=modern] .hosting-sidebar:not([data-tone=navy]) .sidebar-tool[aria-current=page]::before { display: none; }
+
+/* Page heading */
+html[data-theme=modern] .panel-page-heading h1, html[data-theme=modern] .dashboard-heading h1 { font-size: var(--text-title); font-weight: 650; letter-spacing: -0.02em; }
+html[data-theme=modern] .page-heading-icon { width: 44px; height: 44px; border-radius: 13px; }
+html[data-theme=modern] .panel-page-heading .page-heading-icon { margin-top: -2px; }
+html[data-theme=modern] .panel-content { max-width: 1440px; margin-inline: auto; padding-top: 16px; }
+
+/* Cards */
+html[data-theme=modern] .panel-card, html[data-theme=modern] .panel-data-table, html[data-theme=modern] .stat-card, html[data-theme=modern] .stats-panel, html[data-theme=modern] .tool-group { border: 1px solid rgb(var(--border)); box-shadow: var(--shadow-card); }
+html[data-theme=modern] .panel-card .panel-card { box-shadow: none; }
+html[data-theme=modern] .panel-card-header { padding: 18px 22px; border-bottom-color: transparent; }
+html[data-theme=modern] .panel-card-header + .panel-card-content { padding-top: 2px; }
+html[data-theme=modern] .panel-card-content { padding: 22px; }
+
+/* Tabs: pills in a soft track */
+html[data-theme=modern] [role=tablist] { width: fit-content; max-width: 100%; gap: 2px; padding: 4px; border: 0; border-radius: 12px; background: rgb(var(--muted)); }
+html[data-theme=modern] [role=tab] { padding: 7px 14px; border: 0; border-radius: 9px; color: rgb(var(--muted-fg)); }
+html[data-theme=modern] [role=tab]:hover { color: rgb(var(--heading)); }
+html[data-theme=modern] [role=tab][data-state=active] { background: rgb(var(--surface)); color: rgb(var(--heading)); box-shadow: 0 1px 3px rgb(20 24 40 / 0.12); }
+
+/* Tables: airy, no rules between columns */
+html[data-theme=modern] .panel-data-table thead tr { background: transparent; }
+html[data-theme=modern] .panel-data-table thead th, html[data-theme=modern] table thead th { height: 44px; background: transparent; color: rgb(var(--muted-fg)); font-size: 12px; font-weight: 600; }
+
+/* Home */
+html[data-theme=modern] .dashboard-heading { margin: 4px 0 18px; }
+html[data-theme=modern] .dashboard-search-field { height: 48px; border-radius: 14px; box-shadow: var(--shadow-card); border-color: rgb(var(--border)); }
+.glance-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; margin-bottom: 26px; }
+.glance-card { display: flex; flex-direction: column; gap: 2px; padding: 16px 18px; border: 1px solid rgb(var(--border)); border-radius: var(--radius-card); background: rgb(var(--card)); box-shadow: var(--shadow-card); transition: border-color var(--dur) var(--ease), transform var(--dur) var(--ease); }
+.glance-card:hover { border-color: rgb(var(--accent)); transform: translateY(-1px); }
+.glance-card > span { color: rgb(var(--muted-fg)); font-size: 13px; }
+.glance-card > strong { color: rgb(var(--heading)); font-size: 26px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.glance-card > small { color: rgb(var(--muted-fg)); font-size: 12px; }
+.shortcut-section { margin-bottom: 26px; }
+.shortcut-section > h2, .all-tools-title { margin-bottom: 12px; font-size: 15px; font-weight: 600; color: rgb(var(--heading)); }
+.shortcut-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.shortcut-card { display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 10px 14px; border: 1px solid rgb(var(--border)); border-radius: var(--radius-card); background: rgb(var(--card)); box-shadow: var(--shadow-card); color: rgb(var(--fg)); font-size: 14px; font-weight: 500; transition: border-color var(--dur) var(--ease); }
+.shortcut-card:hover { border-color: rgb(var(--accent)); color: rgb(var(--link)); }
+.shortcut-card > span:not(.tool-icon) { flex: 1; min-width: 0; }
+.shortcut-card > svg { width: 16px; height: 16px; flex: none; color: rgb(var(--muted-fg)); }
+.shortcut-card .tool-icon { width: 40px; height: 40px; background: rgb(var(--accent-soft)); color: rgb(var(--link)); }
+.shortcut-card .tool-icon > svg { width: 20px; height: 20px; }
+.shortcut-card .tool-icon > img { width: 22px; height: 22px; }
+
+html[data-theme=modern] .tool-group-heading { min-height: 52px; font-size: 14.5px; }
+html[data-theme=modern] .tool-group-heading[aria-expanded=true] { border-bottom-color: transparent; }
+html[data-theme=modern] .tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px; padding: 0 10px 12px; }
+html[data-theme=modern] .tool-link { flex-direction: row; align-items: center; gap: 10px; min-height: 46px; padding: 6px 8px; text-align: left; border-radius: 10px; }
+html[data-theme=modern] .tool-icon { width: 32px; height: 32px; border-radius: 10px; }
+html[data-theme=modern] .tool-icon > svg { width: 17px; height: 17px; }
+html[data-theme=modern] .tool-icon > img { width: 18px; height: 18px; }
+html[data-theme=modern] .tool-label { max-width: none; font-size: 13.5px; font-weight: 500; }
+html[data-theme=modern] .tool-update-count { top: 2px; left: 28px; }
+html[data-theme=modern] .tool-external { top: 50%; transform: translateY(-50%); }
+
+/* Sign in: a card on a deep indigo gradient */
+html[data-theme=modern] .login-page { background: linear-gradient(135deg, #1b1a4b 0%, #312e81 55%, #4338ca 100%); }
+html[data-theme=modern] .login-card { border-radius: 18px; border: 0; box-shadow: 0 20px 50px -12px rgb(10 8 40 / 0.5); }
+
+@media (max-width: 639px) {
+  html[data-theme=modern] { --page-pad: 16px; --topbar-h: 58px; }
+  html[data-theme=modern] .panel-topbar { padding: 0 var(--space-2) 0 var(--space-3); }
+  .glance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .glance-card > strong { font-size: 20px; }
+}

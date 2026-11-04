@@ -1,17 +1,15 @@
 import { Suspense, useEffect, useLayoutEffect } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { Topbar, PageNavigation } from './Topbar'
 import { MobileBottomNav } from './MobileBottomNav'
 import { ImpersonationBanner } from './ImpersonationBanner'
 import { LicenseBanner } from './LicenseBanner'
 import { useAuth } from '@/store/auth'
-import { useUI } from '@/store/ui'
-import { Sidebar } from './Sidebar'
 import { MobileNavDrawer } from './MobileNavDrawer'
 import { CommandPalette } from './CommandPalette'
 import { useBranding } from '@/hooks/useBranding'
 import { routeTitle } from '@/lib/route-title'
+import { activeTheme } from '@/themes/runtime'
 
 // Shown while a code-split page chunk loads (usually <100ms on repeat visits).
 function PageFallback() {
@@ -30,20 +28,26 @@ function PageFallback() {
   )
 }
 
-// Inner tools have role-aware navigation; dashboard bodies keep their existing layout.
-// Search is available throughout the authenticated app.
+// The scrolling page area every theme's layout puts its content in.
+export function PanelMain({ inner, children }) {
+  return <>
+    <main id="panel-main" className="min-w-0 flex-1 overflow-y-auto bg-background" tabIndex={-1}>
+      <div className="panel-content">{children}</div>
+    </main>
+    {inner && <div id="panel-save-region" />}
+  </>
+}
+
+// Session handling and page titles live here; the server's theme draws the
+// frame around the page. Search is available throughout the authenticated app.
 export function AppShell() {
   const syncIdentity = useAuth((s) => s.syncIdentity)
   const identitySynced = useAuth((s) => s.identitySynced)
   const role = useAuth((s) => s.role)
   const { panelName } = useBranding()
   const { pathname, search } = useLocation()
-  const skin = useUI((s) => s.skin)
-  // The reseller landing page is a list page, not a tool home, so it keeps
-  // the sidebar. Evo administrators keep the navy sidebar on home too, so the
-  // shell does not jump between home and inner pages.
+  const { Layout } = activeTheme()
   const inner = !['/overview', '/dashboard'].includes(pathname)
-  const persistentNavigation = inner || (skin === 'evolution' && role === 'admin' && pathname === '/overview')
   useLayoutEffect(() => {
     document.documentElement.dataset.innerPage = String(inner)
     return () => { delete document.documentElement.dataset.innerPage }
@@ -62,22 +66,12 @@ export function AppShell() {
     <div className={`flex h-full flex-col overflow-hidden ${inner ? 'inner-shell' : 'dashboard-shell'}`}>
       <ImpersonationBanner />
       <LicenseBanner />
-      <Topbar inner={inner} />
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        {persistentNavigation && <div className="persistent-navigation"><Sidebar /></div>}
-        <div className="flex min-w-0 flex-1 flex-col">
-          <PageNavigation />
-          <main id="panel-main" className="min-w-0 flex-1 overflow-y-auto bg-background" tabIndex={-1}>
-            <div className="panel-content">
-              <Suspense fallback={<PageFallback />}>
-                {identitySynced ? <Outlet /> : <PageFallback />}
-              </Suspense>
-            </div>
-          </main>
-          {inner && <div id="panel-save-region" />}
-        </div>
-        <MobileBottomNav />
-      </div>
+      <Layout inner={inner}>
+        <Suspense fallback={<PageFallback />}>
+          {identitySynced ? <Outlet /> : <PageFallback />}
+        </Suspense>
+      </Layout>
+      <MobileBottomNav />
       <MobileNavDrawer />
       <CommandPalette />
     </div>

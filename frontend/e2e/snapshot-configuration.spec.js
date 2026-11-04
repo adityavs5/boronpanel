@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test'
-for (const skin of ['evolution','paper-lantern']) for (const theme of ['light','dark']) for (const section of ['cron', 'php', 'dns']) for (const provider of section === 'dns' ? ['local', 'cloudflare'] : ['local']) {
+for (const skin of ['modern', 'classic', 'grid']) for (const theme of ['light','dark']) for (const section of ['cron', 'php', 'dns']) for (const provider of section === 'dns' ? ['local', 'cloudflare'] : ['local']) {
   const label = section === 'dns' ? 'DNS records' : section === 'php' ? 'PHP settings' : 'scheduled tasks'
   test(`${skin} ${theme}: ${provider} ${label} restore and undo`, async ({ page }) => {
     await page.addInitScript(({skin,theme}) => {
-      localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme},version:0}))
+      localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme},version:0}))
       localStorage.setItem('boron.auth',JSON.stringify({state:{role:'customer',username:'alpha'},version:0}))
     },{skin,theme})
     let restored, undone, history=[]

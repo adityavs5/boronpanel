@@ -1,6 +1,34 @@
 # Changelog
 
-## 3.3.7 — Stable
+## 3.4.0 — Stable
+
+### New
+
+- Three complete panel themes, chosen by the server administrator under
+  Preferences → Panel theme and applied to everyone on the server:
+  - **Classic**: dark side menu, tools listed in groups, account details on
+    the right, two-tone icons.
+  - **Grid**: large full-colour icon tiles, a top menu that reaches every tool
+    from any page, and a navigation filter. No side menu.
+  - **Modern**: a calm, spacious workspace with a light side menu, status at a
+    glance, common tools, and a dark mode.
+- A theme now changes the whole interface, not only the home screen: layout,
+  navigation, icon set, typeface, page headers, cards, tabs, tables, forms,
+  buttons and the sign-in page. Only the active theme is downloaded.
+
+### Changed
+
+- People can no longer choose a theme, accent colour or font for themselves.
+  Appearance is now Display preferences: text size, spacing, motion, and light
+  or dark where the theme has a dark mode. Stored skin, accent and font
+  choices are ignored.
+- The dashboard shows the theme in use as read-only information.
+
+### Upgrade notes
+
+- Adds schema revision 8 (additive). Existing servers start on Modern.
+
+## 3.3.7
 
 ### Fixed
 

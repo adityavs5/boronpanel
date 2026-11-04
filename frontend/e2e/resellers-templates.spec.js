@@ -10,7 +10,7 @@ const templates = ['clean', 'gradient', 'classic', 'minimal'].map((key) => ({
 async function mockSession(page, role, skin) {
   const writes = []
   await page.addInitScript(({ roleName, skinName }) => {
-    localStorage.setItem('boron.ui', JSON.stringify({ state: { skin: skinName, theme: 'light' }, version: 0 }))
+    localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skinName}));localStorage.setItem('boron.ui', JSON.stringify({ state: { skin: skinName, theme: 'light' }, version: 0 }))
     localStorage.setItem('boron.auth', JSON.stringify({ state: { role: roleName, username: roleName === 'admin' ? 'admin' : 'sellerone' }, version: 0 }))
   }, { roleName: role, skinName: skin })
   await page.route('**/api/**', async (route) => {
@@ -40,7 +40,7 @@ async function mockSession(page, role, skin) {
   return writes
 }
 
-for (const skin of ['evolution', 'paper-lantern']) {
+for (const skin of ['modern', 'classic', 'grid']) {
   test(`${skin}: administrator manages resellers and suspension designs`, async ({ page }, info) => {
     const writes = await mockSession(page, 'admin', skin)
     await page.goto('/app/resellers')

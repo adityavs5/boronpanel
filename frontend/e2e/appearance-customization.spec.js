@@ -1,61 +1,51 @@
 import { test, expect } from '@playwright/test'
 
-for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light', 'dark']) {
-  test(`appearance preferences ${skin} ${theme}`, async ({ page }) => {
+for (const theme of ['classic', 'grid', 'modern']) {
+  test(`display preferences persist in ${theme}`, async ({ page }) => {
     const errors = []
-    page.on('pageerror', e => errors.push(e.message))
-    await page.addInitScript(({ skin, theme }) => {
-      if (!localStorage.getItem('boron.ui')) localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
-      localStorage.setItem('boron.auth', JSON.stringify({ state: { role: 'admin', username: 'preview' }, version: 0 }))
-    }, { skin, theme })
-    await page.route('**/api/**', route => {
+    page.on('pageerror', (error) => errors.push(error.message))
+    await page.addInitScript((value) => {
+      localStorage.setItem('boron.public-branding.v1', JSON.stringify({ panel_name: 'Boron', theme: value }))
+      localStorage.setItem('boron.auth', JSON.stringify({ state: { role: 'customer', username: 'preview' }, version: 0 }))
+    }, theme)
+    await page.route('**/api/**', (route) => {
       const path = new URL(route.request().url()).pathname
-      return route.fulfill({ json: path.endsWith('/whoami') ? { role: 'admin', username: 'preview' } : path.endsWith('/branding') ? { panel_name: 'Boron' } : {} })
+      return route.fulfill({ json: path.endsWith('/whoami') ? { role: 'customer', username: 'preview' } : path.endsWith('/branding') ? { panel_name: 'Boron' } : {} })
     })
     await page.goto('/app/appearance')
-    await expect(page.getByLabel('accent colour', { exact: false })).toHaveValue('#2563eb')
-    if (skin === 'evolution') {
-      await page.goto('/app/accounts/new')
-      const primary = page.getByRole('button', { name: 'Create account', exact: true })
-      await expect(primary).toHaveCSS('background-color', 'rgb(37, 99, 235)')
-      await expect(primary).toHaveCSS('color', 'rgb(255, 255, 255)')
-      await page.screenshot({ path: `test-results/evo-blue-create-account-${theme}.png`, fullPage: true })
-      await page.goto('/app/appearance')
-    }
-    for (const color of ['#ffffff', '#000000', '#bc942c', '#ffcc00']) {
-      await page.locator('#accent-color').fill(color)
-      const contrast = await page.evaluate(() => {
-        const css = getComputedStyle(document.documentElement)
-        const value = key => css.getPropertyValue('--pref-' + key).trim().split(' ').map(Number)
-        return window.BoronAppearance.contrast(value('accent'), value('ink'))
-      })
-      expect(contrast).toBeGreaterThanOrEqual(4.5)
-    }
-    await page.getByLabel('Font', { exact: true }).selectOption('lato')
     await page.getByLabel('Text size', { exact: true }).selectOption('large')
     await page.getByLabel('Spacing', { exact: true }).selectOption('comfortable')
     await page.getByLabel('Motion', { exact: true }).selectOption('reduced')
     await page.reload()
-    await expect(page.getByLabel('Font', { exact: true })).toHaveValue('lato')
+    await expect(page.locator('html')).toHaveAttribute('data-text-size', 'large')
     await expect(page.locator('html')).toHaveAttribute('data-density', 'comfortable')
     await expect(page.locator('html')).toHaveAttribute('data-motion', 'reduced')
-    expect(await page.locator('.appearance-sample').evaluate(e => getComputedStyle(e).fontFamily)).toContain('Lato')
     for (const width of [1440, 768, 375]) {
       await page.setViewportSize({ width, height: 1000 })
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy()
-      await page.screenshot({ path: `test-results/appearance-${skin}-${theme}-${width}.png`, fullPage: true })
     }
-    await page.getByRole('button', { name: 'Reset appearance' }).click()
-    await expect(page.getByLabel('Font', { exact: true })).toHaveValue('inter')
-    await expect(page.getByLabel('accent colour', { exact: false })).toHaveValue('#2563eb')
+    await page.getByRole('button', { name: 'Reset preferences' }).click()
+    await expect(page.getByLabel('Text size', { exact: true })).toHaveValue('default')
+    await expect(page.locator('html')).toHaveAttribute('data-density', 'default')
     expect(errors).toEqual([])
+  })
+
+  test(`${theme} keeps its accent readable`, async ({ page }) => {
+    await page.addInitScript((value) => localStorage.setItem('boron.public-branding.v1', JSON.stringify({ panel_name: 'Boron', theme: value })), theme)
+    await page.route('**/api/**', (route) => route.fulfill({ status: 401, json: {} }))
+    await page.goto('/app/login')
+    const contrast = await page.evaluate(() => {
+      const css = getComputedStyle(document.documentElement), value = (name) => css.getPropertyValue(`--pref-${name}`).trim().split(' ').map(Number)
+      return { button: window.BoronAppearance.contrast(value('accent'), value('ink')), link: window.BoronAppearance.contrast(value('link'), [255, 255, 255]) }
+    })
+    expect(contrast.button).toBeGreaterThanOrEqual(4.5)
+    expect(contrast.link).toBeGreaterThanOrEqual(4.5)
   })
 }
 
-test('untrusted appearance values cannot inject CSS', async ({ page }) => {
+test('stored accent, font and invalid values are ignored', async ({ page }) => {
+  await page.route('**/api/**', (route) => route.fulfill({ status: 401, json: {} }))
   await page.goto('/app/login')
-  const prefs = await page.evaluate(() => window.BoronAppearance.normalize({ colors: { evolution: 'url(https://invalid.test)' }, font: '__proto__', density: 'invalid' }))
-  expect(prefs.colors).toEqual({})
-  expect(prefs.font).toBe('inter')
-  expect(prefs.density).toBe('default')
+  const prefs = await page.evaluate(() => window.BoronAppearance.normalize({ colors: { modern: 'url(https://invalid.test)' }, font: '__proto__', density: 'invalid' }))
+  expect(prefs).toEqual({ textSize: 'default', density: 'default', motion: 'system' })
 })

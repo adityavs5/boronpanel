@@ -7,6 +7,8 @@ import {
   DatabaseZap, Construction, BarChart3, ArrowRightLeft, Ban, ShieldBan, FileText, Store,
   ExternalLink, Zap, Shield, GaugeCircle, Route, ServerCog, Stethoscope,
   ArchiveRestore, BadgeCheck, FileLock,
+  LayoutGrid,
+  SlidersHorizontal,
 } from 'lucide-react'
 import { WordPressIcon, RedisIcon, NodeIcon, PythonIcon, GitIcon } from '@/components/icons/BrandIcons'
 
@@ -60,7 +62,7 @@ export const customerNav = [
   { label: 'Website maintenance', to: '/website-maintenance', icon: Construction },
   { label: 'Custom error pages', to: '/error-pages', icon: FileText },
   { label: 'Website statistics', to: '/website-statistics', icon: GaugeCircle },
-  { label: 'Appearance', to: '/appearance', icon: Palette },
+  { label: 'Display preferences', to: '/appearance', icon: SlidersHorizontal },
 ]
 
 // Admin nav — server-wide administration + the accounts hub.
@@ -97,8 +99,9 @@ export const adminNav = [
   { section: 'Panel configuration' },
   { label: 'Server setup', to: '/server-setup', icon: ServerCog },
   { label: 'Panel settings', to: '/panel-settings', icon: Cog },
+  { label: 'Panel theme', to: '/panel-theme', icon: LayoutGrid },
   { label: 'Branding', to: '/branding', icon: Palette },
-  { label: 'Appearance', to: '/appearance', icon: Palette },
+  { label: 'Display preferences', to: '/appearance', icon: SlidersHorizontal },
   { label: 'Security', to: '/security', icon: ShieldCheck },
   { label: 'Templates', to: '/templates', icon: FileText },
   { section: 'Mail & network' },
@@ -136,7 +139,7 @@ export const resellerNav = [
   { section: 'Preferences' },
   { label: 'Change password', to: '/change-password', icon: KeyRound },
   { label: '2FA & Security', to: '/security', icon: ShieldCheck },
-  { label: 'Appearance', to: '/appearance', icon: Palette },
+  { label: 'Display preferences', to: '/appearance', icon: SlidersHorizontal },
 ]
 
 export const navIcons = { Cpu, Server, DownloadCloud }

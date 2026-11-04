@@ -675,6 +675,7 @@ OP_TABLE = {
     # Run A feature 3: white-label branding
     "branding.get": branding.get_settings,
     "branding.set": branding.set_settings,
+    "branding.theme.set": branding.set_theme,
     "branding.logo.upload": branding.upload_logo,
     "branding.logo.remove": branding.remove_logo,
     "branding.favicon.upload": branding.upload_favicon,

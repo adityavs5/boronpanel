@@ -17,6 +17,7 @@ function normalizeBranding(value) {
     favicon_url: value.favicon_url || null,
     support_email: typeof value.support_email === 'string' ? value.support_email : null,
     support_url: typeof value.support_url === 'string' ? value.support_url : null,
+    theme: typeof value.theme === 'string' ? value.theme : null,
   }
 }
 
@@ -55,5 +56,6 @@ export function useBranding() {
     faviconUrl: brandingReady ? (data?.favicon_url || null) : undefined,
     supportEmail: data?.support_email || null,
     supportUrl: data?.support_url || null,
+    theme: data?.theme || null,
   }
 }

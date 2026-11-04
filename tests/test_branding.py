@@ -346,3 +346,41 @@ def test_api_upload_reads_only_bounded_prefix(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(routes._upload('branding.logo.upload', OversizedUpload(), Identity(1,'admin','admin',None,'session')))
     assert exc.value.status_code == 413
+
+
+# --- server-wide panel theme ------------------------------------------------
+
+
+def test_panel_theme_defaults_and_can_be_changed(isolated_db):
+    assert branding.get_settings({})["theme"] == "modern"
+    assert branding.set_theme({"theme": "grid"})["theme"] == "grid"
+    assert branding.get_settings({})["theme"] == "grid"
+
+
+@pytest.mark.parametrize("value", ["", "paper-lantern", "../evil", None, '"><script>'])
+def test_unknown_panel_theme_is_refused(isolated_db, value):
+    with pytest.raises(branding.ValidationError):
+        branding.set_theme({"theme": value})
+    assert branding.get_settings({})["theme"] == "modern"
+
+
+def test_only_the_server_administrator_can_change_the_theme(isolated_db):
+    from daemon.rpc_policy import POLICY_BY_OPERATION
+    assert POLICY_BY_OPERATION["branding.theme.set"] == "global_admin"
+    customer = Identity(panel_user_id=2, username="alice", role="customer", account_id=1, auth_method="session")
+    main.app.dependency_overrides[get_identity] = lambda: customer
+    try:
+        response = TestClient(main.app).put("/api/v1/admin/branding/theme", json={"theme": "grid"})
+    finally:
+        main.app.dependency_overrides.pop(get_identity, None)
+    assert response.status_code == 403
+
+
+def test_the_page_names_the_theme_before_any_script_runs(isolated_db, tmp_path, monkeypatch):
+    index = tmp_path / "index.html"
+    index.write_text('<!doctype html><html lang="en" class="h-full"><head><title>x</title></head></html>')
+    monkeypatch.setattr(main, "SPA_INDEX", index)
+    branding.set_theme({"theme": "classic"})
+    page = TestClient(main.app).get("/app/login")
+    assert '<html data-theme="classic" lang="en"' in page.text
+    assert TestClient(main.app).get("/api/v1/branding").json()["theme"] == "classic"

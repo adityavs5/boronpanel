@@ -2,7 +2,7 @@ import {test,expect} from '@playwright/test'
 test.describe.configure({mode:'parallel'})
 
 async function setup(page,skin,mode,role) {
- await page.addInitScript(({skin,mode,role})=>{localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme:mode},version:0}));localStorage.setItem('boron.auth',JSON.stringify({state:{role,username:role==='admin'?'admin':'alpha'},version:0}))},{skin,mode,role})
+ await page.addInitScript(({skin,mode,role})=>{localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme:mode},version:0}));localStorage.setItem('boron.auth',JSON.stringify({state:{role,username:role==='admin'?'admin':'alpha'},version:0}))},{skin,mode,role})
  const account={username:'alpha',uid:2000,status:'active',primary_domain:'example.com',php_version:'8.3',cpu_cores:2,cpu_pct:200,host_cpu_cores:12,host_memory_gb:8,mem_mb:1024,io_mb:50,pids_max:100,quota_hard_mb:10240}
  await page.route('**/api/**',route=>{
   const path=new URL(route.request().url()).pathname
@@ -22,7 +22,7 @@ async function contrast(page,selector,type='text') {
   })
  },type)
 }
-for(const skin of ['evolution','paper-lantern'])for(const mode of ['light','dark']){
+for(const skin of ['modern', 'classic', 'grid'])for(const mode of ['light','dark']){
  test(`${skin} ${mode}: enabled controls, placeholders, focus and table keyboard`,async({browser})=>{
   test.setTimeout(90000)
   for(const reference of ['account','settings','domains']){
@@ -31,8 +31,8 @@ for(const skin of ['evolution','paper-lantern'])for(const mode of ['light','dark
    await page.goto(reference==='account'?'/app/accounts/alpha':reference==='settings'?'/app/panel-settings':'/app/domains')
    await expect(page.locator('main h1').first()).toBeVisible()
    await page.keyboard.press('Tab')
-   const navigationButton = page.getByRole('button',{name:'Collapse sidebar',exact:true})
-   const navigationSelector = '[aria-label="Collapse sidebar"]'
+   const navigationButton = skin==='grid'?page.locator('.grid-menu-item').first():page.getByRole('button',{name:'Collapse sidebar',exact:true})
+   const navigationSelector = skin==='grid'?'.grid-menu-item':'[aria-label="Collapse sidebar"]'
    await navigationButton.focus()
    for(const sample of await contrast(page,navigationSelector,'focus'))expect(sample.ratio,`${reference} ${sample.label}: focus`).toBeGreaterThanOrEqual(3)
    for(const sample of await contrast(page,'main [data-ui-button]:not(:disabled)'))expect(sample.ratio,`${reference} ${sample.label}: text`).toBeGreaterThanOrEqual(4.5)

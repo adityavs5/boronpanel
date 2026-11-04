@@ -1,10 +1,10 @@
 import { test, expect } from '@playwright/test'
 
-for (const skin of ['evolution', 'paper-lantern']) {
+for (const skin of ['modern', 'classic', 'grid']) {
   test(`${skin}: migration updates, recovers from errors, and keeps one-time credentials as text`, async ({ page }) => {
     await page.addInitScript(skin => {
       localStorage.setItem('boron.auth', JSON.stringify({ state: { role: 'admin', username: 'admin' }, version: 0 }))
-      localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme: 'light' }, version: 0 }))
+      localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme: 'light' }, version: 0 }))
     }, skin)
     let reads = 0
     const job = { id: 7, username: 'migrateqa', panel: 'directadmin', source: 'directadmin_remote', status: 'running', progress_message: 'creating source backup', results: [], started_at: new Date().toISOString() }

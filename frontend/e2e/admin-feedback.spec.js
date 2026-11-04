@@ -10,11 +10,11 @@ const REFERENCE = '6adc329b626448e9'
 // A handler returns plain data (200 JSON) or reply(status, json) for anything else.
 const reply = (status, json) => ({ fulfill: { status, json } })
 
-async function session(page, { skin = 'evolution', theme = 'light', role = 'admin', handle } = {}) {
+async function session(page, { skin = 'modern', theme = 'light', role = 'admin', handle } = {}) {
   const state = { requests: [], errors: [] }
   page.on('pageerror', error => state.errors.push(error.message))
   await page.addInitScript(({ skin, theme, role }) => {
-    localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
+    localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
     if (role) localStorage.setItem('boron.auth', JSON.stringify({ state: { role, username: 'admin' }, version: 0 }))
   }, { skin, theme, role })
   await page.route('**/api/**', async route => {
@@ -226,7 +226,7 @@ test('a failed account-create task shows the handler reason with its reference',
 
 // --- account limits -------------------------------------------------------------
 
-for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light', 'dark']) {
+for (const skin of ['modern', 'classic', 'grid']) for (const theme of ['light', 'dark']) {
   test(`${skin} ${theme}: limits keep Unlimited values, send only edits and reset to the plan`, async ({ page }) => {
     const account = accountFixture()
     const state = await session(page, { skin, theme, handle: ({ path, method, body }) => {
@@ -356,7 +356,7 @@ test('a plan edit reports updated accounts and stays open for the ones that fail
 
 // --- resellers ----------------------------------------------------------------------
 
-for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light', 'dark']) {
+for (const skin of ['modern', 'classic', 'grid']) for (const theme of ['light', 'dark']) {
   test(`${skin} ${theme}: deleting a reseller offers to return its accounts`, async ({ page }) => {
     const resellers = [
       { id: 4, username: 'sellerone', company: '', plan_id: 1, plan_name: 'Agency', account_count: 0, max_accounts: 10, status: 'active' },
@@ -430,7 +430,7 @@ test('token creation and revocation show the session refusal in the dialog', asy
 
 // --- backup jobs --------------------------------------------------------------------
 
-for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light', 'dark']) {
+for (const skin of ['modern', 'classic', 'grid']) for (const theme of ['light', 'dark']) {
   test(`${skin} ${theme}: backup jobs and legacy schedules can be deleted`, async ({ page }) => {
     let policyDeletes = 0
     let schedules = [

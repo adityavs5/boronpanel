@@ -3,7 +3,7 @@ test.describe.configure({mode:'parallel'})
 async function fixture(page,{skin,mode,role='admin'}){
  const writes=[],account={id:1,username:'alpha',status:'active',uid:2000,gid:2000,primary_domain:'example.com',php_version:'8.3',cpu_pct:100,cpu_cores:1,host_cpu_cores:12,host_memory_gb:7.7,mem_mb:512,io_mb:50,pids_max:50}
  const redis={id:2,account_id:1,enabled:false,provisioned:true,active:'inactive',mem_mb:96,socket_path:'/home/alpha/.redis/redis.sock',used_memory_human:null}
- await page.addInitScript(({skin,mode,role})=>{localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme:mode},version:0}));localStorage.setItem('boron.auth',JSON.stringify({state:{role,username:role==='admin'?'admin':'alpha'},version:0}))},{skin,mode,role})
+ await page.addInitScript(({skin,mode,role})=>{localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme:mode},version:0}));localStorage.setItem('boron.auth',JSON.stringify({state:{role,username:role==='admin'?'admin':'alpha'},version:0}))},{skin,mode,role})
  await page.route('**/api/**',async route=>{
   const req=route.request(),path=new URL(req.url()).pathname,method=req.method();let data={}
   if(!['GET','HEAD'].includes(method))writes.push({path,method,body:req.postDataJSON()})
@@ -24,7 +24,7 @@ async function fixture(page,{skin,mode,role='admin'}){
  })
  return {writes,redis}
 }
-for(const skin of ['evolution','paper-lantern'])for(const mode of ['light','dark']){
+for(const skin of ['modern', 'classic', 'grid'])for(const mode of ['light','dark']){
  test(`${skin} ${mode}: disabled Redis enables its saved instance and cannot flush`,async({page})=>{
   const {writes}=await fixture(page,{skin,mode,role:'customer'})
   await page.goto('/app/redis')

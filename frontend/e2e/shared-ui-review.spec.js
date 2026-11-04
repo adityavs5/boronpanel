@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import { build } from 'esbuild'
 import path from 'node:path'
 
-async function fixture(page, skin = 'evolution', theme = 'light', role = 'admin') {
+async function fixture(page, skin = 'modern', theme = 'light', role = 'admin') {
   const state = { writes: [], failSave: false, errors: [] }
   const account = { id: 1, username: 'alpha', status: 'active', primary_domain: 'example.com', php_version: '8.3', cpu_cores: 2, cpu_pct: 200, mem_mb: 460, io_mb: 50, pids_max: 100, host_cpu_cores: 8, host_memory_gb: 16, quota_hard_mb: 12288 }
   const plan = { id: 1, name: 'Starter', cpu_cores: 1, cpu_pct: 100, cpu_weight: 100, mem_mb: 1024, memory_high_mb: 896, memory_max_mb: 1024, io_mb: 50, pids_max: 100, nproc: 100, quota_soft_mb: 10240, quota_hard_mb: 12288, inode_soft_limit: 450000, inode_hard_limit: 500000 }
@@ -10,7 +10,7 @@ async function fixture(page, skin = 'evolution', theme = 'light', role = 'admin'
   let notifications = { sender_address: 'panel@example.com', events: {} }
   page.on('pageerror', error => state.errors.push(error.message))
   await page.addInitScript(({ skin, theme, role }) => {
-    localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
+    localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
     localStorage.setItem('boron.auth', JSON.stringify({ state: { role, username: role === 'admin' ? 'admin' : 'alpha' }, version: 0 }))
   }, { skin, theme, role })
   await page.route('**/api/**', async route => {
@@ -77,7 +77,7 @@ async function reachableDialog(page, name) {
   await page.keyboard.press('Escape')
 }
 
-for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light', 'dark']) {
+for (const skin of ['modern', 'classic', 'grid']) for (const theme of ['light', 'dark']) {
   test(`${skin} ${theme}: six long forms keep actions reachable`, async ({ browser }) => {
     test.setTimeout(120000)
     for (const role of ['admin', 'customer']) {

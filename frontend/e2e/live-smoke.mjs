@@ -20,10 +20,7 @@ try {
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
   await expect(page).toHaveURL(/\/app\/overview$/, { timeout: 30000 })
   await expect(page.getByRole('heading', { name: 'Admin dashboard' })).toBeVisible()
-  for (const [skin, name] of [['evolution', 'Evo'], ['paper-lantern', 'Paper']]) {
-    await page.getByRole('button', { name: 'Choose theme', exact: true }).first().click()
-    await page.getByRole('menuitemradio', { name: new RegExp(name) }).click()
-    await expect(page.locator('html')).toHaveAttribute('data-skin', skin)
+  for (const skin of [await page.locator('html').getAttribute('data-theme')]) {
     await expect(page.getByRole('progressbar', { name: 'CPU usage' })).toBeVisible()
     await expect(page.locator('.query-notice')).toHaveCount(0)
     await page.screenshot({ path: `${output}/${skin}-desktop.png` })

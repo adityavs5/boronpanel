@@ -1,8 +1,8 @@
 import {test,expect} from '@playwright/test'
-for(const skin of ['evolution','paper-lantern']) for(const mode of ['light','dark']) {
+for(const skin of ['modern', 'classic', 'grid']) for(const mode of ['light','dark']) {
  test(`${skin} ${mode}: customize and reset terminal welcome`,async({page},info)=>{
   await page.addInitScript(({skin,mode})=>{
-   localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme:mode},version:0}))
+   localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme:mode},version:0}))
    localStorage.setItem('boron.auth',JSON.stringify({state:{role:'admin',username:'admin'},version:0}))
   },{skin,mode})
   let banner=null,requests=[]
@@ -22,7 +22,7 @@ for(const skin of ['evolution','paper-lantern']) for(const mode of ['light','dar
   const advanced=page.getByText('Advanced: admin terminal welcome',{exact:true})
   await expect(page.getByLabel('Terminal banner',{exact:true})).toBeHidden()
   await advanced.click()
-  await expect(page.getByLabel('Terminal banner',{exact:true})).toHaveCSS('border-top-left-radius','8px')
+  await expect(page.getByLabel('Terminal banner',{exact:true})).toHaveCSS('border-top-left-radius',skin==='modern'?'10px':skin==='classic'?'3px':'2px')
   await page.getByLabel('Terminal banner',{exact:true}).fill('BORON TEST\n$(literal text)')
   await expect(page.getByLabel('Terminal banner preview')).toHaveText('BORON TEST\n$(literal text)')
   await page.getByRole('button',{name:'Save terminal welcome',exact:true}).click()

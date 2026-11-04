@@ -302,6 +302,7 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'branding.favicon.upload': 'global_admin',
     'branding.get': 'global_admin',
     'branding.logo.remove': 'global_admin',
+    'branding.theme.set': 'global_admin',
     'branding.logo.upload': 'global_admin',
     'branding.set': 'global_admin',
     'bulk.get': 'global_admin',

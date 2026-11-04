@@ -1,0 +1,13 @@
+Icon sets used by the panel themes, through the react-icons package (MIT).
+
+Lucide (Modern theme)
+https://lucide.dev - ISC License
+
+Phosphor Icons (Classic theme)
+https://github.com/phosphor-icons/core - MIT License
+
+Remix Icon (Grid theme)
+https://github.com/Remix-Design/RemixIcon - Apache License 2.0
+
+Flat Color Icons (Grid theme)
+https://github.com/icons8/flat-color-icons - MIT License

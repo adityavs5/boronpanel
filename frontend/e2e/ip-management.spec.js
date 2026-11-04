@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test'
 async function mockSession(page, skin) {
   const writes = []
   await page.addInitScript((skin) => {
-    localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme: 'light' }, version: 0 }))
+    localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme: 'light' }, version: 0 }))
     localStorage.setItem('boron.auth', JSON.stringify({ state: { role: 'admin', username: 'admin' }, version: 0 }))
   }, skin)
   await page.route('**/api/**', async (route) => {
@@ -29,7 +29,7 @@ async function mockSession(page, skin) {
   return writes
 }
 
-for (const skin of ['evolution', 'paper-lantern']) {
+for (const skin of ['modern', 'classic', 'grid']) {
   test(`${skin}: multi-IP management and account allocation`, async ({ page }) => {
     const writes = await mockSession(page, skin)
     await page.goto('/app/ip-management')

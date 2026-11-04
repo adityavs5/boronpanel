@@ -3,11 +3,11 @@ import { readFileSync } from 'node:fs'
 
 const pageHtml = (heading, message) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><style>*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:system-ui}body{display:grid;place-items:center;min-height:100vh;padding:24px;background:#f1f5f9;color:#0f172a}main{width:min(680px,100%);padding:32px;background:#fff;border-top:6px solid #2563eb}h1{overflow-wrap:anywhere;font-size:clamp(28px,5vw,52px);margin:0 0 16px}p{font-size:16px;line-height:1.6;margin:0}</style></head><body><main><h1>${heading}</h1><p>${message}</p><p class="help">Contact your hosting provider.</p></main></body></html>`
 const defaultWelcome = readFileSync(new URL('../../templates/site_pages/welcome.html', import.meta.url), 'utf8')
-async function mockTemplates(page, skin = 'evolution', theme = 'light') {
+async function mockTemplates(page, skin = 'modern', theme = 'light') {
   await page.addInitScript(({ skin, theme }) => {
     if (window !== window.top) return // Do not inject test-only storage into opaque sandbox previews.
     localStorage.setItem('boron.auth', JSON.stringify({ state: { role: 'admin', username: 'preview' }, version: 0 }))
-    localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
+    localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
   }, { skin, theme })
   const writes = []
   let failSave = false
@@ -48,7 +48,7 @@ async function containedPreview(page, title, background = 'rgb(241, 245, 249)') 
   expect(dimensions.right).toBeLessThanOrEqual(dimensions.width)
 }
 
-for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light', 'dark']) {
+for (const skin of ['modern', 'classic', 'grid']) for (const theme of ['light', 'dark']) {
   test(`templates show full responsive previews and preserve save contracts ${skin} ${theme}`, async ({ page }) => {
     test.setTimeout(90_000)
     const mocked = await mockTemplates(page, skin, theme)

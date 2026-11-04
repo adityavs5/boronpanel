@@ -1,6 +1,5 @@
-// One icon family for the home screens of both skins (DESIGN.md: lucide stroke
-// icons inside category chips). Navigation entries keep their own icons for the
-// sidebar; this map gives each home-screen tool a distinct, recognisable glyph.
+// Navigation entries keep their own icons for the sidebar; this map gives each
+// home-screen tool a distinct glyph. The themed icon layer swaps the artwork.
 import {
   Activity, AppWindow, Archive, ArrowLeftRight, Ban, BarChart3, BellRing, BookOpen, Boxes, Bug,
   CalendarClock, Clock, Cloud, CloudDownload, Code2, Construction, Cpu, Database, DatabaseBackup,
@@ -19,7 +18,7 @@ const routeIcons = {
   '/files': FolderOpen, '/redirects': Signpost, '/forwarding': Link2, '/cache': Zap,
   '/website-maintenance': Construction, '/error-pages': FileX2, '/cron': Clock, '/ssh': KeyRound,
   '/terminal': SquareTerminal, '/logs': ScrollText, '/devtools': Code2, '/change-password': KeySquare,
-  '/appearance': Palette, '/disk-usage': HardDrive, '/website-statistics': BarChart3, '/processes': Cpu,
+  '/appearance': SlidersHorizontal, '/disk-usage': HardDrive, '/website-statistics': BarChart3, '/processes': Cpu,
   '/malware': Bug, '/website-security': ShieldAlert, '/security': Lock, '/site-health': HeartPulse,
   '/accounts': Users, '/accounts/new': UserPlus, '/resellers': UserCog, '/administrators': ShieldHalf,
   '/plans': Package, '/import/accounts': CloudDownload, '/health': Activity, '/diagnostics': Stethoscope,
@@ -32,7 +31,7 @@ const routeIcons = {
   '/ip-bans': Ban, '/ip-whitelist': ShieldPlus, '/tokens': KeySquare, '/bandwidth': BarChart3,
   '/site-stats': LineChart, '/audit-log': ListChecks, '/account-log': FileSearch, '/error-log': FileWarning,
   '/retention': History, '/webhooks': Webhook, '/panel-settings': SlidersHorizontal, '/server-setup': Server,
-  '/branding': Paintbrush, '/api/docs': BookOpen, '/license': KeySquare,
+  '/branding': Paintbrush, '/panel-theme': LayoutGrid, '/api/docs': BookOpen, '/license': KeySquare,
 }
 
 const exactIcons = {

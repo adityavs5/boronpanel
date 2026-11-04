@@ -1,8 +1,8 @@
 import {test,expect} from '@playwright/test'
-for(const skin of ['evolution','paper-lantern']) for(const mode of ['light','dark']) {
+for(const skin of ['modern', 'classic', 'grid']) for(const mode of ['light','dark']) {
  test(`${skin} ${mode}: clock failure and recovery are visible`,async({page},info)=>{
   await page.addInitScript(({skin,mode})=>{
-   localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme:mode},version:0}))
+   localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme:mode},version:0}))
    localStorage.setItem('boron.auth',JSON.stringify({state:{role:'admin',username:'admin'},version:0}))
   },{skin,mode})
   let healthy=false

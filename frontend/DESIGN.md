@@ -1,32 +1,46 @@
 # Boron panel design system
 
-Direction: **classic hosting, refined.** Customers coming from cPanel,
-DirectAdmin or Plesk should feel at home: a home screen of tools grouped by
-category. The drawing is our own and modern: calm surfaces, one brand colour,
-consistent icons, generous but efficient spacing. It must not look like a
-copy of cPanel's Jupiter or Paper Lantern.
+Usability comes first in every theme: any tool must be easy to find from any
+page. Customers coming from other hosting panels should feel at home, but the
+artwork and names are our own. A theme may follow a familiar layout; it must not
+use another product's logo, icons or name.
 
-There are two skins. Users pick one under Appearance. Both share every token
-and component; they differ only in shell layout and the home screen.
+## Themes
 
-| Skin | id | Layout |
-|---|---|---|
-| Evo | `evolution` | Light top bar. Admins get a navy left sidebar. The home screen is a **tile grid**: an icon chip above the label. |
-| Paper | `paper-lantern` | Navy top bar. The home screen is a **compact list**: a small icon chip beside the label, 3–4 columns. Light rail navigation. |
+The server administrator chooses one theme for the whole server (Panel theme
+page, stored in `branding_settings.panel_theme`). Nobody else can change it.
+Themes differ in everything a person sees, not only the home screen.
+
+| Theme | id | Frame | Home | Internal pages | Icons |
+|---|---|---|---|---|---|
+| Classic | `classic` | Navy side menu with the logo, white bar with search | Collapsible panels of icon-and-link rows, account details on the right | Large thin titles, flat panels, boxed tabs, striped tables, stacked bold labels | Phosphor duotone |
+| Grid | `grid` | White header with wide search, blue top menu with every group, no side menu | Large tiles with a navigation filter, statistics on the right | Pictogram title band, boxes with grey title strips, joined tabs, dark table heads, labels left of fields, capital buttons | Remix fill, Flat Color pictograms for tools |
+| Modern | `modern` | Light side menu of hubs, search first in the bar | Greeting, search, at-a-glance numbers, common tools, all tools | Rounded cards, pill tabs, airy tables. Has a dark mode | lucide |
+
+How it fits together:
+
+- `src/themes/<id>/` holds `Layout`, the home screen, the icon set and the
+  stylesheet. `themes/registry.js` loads only the active theme's chunks.
+- The server writes `data-theme` on `<html>` (`api/main.py`), so the first paint
+  is already the right theme. `public/theme-init.js` falls back to the cached
+  public branding when a page is served without it.
+- Pages keep importing icons from `lucide-react`. `vite.config.js` points that
+  at `themes/lucide-proxy.gen.js`, which draws from the active set. A new icon
+  needs a row in `themes/icon-table.mjs`; `npm run build` refuses a missing one.
+- Pages keep using the shared components. Theme stylesheets restyle them, so a
+  new page is themed for free. Prefer those components over one-off markup.
+- Each theme sets its accent and typeface in `public/appearance-preferences.js`.
+  People keep only comfort settings: text size, spacing, motion, and light or
+  dark in a theme that has a dark palette.
+- Adding a theme: a folder with those parts, a row in `registry.js`, the id in
+  `shared/panel_themes.py`, `public/theme-init.js` and the appearance script.
 
 ## Brand
 
-- Navy `#0B1F45` comes from the wordmark. It is used for chrome (Paper top
-  bar, Evo admin sidebar) and headings in light mode.
-- The wordmark is navy on light chrome and white on navy chrome. The gold
-  wordmark is retired as the default; custom branding logos still override it.
-- Accent blue `#2563EB` is the default accent for both skins. It is used for
-  primary buttons, links, focus rings, the active navigation item and
-  selection. Users can still choose another accent (Appearance), so every
-  accent use goes through the `--accent*` / `--link` / `--ring` tokens.
-  Presets: Blue `#2563EB`, Navy `#1E3A8A`, Teal `#0F766E`, Violet `#6D28D9`,
-  Emerald `#047857`, Amber `#B45309`, Rose `#BE123C`, Slate `#334155`.
-- Nothing is mustard or gold by default.
+- Navy `#0B1F45` comes from the wordmark. The wordmark is navy on light chrome
+  and white on navy chrome; custom branding logos override it.
+- Every accent use goes through the `--accent*` / `--link` / `--ring` tokens.
+  The script derives them from the theme's accent so they stay readable.
 
 ## Tokens (RGB triplets, as today, so Tailwind alpha works)
 
@@ -102,7 +116,7 @@ and a light stroke.
 
 ## Icons
 
-One icon family across both skins: `lucide-react` stroke icons (1.75 stroke)
+Modern uses `lucide-react` stroke icons (1.75 stroke)
 inside the category chips. Third-party product logos (WordPress, Node.js,
 Python, Redis, Git) stay as their brand marks, inside a neutral chip. No
 decorative dots or badges on tool icons.

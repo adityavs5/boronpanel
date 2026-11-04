@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 
 async function fixture(page, skin, theme, role = 'customer') {
   await page.addInitScript(({skin,theme,role}) => {
-    localStorage.setItem('boron.ui', JSON.stringify({state:{skin,theme},version:0}))
+    localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui', JSON.stringify({state:{skin,theme},version:0}))
     localStorage.setItem('boron.auth', JSON.stringify({state:{role,username:'preview'},version:0}))
   }, {skin,theme,role})
   await page.route('**/api/**', route => {
@@ -20,11 +20,12 @@ async function fixture(page, skin, theme, role = 'customer') {
   })
 }
 
-for(const skin of ['evolution','paper-lantern']) for(const theme of ['light','dark']) {
+for(const skin of ['modern', 'classic', 'grid']) for(const theme of ['light','dark']) {
   test(`shell keyboard, contrast and mobile geometry ${skin} ${theme}`,async({page})=>{
     const errors=[]; page.on('pageerror',e=>errors.push(e.message))
     await fixture(page,skin,theme)
     await page.goto('/app/dashboard')
+    if(skin!=='grid'){ // Grid searches from its header and filters its tiles instead.
     const search=page.getByRole('combobox',{name:'Search hosting tools'})
     await search.fill('mail')
     const options=page.getByRole('option')
@@ -38,23 +39,17 @@ for(const skin of ['evolution','paper-lantern']) for(const theme of ['light','da
     expect(await active.evaluate(el=>{const a=el.getBoundingClientRect(),b=el.parentElement.getBoundingClientRect();return a.top>=b.top&&a.bottom<=b.bottom})).toBe(true)
     await search.press('Escape')
     await expect(search).toHaveAttribute('aria-expanded','false')
-    // The entire user colour range must yield readable header/text pairs.
-    const ratios=await page.evaluate(({skin,theme})=>{
-      const checks=[]
-      for(const color of ['#bc942c','#307bb8','#ffffff','#000000','#ffcc00']) {
-        window.BoronAppearance.apply({colors:{[skin]:color}},skin,theme==='dark')
-        const css=getComputedStyle(document.documentElement), token=k=>css.getPropertyValue('--pref-'+k).trim().split(' ').map(Number)
-        checks.push(window.BoronAppearance.contrast(token('group'),[255,255,255]))
-        // DESIGN.md page, card and muted surfaces.
-        for(const bg of theme==='dark'?[[11,17,32],[18,26,43],[26,35,54]]:[[255,255,255],[244,246,250],[238,241,246]])checks.push(window.BoronAppearance.contrast(token('link'),bg))
-      }
-      window.BoronAppearance.apply({},skin,theme==='dark');return checks
-    },{skin,theme})
+    }
+    // The theme's accent must stay readable on its page, card and muted surfaces.
+    const ratios=await page.evaluate(()=>{
+      const css=getComputedStyle(document.documentElement),token=k=>css.getPropertyValue(k).trim().split(' ').map(Number)
+      return ['--bg','--card','--muted'].map(surface=>window.BoronAppearance.contrast(token('--pref-link'),token(surface)))
+    })
     expect(Math.min(...ratios)).toBeGreaterThanOrEqual(4.5)
     await page.goto('/app/appearance')
     for(const width of [1440,768,375]) {
       await page.setViewportSize({width,height:900})
-      await expect(page.getByRole('heading',{name:'Appearance',exact:true})).toBeVisible()
+      await expect(page.getByRole('heading',{name:'Display preferences',exact:true})).toBeVisible()
       const geometry=await page.evaluate(()=>{const logo=document.querySelector('.panel-brand').getBoundingClientRect(),search=document.querySelector('.global-search-trigger').getBoundingClientRect(),banner=document.querySelector('.impersonation-banner')?.getBoundingClientRect();return {overflow:document.documentElement.scrollWidth>innerWidth,overlap:Math.min(logo.right,search.right)-Math.max(logo.left,search.left),bannerHeight:banner?.height||0}})
       expect(geometry.overflow).toBe(false);expect(geometry.overlap).toBeLessThanOrEqual(0);expect(geometry.bannerHeight).toBeLessThanOrEqual(120)
     }
@@ -63,7 +58,7 @@ for(const skin of ['evolution','paper-lantern']) for(const theme of ['light','da
 }
 
 test('structural breadcrumbs do not navigate to missing routes; Tasks is in navigation',async({page})=>{
-  await fixture(page,'evolution','light','admin')
+  await fixture(page,'modern','light','admin')
   for(const [path,heading] of [['software/node-apps','Software'],['import/accounts','Import']]){
     await page.goto('/app/'+path)
     const crumbs=page.getByRole('navigation',{name:'Breadcrumb'})

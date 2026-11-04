@@ -1,9 +1,9 @@
 import { expect, test } from '@playwright/test'
 
-for (const skin of ['evolution', 'paper-lantern']) {
+for (const skin of ['modern', 'classic', 'grid']) {
   test(`${skin}: cPanel, DirectAdmin and Boron account migrations`, async ({ page }, info) => {
     await page.addInitScript(skinName => {
-      localStorage.setItem('boron.ui', JSON.stringify({ state: { skin: skinName, theme: 'light' }, version: 0 }))
+      localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skinName}));localStorage.setItem('boron.ui', JSON.stringify({ state: { skin: skinName, theme: 'light' }, version: 0 }))
       localStorage.setItem('boron.auth', JSON.stringify({ state: { role: 'admin', username: 'admin' }, version: 0 }))
     }, skin)
     await page.route('**/api/**', async route => {

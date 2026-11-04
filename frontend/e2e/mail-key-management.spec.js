@@ -1,11 +1,11 @@
 import { test, expect } from '@playwright/test'
 
-for (const skin of ['evolution','paper-lantern']) for (const theme of ['light','dark']) {
+for (const skin of ['modern', 'classic', 'grid']) for (const theme of ['light','dark']) {
   test(`${skin} ${theme}: direct mailbox and SSH key management`, async ({page}) => {
     test.setTimeout(90000)
     const errors=[];page.on('pageerror',e=>errors.push(e.message))
     await page.addInitScript(({skin,theme})=>{
-      localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme},version:0}))
+      localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme},version:0}))
       localStorage.setItem('boron.auth',JSON.stringify({state:{role:'customer',username:'alpha'},version:0}))
       window.open=()=>null
       HTMLFormElement.prototype.submit=function(){window.__webmailSubmit={action:this.action,method:this.method,target:this.target,fields:Object.fromEntries(new FormData(this).entries())}}

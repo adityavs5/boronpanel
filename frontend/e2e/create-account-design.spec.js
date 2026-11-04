@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test'
 async function setup(page, theme = 'light') {
   await page.addInitScript(theme => {
     localStorage.setItem('boron.auth', JSON.stringify({ state: { role: 'admin', username: 'preview' }, version: 0 }))
-    localStorage.setItem('boron.ui', JSON.stringify({ state: { skin: 'evolution', theme }, version: 0 }))
+    localStorage.setItem('boron.ui', JSON.stringify({ state: { skin: 'modern', theme }, version: 0 }))
   }, theme)
   const requests = []
   await page.route('**/api/**', async route => {

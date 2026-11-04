@@ -1,7 +1,7 @@
 import { adminNav, customerNav, resellerNav } from '@/config/nav'
 
 const exactOverrides = {
-  '/appearance': 'Appearance',
+  '/appearance': 'Display preferences',
   '/accounts/new': 'Create account',
   '/plans/new': 'Create plan',
   '/more': 'More tools',

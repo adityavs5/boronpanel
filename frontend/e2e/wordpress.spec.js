@@ -1,10 +1,10 @@
 import { test, expect } from '@playwright/test'
 
-for (const skin of ['evolution','paper-lantern']) {
+for (const skin of ['modern', 'classic', 'grid']) {
   test(`${skin}: WordPress install, management, backups, clone and related search`, async ({page},info) => {
     const errors=[];page.on('pageerror', e=>errors.push(e.message))
     await page.addInitScript(skin=>{
-      localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme:'light'},version:0}))
+      localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme:'light'},version:0}))
       localStorage.setItem('boron.auth',JSON.stringify({state:{role:'customer',username:'hostingdemo'},version:0}))
     },skin)
     const requests=[];let lastAction='';let installed=false
@@ -24,7 +24,8 @@ for (const skin of ['evolution','paper-lantern']) {
       await route.fulfill({json:data})
     })
     await page.goto('/app/dashboard')
-    const search=page.getByRole('combobox',{name:'Search hosting tools'})
+    if(skin==='grid')await page.getByRole('button',{name:'Search the panel'}).click()
+    const search=page.getByRole('combobox',{name:skin==='grid'?'Search tools and settings':'Search hosting tools'})
     await search.fill('DNS zone edito')
     await expect(page.getByRole('option').filter({hasText:'DNS Management'})).toBeVisible()
     await search.fill('softaculous')

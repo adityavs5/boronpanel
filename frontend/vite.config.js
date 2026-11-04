@@ -32,7 +32,12 @@ export default defineConfig({
     __BORON_VERSION__: JSON.stringify(readBoronVersion()),
   },
   resolve: {
-    alias: { '@': path.resolve(__dirname, 'src') },
+    // Pages import icons from lucide-react as usual; the proxy draws them from
+    // the active theme's icon set (scripts/gen-theme-icons.mjs).
+    alias: [
+      { find: '@', replacement: path.resolve(__dirname, 'src') },
+      { find: /^lucide-react$/, replacement: path.resolve(__dirname, 'src/themes/lucide-proxy.gen.js') },
+    ],
   },
   build: {
     outDir: path.resolve(__dirname, '../static/dist'),

@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test'
 async function mockOperations(page, skin, theme, deferred = new Set()) {
   await page.addInitScript(({ skin, theme }) => {
     localStorage.setItem('boron.auth', JSON.stringify({ state: { role: 'admin', username: 'preview' }, version: 0 }))
-    localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
+    localStorage.setItem('boron.public-branding.v1',JSON.stringify({panel_name:'Boron',theme:skin}));localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
   }, { skin, theme })
   const pending = new Map()
   const writes = []
@@ -52,7 +52,7 @@ async function noOverflow(page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 }
 
-for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light', 'dark']) {
+for (const skin of ['modern', 'classic', 'grid']) for (const theme of ['light', 'dark']) {
   test(`operations controls preserve state and fit ${skin} ${theme}`, async ({ page }) => {
     test.setTimeout(90_000)
     const mocked = await mockOperations(page, skin, theme)
@@ -129,7 +129,7 @@ test('backup and firewall reads show loading until real state arrives', async ({
   const destinationPath = '/api/v1/backups/snapshots/destinations'
   const catalogPath = '/api/v1/backups/snapshots/catalog/accounts'
   const firewallPath = '/api/v1/firewall/rules'
-  const mocked = await mockOperations(page, 'evolution', 'light', new Set([destinationPath, catalogPath, firewallPath]))
+  const mocked = await mockOperations(page, 'modern', 'light', new Set([destinationPath, catalogPath, firewallPath]))
   await page.goto('/app/backup-jobs')
   await expect(page.getByText(/Loading accounts and destinations/)).toBeVisible()
   await expect(page.getByRole('button', { name: 'Create job', exact: true })).toBeDisabled()
@@ -157,7 +157,7 @@ test('backup and firewall reads show loading until real state arrives', async ({
 })
 
 test('health alerts switch has an accessible name', async ({ page }) => {
-  const mocked = await mockOperations(page, 'evolution', 'light')
+  const mocked = await mockOperations(page, 'modern', 'light')
   await page.goto('/app/health')
   const alerts = page.getByRole('switch', { name: 'Alerts', exact: true })
   await expect(alerts).toBeVisible()
