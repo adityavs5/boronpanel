@@ -5,8 +5,8 @@
   // Each theme sets its own accent and typeface; the server administrator
   // chooses the theme. People keep only their accessibility preferences.
   const themes = {
-    classic: { accent: '#1b6ec2', font: "'Open Sans', Arial, sans-serif" },
-    grid: { accent: '#0a78c2', font: "'Roboto', Arial, sans-serif" },
+    classic: { accent: '#3989cf', font: "'Open Sans', Arial, sans-serif" },
+    grid: { accent: '#0c7bb0', font: "'Montserrat', Arial, sans-serif" },
     modern: { accent: '#4f46e5', font: "'Inter', Arial, sans-serif" },
   }
   function normalize(raw) {

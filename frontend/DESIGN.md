@@ -13,9 +13,13 @@ Themes differ in everything a person sees, not only the home screen.
 
 | Theme | id | Frame | Home | Internal pages | Icons |
 |---|---|---|---|---|---|
-| Classic | `classic` | Navy side menu with the logo, white bar with search | Collapsible panels of icon-and-link rows, account details on the right | Large thin titles with no icon, flat panels, boxed tabs, tables flat on the page with blue heads between dark rules, stacked bold labels | Phosphor duotone |
-| Grid | `grid` | White header with wide search, blue top menu with every group, no side menu | Large tiles with a navigation filter, statistics on the right | Pictogram title band, boxes with grey title strips, joined tabs, tables with a blue toolbar over light heads, labels left of fields | Remix fill, Flat Color pictograms for tools |
+| Classic | `classic` | Navy side menu with the logo, plain white bar with search, footer on every page | Panels of icon-and-link rows, details on the right | Large thin titles, no cards: sections flat on the page, boxed tabs, blue table heads between dark rules, bold labels, banded notices | Phosphor duotone as dark outlines with an orange accent |
+| Grid | `grid` | Blue header with a white logo, a top menu with every group, a search card, no side menu | Groups under solid blue title bars, borderless icon tiles, a filter, statistics on the right | Plain title over a rule, bold section titles with rules between them, outlined active tab, boxed striped tables, capital action buttons | Flat Color pictograms for tools, Remix fill elsewhere |
 | Modern | `modern` | Light side menu of hubs, search first in the bar | Greeting, search, at-a-glance numbers, common tools, all tools | Rounded cards, pill tabs, airy tables. Has a dark mode | lucide |
+
+Classic and Grid were matched against the running interfaces of the panels they
+follow, using measured colours, sizes and spacing. Keep that closeness when
+changing them, with our own logo, icons and names.
 
 How it fits together:
 

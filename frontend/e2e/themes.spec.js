@@ -103,12 +103,11 @@ test('internal pages look different in every theme', async ({ browser }) => {
         font: css('main h1', 'fontFamily'), title: css('main h1', 'fontWeight') + css('main h1', 'fontSize'),
         button: css('main [data-ui-button=primary]', 'borderRadius') + css('main [data-ui-button=primary]', 'textTransform') + css('main [data-ui-button=primary]', 'backgroundColor'),
         tableHead: css('main thead th', 'backgroundColor') + css('main thead th', 'color'),
-        heading: getComputedStyle(document.querySelector('.page-heading-icon')).display + (document.querySelector('.page-heading-icon svg')?.innerHTML || ''),
       }
     })
     await context.close()
   }
-  for (const key of ['font', 'title', 'button', 'tableHead', 'heading']) {
+  for (const key of ['font', 'title', 'button', 'tableHead']) {
     expect(new Set(themes.map((theme) => seen[theme][key])).size, key).toBe(3)
   }
 })

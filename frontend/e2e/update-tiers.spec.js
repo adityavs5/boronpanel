@@ -44,7 +44,7 @@ for (const skin of ['modern', 'classic', 'grid']) for (const theme of ['light', 
     expect(changes).toEqual(['beta', 'stable'])
     await expect(selector.locator('option[value="development"]')).toHaveCount(0)
     const logo = page.locator('.boron-brand-logo img').first()
-    await expect(logo).toHaveAttribute('src', skin === 'classic' || (skin === 'modern' && theme === 'dark') ? '/static/dist/brand/boron-logo-white.svg' : '/static/dist/brand/boron-logo-navy.svg')
+    await expect(logo).toHaveAttribute('src', skin !== 'modern' || theme === 'dark' ? '/static/dist/brand/boron-logo-white.svg' : '/static/dist/brand/boron-logo-navy.svg')
     await expect(logo).toHaveCSS('filter', 'none')
     expect(await logo.evaluate(img => img.complete && img.naturalWidth > 0)).toBeTruthy()
     for (const width of [1440, 768, 375]) {

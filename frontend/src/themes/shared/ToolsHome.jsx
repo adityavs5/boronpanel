@@ -126,7 +126,7 @@ export function useDashboardData() {
 export function AccountPanel({ data }) {
   const { username, isAdmin, acc, account } = data
   return (
-        <StatsPanel title="Your account" icon={UserRound} link={{ to: isAdmin ? '/health' : '/domains', label: isAdmin ? 'Full server information' : 'Manage domains' }}>
+        <StatsPanel title={activeTheme()?.labels?.account || 'Your account'} icon={UserRound} link={{ to: isAdmin ? '/health' : '/domains', label: isAdmin ? 'Full server information' : 'Manage domains' }}>
           <dl><InfoRow label="Current user"><span className="current-user">{username || '—'}</span></InfoRow>
             <InfoRow label="Access level">{isAdmin ? 'Administrator' : 'User'}</InfoRow>
             {!isAdmin && <><InfoRow label="Primary domain">{acc?.primary_domain || (account.isPending ? 'Loading…' : 'Not configured')}</InfoRow><InfoRow label="Home directory">{account.isSuccess && username ? `/home/${username}` : '—'}</InfoRow><InfoRow label="PHP version">{acc?.php_version ? `PHP ${acc.php_version}` : '—'}</InfoRow><QueryNotice query={account} label="Account information" /></>}
@@ -139,7 +139,7 @@ export function AccountPanel({ data }) {
 export function ResourcePanel({ data }) {
   const { isAdmin, health, accounts, disk, usage, u, counters, rates, diskUsed, diskQuota } = data
   return (
-        <StatsPanel kind="resources" title="Resource usage" icon={Gauge}>
+        <StatsPanel kind="resources" title={activeTheme()?.labels?.resources || 'Resource usage'} icon={Gauge}>
           {isAdmin ? <><QueryNotice query={health} label="Server statistics" />
             {health.isSuccess && <><UsageRow label="CPU usage" value={health.data.cpu_pct != null ? `${Math.round(health.data.cpu_pct)}%` : '—'} pct={health.data.cpu_pct} /><UsageRow label="Memory usage" value={health.data.mem_pct != null ? `${Math.round(health.data.mem_pct)}%` : '—'} pct={health.data.mem_pct} /><UsageRow label="Disk space" value={disk?.pct != null ? `${Math.round(disk.pct)}%` : '—'} pct={disk?.pct} /></>}
             <QueryNotice query={accounts} label="Accounts" />

@@ -22,7 +22,7 @@ for(const skin of ['modern', 'classic', 'grid']) for(const mode of ['light','dar
   const advanced=page.getByText('Advanced: admin terminal welcome',{exact:true})
   await expect(page.getByLabel('Terminal banner',{exact:true})).toBeHidden()
   await advanced.click()
-  await expect(page.getByLabel('Terminal banner',{exact:true})).toHaveCSS('border-top-left-radius',skin==='modern'?'10px':skin==='classic'?'3px':'2px')
+  await expect(page.getByLabel('Terminal banner',{exact:true})).toHaveCSS('border-top-left-radius',skin==='modern'?'10px':'4px')
   await page.getByLabel('Terminal banner',{exact:true}).fill('BORON TEST\n$(literal text)')
   await expect(page.getByLabel('Terminal banner preview')).toHaveText('BORON TEST\n$(literal text)')
   await page.getByRole('button',{name:'Save terminal welcome',exact:true}).click()

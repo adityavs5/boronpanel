@@ -1,6 +1,25 @@
 # Changelog
 
-## 3.4.2 — Stable
+## 3.5.0 — Stable
+
+### Changed
+
+- Classic and Grid were matched page by page against the running interfaces
+  of the panels they follow, using measured colours, type and spacing.
+  - **Classic**: internal pages are flat with no cards, with large thin titles,
+    plain section headings, blue table headings between dark rules, banded
+    notices and a footer on every page. The side menu is simpler, and tool icons
+    are dark outlines with an orange accent.
+  - **Grid**: a blue header with a white logo, a search bar under it, tool groups
+    under solid blue title bars with borderless icons, flat pages with bold
+    section titles, boxed striped tables, capital action buttons, a dark
+    sign-in page, and the Montserrat typeface.
+
+### Upgrade notes
+
+- No schema or configuration change.
+
+## 3.4.2
 
 ### Changed
 

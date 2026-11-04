@@ -45,8 +45,8 @@ for (const skin of ['modern', 'classic', 'grid']) {
     expect(links.slice(0, expectedCustomerStart.length)).toEqual(expectedCustomerStart)
     expect(links.slice(-expectedBackupEnd.length)).toEqual(expectedBackupEnd)
 
-    if(skin==='grid')await page.getByRole('button',{name:'Search the panel'}).click()
-    await page.getByRole('combobox', {name:skin==='grid'?'Search tools and settings':'Search hosting tools'}).fill('mail deliverability')
+    if(skin!=='modern')await page.getByRole('button',{name:'Search the panel'}).click()
+    await page.getByRole('combobox', {name:skin!=='modern'?'Search tools and settings':'Search hosting tools'}).fill('mail deliverability')
     await expect(page.getByRole('option').filter({ hasText: 'Email DNS Records' })).toBeVisible()
 
     await page.goto('/app/subdomains')

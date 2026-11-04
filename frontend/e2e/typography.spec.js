@@ -29,7 +29,7 @@ for(const role of ['admin','customer']) for(const skin of ['modern', 'classic', 
     sizes:[...document.querySelectorAll('.tool-label')].map(el=>parseFloat(getComputedStyle(el).fontSize)),
     fonts:performance.getEntriesByType('resource').filter(r=>r.name.includes('.woff2')).map(r=>({url:r.name,bytes:r.encodedBodySize}))}
   })
-  expect(metrics.family).toContain({modern:'Inter',classic:'Open Sans',grid:'Roboto'}[skin])
+  expect(metrics.family).toContain({modern:'Inter',classic:'Open Sans',grid:'Montserrat'}[skin])
   expect(metrics.sizes.every(size=>size>=13.5)).toBe(true)
   expect(metrics.fonts.length).toBeGreaterThan(0)
   expect(metrics.fonts.length).toBeLessThanOrEqual(4)

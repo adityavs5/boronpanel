@@ -25,7 +25,7 @@ for(const skin of ['modern', 'classic', 'grid']) for(const theme of ['light','da
     const errors=[]; page.on('pageerror',e=>errors.push(e.message))
     await fixture(page,skin,theme)
     await page.goto('/app/dashboard')
-    if(skin!=='grid'){ // Grid searches from its header and filters its tiles instead.
+    if(skin==='modern'){ // Classic and Grid search from their header instead.
     const search=page.getByRole('combobox',{name:'Search hosting tools'})
     await search.fill('mail')
     const options=page.getByRole('option')
@@ -50,7 +50,7 @@ for(const skin of ['modern', 'classic', 'grid']) for(const theme of ['light','da
     for(const width of [1440,768,375]) {
       await page.setViewportSize({width,height:900})
       await expect(page.getByRole('heading',{name:'Display preferences',exact:true})).toBeVisible()
-      const geometry=await page.evaluate(()=>{const logo=document.querySelector('.panel-brand').getBoundingClientRect(),search=document.querySelector('.global-search-trigger').getBoundingClientRect(),banner=document.querySelector('.impersonation-banner')?.getBoundingClientRect();return {overflow:document.documentElement.scrollWidth>innerWidth,overlap:Math.min(logo.right,search.right)-Math.max(logo.left,search.left),bannerHeight:banner?.height||0}})
+      const geometry=await page.evaluate(()=>{const logo=document.querySelector('.panel-brand').getBoundingClientRect(),search=document.querySelector('.global-search-trigger').getBoundingClientRect(),banner=document.querySelector('.impersonation-banner')?.getBoundingClientRect();return {overflow:document.documentElement.scrollWidth>innerWidth,overlap:Math.min(logo.bottom,search.bottom)>Math.max(logo.top,search.top)?Math.min(logo.right,search.right)-Math.max(logo.left,search.left):0,bannerHeight:banner?.height||0}})
       expect(geometry.overflow).toBe(false);expect(geometry.overlap).toBeLessThanOrEqual(0);expect(geometry.bannerHeight).toBeLessThanOrEqual(120)
     }
     expect(errors).toEqual([])

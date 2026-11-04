@@ -12,8 +12,8 @@ for (const skin of ['modern', 'classic', 'grid']) {
     })
     for (const [query,label,route] of [['django','Python apps','python-apps'],['nodejs','Node.js apps','node-apps']]) {
       await page.goto('/app/dashboard')
-      if(skin==='grid')await page.getByRole('button',{name:'Search the panel'}).click()
-      await page.getByRole('combobox',{name:skin==='grid'?'Search tools and settings':'Search hosting tools'}).fill(query)
+      if(skin!=='modern')await page.getByRole('button',{name:'Search the panel'}).click()
+      await page.getByRole('combobox',{name:skin!=='modern'?'Search tools and settings':'Search hosting tools'}).fill(query)
       await page.getByRole('option').filter({hasText:label}).click()
       await expect(page).toHaveURL(new RegExp('/'+route+'$'))
       await expect(page.getByRole('heading',{name:label,exact:true})).toBeVisible()

@@ -39,7 +39,7 @@ export function Sidebar({ mobile = false, onNavigate, brand }) {
   const role=useAuth(s=>s.role),location=useLocation()
   const { sidebar = {} } = activeTheme()
   const storedCollapsed=useUI(s=>s.sidebarCollapsed),toggle=useUI(s=>s.toggleSidebar)
-  const collapsed=!mobile&&storedCollapsed
+  const collapsed=!mobile&&storedCollapsed&&sidebar.collapsible!==false
   const closed=useUI(s=>s.navigationGroups),setGroup=useUI(s=>s.setNavigationGroup)
   const [query,setQuery]=useState('')
   const groups=useNavGroups()

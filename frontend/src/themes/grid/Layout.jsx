@@ -40,8 +40,7 @@ export function Layout({ inner, children }) {
   const role = useAuth((state) => state.role)
   return <>
     <header className="panel-topbar">
-      <div className="topbar-identity"><MenuButton /><Brand /></div>
-      <SearchBox label="Please enter your search" />
+      <div className="topbar-identity"><MenuButton /><Brand tone="white" /></div>
       <div className="topbar-actions">
         {customer && <DomainSwitcher />}
         <span className="grid-level"><span>Access level</span><strong>{levels[role] || 'User'}</strong></span>
@@ -49,6 +48,7 @@ export function Layout({ inner, children }) {
       </div>
     </header>
     <TopMenu />
+    <div className="grid-search"><SearchBox label="Enter your search criteria…" /></div>
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {inner && <PageNavigation />}
       <PanelMain inner={inner}>{children}</PanelMain>

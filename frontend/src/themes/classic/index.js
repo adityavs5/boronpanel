@@ -9,4 +9,4 @@ import './classic.css'
 
 const Home = () => createElement(ToolsHome, { heading: 'Tools' })
 
-export default { id: 'classic', Layout, Home, icons, sidebar: { tone: 'navy', homeLabel: 'Tools' } }
+export default { id: 'classic', Layout, Home, icons, sidebar: { tone: 'navy', homeLabel: 'Tools', collapsible: false }, labels: { account: 'General information', resources: 'Statistics' } }

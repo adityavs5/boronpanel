@@ -31,8 +31,8 @@ for(const skin of ['modern', 'classic', 'grid'])for(const mode of ['light','dark
    await page.goto(reference==='account'?'/app/accounts/alpha':reference==='settings'?'/app/panel-settings':'/app/domains')
    await expect(page.locator('main h1').first()).toBeVisible()
    await page.keyboard.press('Tab')
-   const navigationButton = skin==='grid'?page.locator('.grid-menu-item').first():page.getByRole('button',{name:'Collapse sidebar',exact:true})
-   const navigationSelector = skin==='grid'?'.grid-menu-item':'[aria-label="Collapse sidebar"]'
+   const navigationButton = skin==='grid'?page.locator('.grid-menu-item').first():skin==='classic'?page.locator('.sidebar-home'):page.getByRole('button',{name:'Collapse sidebar',exact:true})
+   const navigationSelector = skin==='grid'?'.grid-menu-item':skin==='classic'?'.sidebar-home':'[aria-label="Collapse sidebar"]'
    await navigationButton.focus()
    for(const sample of await contrast(page,navigationSelector,'focus'))expect(sample.ratio,`${reference} ${sample.label}: focus`).toBeGreaterThanOrEqual(3)
    for(const sample of await contrast(page,'main [data-ui-button]:not(:disabled)'))expect(sample.ratio,`${reference} ${sample.label}: text`).toBeGreaterThanOrEqual(4.5)

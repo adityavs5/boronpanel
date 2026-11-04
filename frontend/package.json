@@ -1,7 +1,7 @@
 {
   "name": "boron-frontend",
   "private": true,
-  "version": "3.4.2",
+  "version": "3.5.0",
   "type": "module",
   "description": "Boron control panel — React SPA (replaces the legacy Jinja2 UI)",
   "scripts": {
@@ -15,6 +15,7 @@
   "dependencies": {
     "@fontsource/inter": "^5.3.0",
     "@fontsource/lato": "^5.3.0",
+    "@fontsource/montserrat": "^5.3.0",
     "@fontsource/open-sans": "^5.3.0",
     "@fontsource/roboto": "^5.3.0",
     "@monaco-editor/react": "^4.7.0",
