@@ -376,6 +376,7 @@ export default function Domains({ subdomainsOnly = false }) {
         onRetry={refetch}
         filterable
         columnPicker
+        defaultHiddenColumns={admin ? ['docroot', 'created_at'] : ['created_at']}
         selectionBar={selectedRows.length > 0 && <div className="table-bulk-bar" aria-label="Selected domain actions"><strong>{selectedRows.length} selected</strong><span>With selected:</span>{selectedRows.length < visibleDomains.length && <Button variant="ghost" size="sm" disabled={bulkMut.isPending} onClick={() => setSelected(new Set(visibleDomains.map(row => row.id ?? row.domain)))}>Select all {visibleDomains.length}</Button>}<Button variant="secondary" size="sm" disabled={bulkMut.isPending || selectedRows.every(row => row.suspended)} onClick={() => setBulkAction('suspend')}>Suspend</Button><Button variant="secondary" size="sm" disabled={bulkMut.isPending || selectedRows.every(row => !row.suspended)} onClick={() => setBulkAction('unsuspend')}>Unsuspend</Button><Button variant="secondary" size="sm" disabled={bulkMut.isPending || selectedRows.every(row => row.kind === 'primary')} onClick={() => setBulkAction('delete')}>Delete</Button><Button variant="ghost" size="sm" disabled={bulkMut.isPending} onClick={() => setSelected(new Set())}>Clear</Button></div>}
         searchPlaceholder="Search domains…"
         pageSize={15}

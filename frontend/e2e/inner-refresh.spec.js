@@ -65,11 +65,12 @@ for(const skin of ['modern', 'classic', 'grid'])for(const mode of ['light','dark
   await expect(page.locator('main h1').first()).toBeVisible()
   if(reference==='account'){await page.getByRole('tab',{name:'Modify account',exact:true}).click();await expect(page.getByLabel('CPU cores',{exact:true})).toHaveValue('2')}
   if(reference==='domains')await expect(page.getByRole('button',{name:'Manage',exact:true}).first()).toBeVisible()
-  if(reference==='domains'&&width>=640){
+  // Laptops keep one-line table rows. Tablets stack rows so no column hides behind the actions.
+  if(reference==='domains'&&width>=1024){
     const row=page.locator('.domains-reference-table tbody tr').first()
     expect((await row.boundingBox()).height).toBeLessThanOrEqual(48)
     await expect(page.locator('.domains-reference-table th').filter({hasText:'Website'})).toHaveCSS('white-space','nowrap')
-  }
+  }else if(reference==='domains'&&width>=640)await expect(page.locator('.domains-reference-table .table-card').first()).toBeVisible()
   await noOverflow(page)
   const header=await page.locator('header').evaluate(el=>{const brand=el.querySelector('.panel-brand').getBoundingClientRect(),search=el.querySelector('.global-search-trigger').getBoundingClientRect();return {brandRight:brand.right,searchLeft:search.left,searchWidth:search.width,searchRight:search.right}})
   expect(header.searchWidth).toBeGreaterThanOrEqual(30)
@@ -156,10 +157,11 @@ test('account summary, usage save, independent section save and typed danger con
 test('domain columns, copy/expand and confirmed bulk suspension retain account scope',async({page})=>{
  const {writes}=await fixture(page,{role:'customer'})
  await page.goto('/app/domains')
- await page.locator('.panel-data-table').first().getByRole('button',{name:'Columns',exact:true}).click()
- await page.getByRole('menuitemcheckbox',{name:'Created',exact:true}).click()
- await page.keyboard.press('Escape')
  await expect(page.getByRole('columnheader',{name:'Created',exact:true})).toHaveCount(0)
+ await page.locator('.panel-data-table').first().getByRole('button',{name:'Columns',exact:true}).click()
+ await page.getByRole('menuitemcheckbox',{name:'Kind',exact:true}).click()
+ await page.keyboard.press('Escape')
+ await expect(page.getByRole('columnheader',{name:'Kind',exact:true})).toHaveCount(0)
  await page.context().grantPermissions(['clipboard-read','clipboard-write'])
  await page.getByRole('button',{name:'Copy blog.example.com document root',exact:true}).click()
  expect(await page.evaluate(()=>navigator.clipboard.readText())).toBe('/home/alpha/example.com/subdomains/blog/very-long-folder-name/public_html')

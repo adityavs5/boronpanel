@@ -202,6 +202,9 @@ html[data-theme=grid] .login-version { color: rgb(255 255 255 / 0.6); }
   html[data-theme=grid] .domain-context-trigger { background: transparent; }
   html[data-theme=grid] .grid-search .global-search-trigger kbd { display: none; }
   html[data-theme=grid] .tool-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
-  html[data-theme=grid] .tool-link { min-height: 96px; }
+  html[data-theme=grid] .tool-link { min-height: 96px; padding-inline: 2px; }
+  html[data-theme=grid] .tool-label { overflow-wrap: normal; }
+  html[data-theme=grid] .account-setting-fields > .form-field, html[data-theme=grid] .account-setting-fields > .space-y-1\.5 { grid-template-columns: minmax(0, 1fr); }
+  html[data-theme=grid] .account-setting-fields > .form-field > p { grid-column: 1; }
   .tool-filter > span { display: none; }
 }

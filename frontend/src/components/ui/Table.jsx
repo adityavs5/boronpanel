@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronUp, ChevronsUpDown, Search, ChevronLeft, ChevronRight, Columns3 } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { Input } from './Input'
@@ -6,6 +6,48 @@ import { TableSkeleton } from './Skeleton'
 import { EmptyState, ErrorState } from './States'
 import { Button } from './Button'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuCheckboxItem } from './DropdownMenu'
+
+const FIT_MODES = [undefined, 'wrap', 'stack']
+
+// Keeps every column readable when a table is wider than its space, so the
+// pinned actions never cover one. Cell text wraps first; if that is not enough
+// each row stacks as it does on phones. Widths are remembered per mode so the
+// table returns to the roomier mode as soon as that mode fits again.
+function useTableFit(resetKey) {
+  const rootRef = useRef(null)
+  const needed = useRef([])
+  const levelRef = useRef(0)
+  const [level, setLevel] = useState(0)
+  const change = useCallback((next) => {
+    levelRef.current = next
+    setLevel(next)
+  }, [])
+  const measure = useCallback(() => {
+    const root = rootRef.current
+    if (!root || !root.clientWidth || window.matchMedia?.('(max-width: 639.98px)').matches) return
+    const current = levelRef.current
+    const scroll = current < 2 ? root.querySelector('.panel-table-scroll') : null
+    if (scroll) {
+      needed.current[current] = scroll.scrollWidth
+      if (scroll.scrollWidth > scroll.clientWidth + 1) return change(current + 1)
+    }
+    if (current > 0 && root.clientWidth >= (needed.current[current - 1] ?? Infinity)) change(current - 1)
+  }, [change])
+  useLayoutEffect(() => {
+    needed.current = []
+    change(0)
+  }, [resetKey, change])
+  useLayoutEffect(measure)
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root || typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver(measure)
+    observer.observe(root)
+    document.fonts?.ready.then(measure)
+    return () => observer.disconnect()
+  }, [measure])
+  return { rootRef, level }
+}
 
 // Low-level table primitives (for hand-built tables / detail views).
 export function Table({ className, scrollLabel = 'Scrollable table', ...props }) {
@@ -148,10 +190,12 @@ export function DataTable({
     onRowClick(row)
   }
 
+  const { rootRef, level: fitLevel } = useTableFit(`${displayedColumns.map(col => col.key).join()}|${pageRows.length}`)
+  const selectAllControl = columns.find((col) => col.key === 'select')?.header
   const renderCell = (col, row) => col.render ? col.render(row) : row[col.key] ?? '—'
 
   return (
-    <div className={cn('panel-data-table rounded-card border border-border bg-card overflow-hidden', className)}>
+    <div ref={rootRef} data-fit={FIT_MODES[fitLevel]} className={cn('panel-data-table rounded-card border border-border bg-card overflow-hidden', className)}>
       {(filterable || toolbar || columnPicker) && (
         <div className="table-toolbar flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
           {filterable ? (
@@ -184,7 +228,8 @@ export function DataTable({
         <EmptyState icon={emptyIcon} title={query ? 'No matches' : emptyTitle} description={query ? 'Try a different search.' : emptyDescription} action={!query && emptyAction} />
       ) : (
         <>
-          <div className="divide-y divide-border sm:hidden">
+          <div className={cn('divide-y divide-border', fitLevel < 2 && 'sm:hidden')}>
+            {typeof selectAllControl === 'object' && selectAllControl && <div className="table-card-select-all flex items-center gap-3 px-4 py-2.5 text-sm text-muted-foreground">{selectAllControl}<span>Select all</span></div>}
             {pageRows.map((row, i) => {
               // Phone cards: the first column is the card title, with the
               // selection checkbox before it and row actions after it.
@@ -196,7 +241,7 @@ export function DataTable({
               return (
                 <div
                   key={getRowKey(row, i)}
-                  className={cn('table-card space-y-2.5 p-4', onRowClick && 'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring')}
+                  className={cn('table-card p-4', fitLevel < 2 && 'space-y-2.5', onRowClick && 'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring')}
                   tabIndex={onRowClick ? 0 : undefined}
                   role={onRowClick ? 'link' : undefined}
                   onClick={onRowClick ? (event) => activateRow(event, row) : undefined}
@@ -220,7 +265,7 @@ export function DataTable({
               )
             })}
           </div>
-          <div className="hidden sm:block">
+          <div className={fitLevel < 2 ? 'hidden sm:block' : 'hidden'}>
             <Table>
               <THead>
                 <tr>

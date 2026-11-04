@@ -130,6 +130,14 @@
 .panel-data-table .table-actions-cell { position: sticky; right: 0; z-index: 2; width: 1%; white-space: nowrap; background: rgb(var(--card)); box-shadow: -1px 0 0 rgb(var(--border)); }
 .panel-data-table tbody tr:hover .table-actions-cell { background: rgb(var(--hover)); }
 .panel-data-table thead .table-actions-cell { z-index: 3; background: rgb(var(--muted)); }
+/* A table wider than its space: text wraps first, then rows stack (useTableFit). */
+.panel-data-table[data-fit=wrap] table { min-width: 0; }
+.panel-data-table[data-fit=wrap] th, .panel-data-table[data-fit=wrap] tbody td { padding-inline: 8px; white-space: normal; overflow-wrap: normal; }
+.panel-data-table.domains-reference-table[data-fit=wrap] th { white-space: nowrap; }
+.panel-data-table[data-fit=wrap] .table-actions-cell { white-space: nowrap; }
+.panel-data-table[data-fit=wrap] .long-value-text { max-width: 170px; }
+.panel-data-table[data-fit=stack] .table-card { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 32px; }
+.panel-data-table[data-fit=stack] .table-card-title { grid-column: 1 / -1; }
 .table-sort-control { box-sizing: border-box; min-height: var(--control-h-sm); padding-block: 0; font-weight: 600; }
 .table-toolbar { gap: var(--space-3); padding: var(--space-3) var(--space-4); }
 .table-toolbar .table-search { max-width: 360px; }

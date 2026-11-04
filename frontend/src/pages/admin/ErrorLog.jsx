@@ -74,10 +74,8 @@ export default function ErrorLog() {
               <tr>
                 <TH>Time</TH>
                 <TH>Status</TH>
-                <TH>Method</TH>
-                <TH>Path</TH>
+                <TH>Request</TH>
                 <TH>Details</TH>
-                <TH>Request ID</TH>
                 <TH>User</TH>
                 <TH>IP</TH>
                 <TH>Duration</TH>
@@ -94,21 +92,20 @@ export default function ErrorLog() {
                       {e.status}
                     </span>
                   </TD>
-                  <TD className="whitespace-nowrap font-mono text-xs">{e.method}</TD>
-                  <TD className="max-w-md">
-                    <span className="block truncate font-mono text-xs" title={e.path}>
-                      {e.path}
+                  <TD className="max-w-56">
+                    <span className="block truncate font-mono text-xs" title={`${e.method} ${e.path}`}>
+                      {e.method} {e.path}
                     </span>
                   </TD>
-                  <TD className="min-w-64 max-w-lg whitespace-normal">
+                  <TD className="min-w-52 max-w-lg whitespace-normal">
                     {e.operation && <div className="font-medium">{e.operation} · {e.error_type}</div>}
                     {e.reference && <div className="flex items-center gap-1 font-mono text-xs">Reference: {e.reference}<button type="button" aria-label="Copy error reference" onClick={() => navigator.clipboard?.writeText(e.reference)}><Copy className="h-3.5 w-3.5" /></button></div>}
                     {e.returncode != null && <div>Command exit status: {e.returncode}</div>}
                     {e.errno != null && <div>OS error number: {e.errno}</div>}
                     {e.frames?.map((frame, index) => <div key={index} className="break-all font-mono text-xs text-muted-foreground">{frame}</div>)}
                     {!e.reference && <span className="text-muted-foreground">Older request record; no diagnostic reference recorded.</span>}
+                    {e.request_id && <code className="block break-all text-xs text-muted-foreground">Request ID: {e.request_id}</code>}
                   </TD>
-                  <TD className="max-w-48"><code className="block truncate text-xs" title={e.request_id || ''}>{e.request_id || '—'}</code></TD>
                   <TD className="text-muted-foreground">{e.user || '—'}</TD>
                   <TD className="whitespace-nowrap font-mono text-xs text-muted-foreground">
                     {e.ip || '—'}

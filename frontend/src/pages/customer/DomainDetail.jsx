@@ -2096,8 +2096,8 @@ export function StatsTab({ username, domain }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex gap-4 text-sm text-muted-foreground">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
           <span><strong className="text-foreground">{(data?.total_pageviews ?? 0).toLocaleString()}</strong> pageviews</span>
           <span><strong className="text-foreground">{formatBytes(data?.total_bytes_served ?? 0)}</strong> served</span>
           <span><strong className="text-foreground">{(data?.total_unique_visitors_approx ?? 0).toLocaleString()}</strong> visitors</span>

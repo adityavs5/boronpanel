@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Users, ShieldCheck, Play, ArrowUpCircle, MoreHorizontal } from 'lucide-react'
 import { useUpdateStatus } from '@/hooks/useUpdateStatus'
-import { get, patch, post } from '@/lib/api'
+import { get, patch, post, impersonate } from '@/lib/api'
 import { formatDate } from '@/lib/utils'
 import { SUSPEND_EFFECTS } from '@/config/constants'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -222,6 +222,11 @@ export default function Accounts() {
   // Terminated accounts are gone for good — the API already excludes them,
   // this is a belt-and-braces filter. Their record lives in the Account Log.
   const accounts = (data || []).filter((a) => a.status !== 'terminated')
+  const loginAs = useMutation({
+    mutationFn: (username) => impersonate(username),
+    onSuccess: () => { window.location.assign('/app') },
+    onError: (e) => toast.error('Could not log in as user', e.message),
+  })
   const allOnPage = accounts.map((r) => r.username)
   const allSelected = allOnPage.length > 0 && allOnPage.every((u) => selected.has(u))
   const columns = [
@@ -246,12 +251,12 @@ export default function Accounts() {
       ),
     },
     { key: 'username', header: 'Username', sortable: true, searchable: true, render: (r) => <div className="account-list-identity"><span className="account-list-username">{r.username}</span><span className="account-list-domain" title={r.primary_domain || undefined}>{r.primary_domain || 'No primary domain'}</span></div> },
-    { key: 'status', header: 'Status', sortable: true, render: (r) => <StatusBadge status={r.status} /> },
+    { key: 'status', header: 'Status', sortable: true, searchable: true, render: (r) => <StatusBadge status={r.status} /> },
     { key: 'primary_domain', header: 'Primary domain', searchable: true, render: (r) => r.primary_domain ? <span className="account-list-domain" title={r.primary_domain}>{r.primary_domain}</span> : <span className="text-muted-foreground">—</span> },
     { key: 'server_ip', header: 'Server IP', searchable: true, render: (r) => <span className="font-mono text-xs">{r.server_ip || '—'}</span> },
     { key: 'reseller', header: 'Reseller', searchable: true, searchValue: r => r.reseller?.username || 'admin', render: r => <span className="accounts-owner">{r.reseller?.username || 'Admin owned'}</span> },
     { key: 'created_at', header: 'Created', sortable: true, render: (r) => (r.created_at ? formatDate(r.created_at) : '—') },
-    { key: 'actions', header: '', align: 'right', searchable: false, render: r => <div className="flex justify-end gap-1" onClick={event => event.stopPropagation()}><Button variant="secondary" size="sm" onClick={() => navigate(`/accounts/${r.username}`)}>Manage</Button><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={`Actions for ${r.username}`}><MoreHorizontal className="h-4 w-4"/></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => { moveReseller.reset(); setAssignmentOwner(String(r.reseller?.id || '')); setAssignmentAccount(r) }}>Change reseller</DropdownMenuItem>{[['Domains','domains'],['Email','email'],['Backups','backups'],['Security','security'],['Advanced','advanced']].map(([label,tab])=><DropdownMenuItem key={tab} onSelect={()=>navigate(`/accounts/${r.username}?tab=${tab}`)}>{label}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu></div> },
+    { key: 'actions', header: '', align: 'right', searchable: false, render: r => <div className="flex justify-end gap-1" onClick={event => event.stopPropagation()}><Button variant="secondary" size="sm" onClick={() => navigate(`/accounts/${r.username}`)}>Manage</Button><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={`Actions for ${r.username}`}><MoreHorizontal className="h-4 w-4"/></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem disabled={r.status !== 'active' || loginAs.isPending} onSelect={() => loginAs.mutate(r.username)}>Login as user</DropdownMenuItem><DropdownMenuItem onSelect={() => { moveReseller.reset(); setAssignmentOwner(String(r.reseller?.id || '')); setAssignmentAccount(r) }}>Change reseller</DropdownMenuItem>{[['Domains','domains'],['SSL','ssl'],['Email','email'],['Backups','backups'],['Modify account','modify']].map(([label,tab])=><DropdownMenuItem key={tab} onSelect={()=>navigate(`/accounts/${r.username}?tab=${tab}`)}>{label}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu></div> },
   ]
 
   return (

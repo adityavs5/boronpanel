@@ -1,6 +1,32 @@
 # Changelog
 
-## 3.6.0 — Stable
+## 3.6.1 — Stable
+
+### Changed
+
+- Tables that are wider than their space keep every column readable in all three
+  themes. Cell text wraps first, then each row stacks, so the pinned action
+  buttons no longer cover columns such as Status or Created at laptop widths.
+- Domains hides Created by default, and Manage account also hides Document root,
+  so the list stays a one-line table. Both are in the Columns menu.
+- Tables that stack keep Select all, on phones too.
+- Error log shows the method with the path and the request ID under the details,
+  so every column fits.
+- The Manage accounts row menu has Login as user and links to the current account
+  screens, and searching for a status such as suspended now works.
+
+### Fixed
+
+- Grid tool labels no longer break in the middle of a word on phones, and Modify
+  account fields stack at full width.
+- Website statistics no longer squeezes its totals against the period selector on
+  phones.
+
+### Upgrade notes
+
+- No schema or configuration change.
+
+## 3.6.0
 
 ### Changed
 
