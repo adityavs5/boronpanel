@@ -1,19 +1,20 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Pause, Play, Trash2, Save, UserCog, FolderOpen, Ban, MoreHorizontal, UserRound, RotateCcw } from 'lucide-react'
+import { AlertTriangle, Pause, Play, Trash2, Save, UserCog, FolderOpen, Ban, UserRound, RotateCcw, KeyRound } from 'lucide-react'
 import { get, post, put, patch, del, impersonate as apiImpersonate } from '@/lib/api'
 import { formatBytes, formatDate } from '@/lib/utils'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { PHP_VERSIONS, SUSPEND_EFFECTS } from '@/config/constants'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
+import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table'
+import { activeTheme } from '@/themes/runtime'
 import { Button } from '@/components/ui/Button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Input, FormField } from '@/components/ui/Input'
 import { StyledSelect as Select } from '@/components/ui/StyledSelect'
 import { DraftChanges, useDraftSection } from '@/components/ui/DraftChanges'
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/DropdownMenu'
 import { Switch } from '@/components/ui/Toggle'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
 import { ConfirmDialog } from '@/components/ui/Dialog'
@@ -35,24 +36,27 @@ import AccountNotes from '@/pages/admin/AccountNotes'
 import Processes from '@/pages/customer/Processes'
 import { DatabaseRecoveryCopies } from './DatabaseRecoveryCopies'
 
-const ACCOUNT_TABS = [
-  ['overview', 'Overview'],
-  ['domains', 'Domains'],
-  ['email', 'Email'],
-  ['databases', 'Databases'],
-  ['backups', 'Backups'],
-  ['security', 'Security'],
-  ['settings', 'Settings'],
+// Every screen of an account sits at one level: a tool is one click away and
+// nothing hides behind a landing page. Modern groups them in a side list;
+// Classic and Grid show them as one row of tabs.
+const ACCOUNT_SECTIONS = [
+  { group: null, items: [['overview', 'Overview']] },
+  { group: 'Website', items: [['domains', 'Domains'], ['ssl', 'SSL'], ['apps', 'Applications']] },
+  { group: 'Mail and data', items: [['email', 'Email'], ['databases', 'Databases'], ['backups', 'Backups']] },
+  { group: 'Manage', items: [['modify', 'Modify account'], ['processes', 'Processes'], ['notes', 'Notes']] },
 ]
+const ACCOUNT_TABS = ACCOUNT_SECTIONS.flatMap(section => section.items)
 
-const LEGACY_TAB_PARENT = {
-  identity: 'settings', advanced: 'settings', apps: 'settings', 'php-functions': 'settings', notes: 'settings', 'usage-limits': 'settings',
-  ssl: 'security', processes: 'security',
+// Old links keep working: they land on the screen, at the setting they named.
+const LEGACY_TABS = {
+  settings: ['modify'], security: ['ssl'], identity: ['modify', 'account-identity'], advanced: ['modify', 'account-identity'],
+  'usage-limits': ['modify', 'account-usage-limits'], 'php-functions': ['modify', 'account-php-functions'],
 }
 
 function AdminActions({ username, account, danger = false }) {
   const navigate = useNavigate()
   const qc = useQueryClient()
+  const solidActions = activeTheme()?.account?.solidActions
   const [confirm, setConfirm] = useState(null) // 'terminate' | null
   const [terminateProgress, setTerminateProgress] = useState(null)
   const invalidate = () => {
@@ -90,22 +94,14 @@ function AdminActions({ username, account, danger = false }) {
   return (
     <div className="account-actions">
       {!danger && <>
-        <Button loading={impersonateMut.isPending} disabled={account.status !== 'active'} title={account.status === 'active' ? undefined : 'Unsuspend this account before logging in as the user.'} onClick={() => impersonateMut.mutate()}>
+        <Button className="account-login-action" loading={impersonateMut.isPending} disabled={account.status !== 'active'} title={account.status === 'active' ? undefined : 'Unsuspend this account before logging in as the user.'} onClick={() => impersonateMut.mutate()}>
           <UserCog className="h-4 w-4" /> Login as user
         </Button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild><Button variant="secondary"><MoreHorizontal className="h-4 w-4" />More</Button></DropdownMenuTrigger>
-          <DropdownMenuContent>
-            <DropdownMenuItem disabled={account.status !== 'active'} onSelect={() => window.open(`/api/v1/accounts/${username}/files/launch`, '_blank', 'noopener')}><FolderOpen className="h-4 w-4" /> File Manager</DropdownMenuItem>
-            {account.status === 'active' && <DropdownMenuItem onSelect={() => openConfirm('suspend')}><Pause className="h-4 w-4" /> Suspend</DropdownMenuItem>}
-            {account.status === 'suspended' && <DropdownMenuItem onSelect={() => openConfirm('unsuspend')}><Play className="h-4 w-4" /> Unsuspend</DropdownMenuItem>}
-            <DropdownMenuSeparator />
-            {['active', 'suspended', 'error'].includes(account.status) && <DropdownMenuItem destructive onSelect={() => openConfirm('terminate')}><Trash2 className="h-4 w-4" /> Terminate</DropdownMenuItem>}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <Button variant={solidActions ? 'primary' : 'secondary'} disabled={account.status !== 'active'} onClick={() => window.open(`/api/v1/accounts/${username}/files/launch`, '_blank', 'noopener')}><FolderOpen className="h-4 w-4" /> File Manager</Button>
+        <Button variant={solidActions ? 'primary' : 'secondary'} asChild><Link to={`/accounts/${username}?tab=identity`}><KeyRound className="h-4 w-4" /> Change password</Link></Button>
+        {account.status === 'active' && <Button variant={solidActions ? 'primary' : 'secondary'} onClick={() => openConfirm('suspend')}><Pause className="h-4 w-4" /> Suspend</Button>}
+        {account.status === 'suspended' && <Button variant={solidActions ? 'primary' : 'secondary'} onClick={() => openConfirm('unsuspend')}><Play className="h-4 w-4" /> Unsuspend</Button>}
       </>}
-      {danger && account.status === 'active' && <Button variant="secondary" loading={suspendMut.isPending} onClick={() => openConfirm('suspend')}><Pause className="h-4 w-4" /> Suspend</Button>}
-      {danger && account.status === 'suspended' && <Button variant="secondary" loading={unsuspendMut.isPending} onClick={() => openConfirm('unsuspend')}><Play className="h-4 w-4" /> Unsuspend</Button>}
       {danger && ['active', 'suspended', 'error'].includes(account.status) && <Button variant="danger" onClick={() => openConfirm('terminate')}><Trash2 className="h-4 w-4" /> Terminate</Button>}
       <ConfirmDialog open={confirm === 'suspend' || confirm === 'unsuspend'} onOpenChange={open => !open && setConfirm(null)} title={`${confirm === 'suspend' ? 'Suspend' : 'Unsuspend'} ${username}?`} description={confirm === 'suspend' ? SUSPEND_EFFECTS : 'Hosting, email logins and customer access will resume.'} confirmationText={username} confirmLabel={confirm === 'suspend' ? 'Suspend account' : 'Unsuspend account'} loading={suspendMut.isPending || unsuspendMut.isPending} error={suspendMut.error || unsuspendMut.error} onConfirm={() => { (confirm === 'suspend' ? suspendMut : unsuspendMut).mutate(undefined, { onSuccess: () => setConfirm(null) }) }} />
       <ConfirmDialog
@@ -124,8 +120,8 @@ function AdminActions({ username, account, danger = false }) {
   )
 }
 
-function SettingsSection({ title, description, danger = false, children }) {
-  return <section className={danger ? 'account-settings-section account-danger-section' : 'account-settings-section'}><div className="account-settings-section-heading"><h2>{title}</h2><p>{description}</p></div>{children}</section>
+function SettingsSection({ id, title, description, danger = false, children }) {
+  return <section id={id} className={danger ? 'account-settings-section account-danger-section' : 'account-settings-section'}><div className="account-settings-section-heading"><h2>{title}</h2>{description && <p>{description}</p>}</div>{children}</section>
 }
 
 function DisabledReasonButton({ reason, children, ...props }) {
@@ -257,7 +253,7 @@ function PhpAndLimits({ username, account, part = 'both' }) {
 
   return (
     <>
-      {part !== 'limits' && <SettingsSection title="PHP version" description="Choose the PHP runtime used by this account's websites.">
+      {part !== 'limits' && <SettingsSection id="account-php" title="PHP version" description="Choose the PHP runtime used by this account's websites.">
         <div className="account-setting-fields">
           <FormField label="Version">
             <Select value={phpVersion} onChange={(e) => setPhpVersion(e.target.value)}>
@@ -269,7 +265,7 @@ function PhpAndLimits({ username, account, part = 'both' }) {
         </div>
       </SettingsSection>}
 
-      {part !== 'php' && <SettingsSection title="Resource limits" description="Limit compute resources for this account without changing its files or websites. An empty field is Unlimited.">
+      {part !== 'php' && <SettingsSection id="account-resources" title="Resource limits" description="Limit compute resources for this account without changing its files or websites. An empty field is Unlimited.">
         <div className="account-setting-fields">
           <div className="max-w-[65ch] text-sm" role="note" aria-label="Limit source">
             {inherited
@@ -314,7 +310,7 @@ function PlanCard({ username, account }) {
   })
 
   return (
-    <SettingsSection title="Plan" description={`Current plan: ${currentPlan ? currentPlan.name : 'Custom plan'}. Applying a plan updates this account's configured limits.`}>
+    <SettingsSection id="account-plan" title="Hosting plan" description={`Current plan: ${currentPlan ? currentPlan.name : 'Custom plan'}. Applying a plan updates this account's configured limits.`}>
       <div className="account-setting-fields">
         <FormField label="Plan">
           <Select value={planId} onChange={(e) => setPlanId(e.target.value)}>
@@ -337,7 +333,7 @@ function NamespaceCard({ username }) {
     onSuccess: () => { toast.success('Namespace updated'); qc.invalidateQueries({ queryKey: ['namespace', username] }) },
     onError: (e) => toast.error('Could not update account isolation', e.message),
   })
-  return <SettingsSection title="Isolation" description="Keep web and PHP file visibility inside this account's mount namespace."><div className="account-isolation-control"><div><strong>Namespace isolation</strong><span>{data ? (data.enabled ? 'Active' : data.eligible ? 'Not active' : 'Not eligible') : 'n/a'}</span></div><Switch aria-label="Namespace isolation" checked={!!data?.enabled} onCheckedChange={(v) => mut.mutate(v)} disabled={!data || !data.eligible || mut.isPending} /></div>{mut.isPending&&<span role="status" className="setting-row-description">Updating account isolation…</span>}</SettingsSection>
+  return <SettingsSection id="account-isolation" title="Isolation" description="Keep web and PHP file visibility inside this account's mount namespace."><div className="account-isolation-control"><div><strong>Namespace isolation</strong><span>{data ? (data.enabled ? 'Active' : data.eligible ? 'Not active' : 'Not eligible') : 'n/a'}</span></div><Switch aria-label="Namespace isolation" checked={!!data?.enabled} onCheckedChange={(v) => mut.mutate(v)} disabled={!data || !data.eligible || mut.isPending} /></div>{mut.isPending&&<span role="status" className="setting-row-description">Updating account isolation…</span>}</SettingsSection>
 }
 
 const USAGE_LIMIT_FIELDS = [
@@ -429,15 +425,15 @@ function UsageLimitsCard() {
     enabled: !!username,
   })
 
-  return <details className="account-usage-limits"><summary>Additional usage limits</summary><p className="account-usage-limits-intro">Bandwidth, database, mailbox and subdomain limits.</p><div className="account-usage-limits-content">
-        {isLoading ? (
-          <CenteredSpinner label="Loading usage limits…" />
-        ) : error ? (
-          <ErrorState error={error} onRetry={refetch} />
-        ) : data ? (
-          <UsageLimitsForm key={username} username={username} data={data} />
-        ) : null}
-      </div></details>
+  return <SettingsSection id="account-usage-limits" title="Usage limits" description="Bandwidth, database, mailbox and subdomain limits.">
+    {isLoading ? (
+      <CenteredSpinner label="Loading usage limits…" />
+    ) : error ? (
+      <ErrorState error={error} onRetry={refetch} />
+    ) : data ? (
+      <UsageLimitsForm key={username} username={username} data={data} />
+    ) : null}
+  </SettingsSection>
 }
 
 // QA round 2, item 9: admin-only PHP disable_functions overrides, per-account
@@ -503,7 +499,7 @@ function PhpFunctionsTab({ username }) {
   const shown = editing ? draft : (scopeOverride?.disable_functions || data?.default_disable_functions || [])
 
   return (
-    <Card>
+    <Card id="account-php-functions">
       <CardHeader>
         <CardTitle className="flex items-center gap-2"><Ban className="h-4 w-4" /> PHP disabled functions</CardTitle>
       </CardHeader>
@@ -562,14 +558,10 @@ function AccountSummary({username,account}) {
   const {data:plans}=useQuery({queryKey:['plans'],queryFn:()=>get('/api/v1/admin/plans'),retry:false})
   const plan=(plans?.plans||[]).find(row=>row.id===account.plan_id)
   const summary = `${plan?.name||account.plan_name||'Custom plan'} · ${account.primary_domain||'No primary domain'} · UID ${account.uid??'n/a'} · PHP ${account.php_version||'n/a'}`
+  const below = activeTheme()?.account?.actionsBelowTabs
   return <section className="account-summary" aria-label="Account summary">
-    <PageHeader icon={UserRound} title={username} titleMeta={<StatusBadge status={account.status}/>} description={summary}><AdminActions username={username} account={account}/></PageHeader>
+    <PageHeader icon={UserRound} title={username} titleMeta={<StatusBadge status={account.status}/>} description={summary}>{!below && <AdminActions username={username} account={account}/>}</PageHeader>
   </section>
-}
-
-function UsageRow({ label, value, percent }) {
-  const safePercent = percent == null ? null : Math.min(100, Math.max(0, percent))
-  return <div className="account-usage-row"><span className="account-usage-label">{label}</span><strong>{value}</strong>{safePercent != null && <div className="account-usage-track" role="progressbar" aria-label={`${label} usage`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(safePercent)}><span style={{width:`${safePercent}%`}} /></div>}</div>
 }
 
 // Inode limits start after a warning period when a plan sets them.
@@ -580,7 +572,10 @@ function inodeEnforcement(account) {
   return account.inode_enforcement_state
 }
 
-function AccountOverview({ username, account }) {
+const percentOf = (used, limit) => limit && used != null ? Math.min(100, Math.max(0, used / limit * 100)) : null
+const countRow = (label, used, limit, tab) => ({ label, used: used ?? 'n/a', limit: limit ?? 'Unlimited', percent: percentOf(used, limit), tab })
+
+function useAccountFigures(username, account) {
   const {data:usage}=useQuery({queryKey:['usage',username],queryFn:()=>get(`/api/v1/accounts/${username}/usage`),refetchInterval:15000,retry:false})
   const {data:plans}=useQuery({queryKey:['plans'],queryFn:()=>get('/api/v1/admin/plans'),retry:false})
   const {data:namespace}=useQuery({queryKey:['namespace',username],queryFn:()=>get(`/api/v1/accounts/${username}/namespace`),retry:false})
@@ -594,12 +589,19 @@ function AccountOverview({ username, account }) {
   const inodes=usage?.current?.inode_count
   const inodeLimit=account.inode_limit??usage?.inode_limit??null
   const plan=(plans?.plans||[]).find(row=>row.id===account.plan_id)
-  const rows=[
-    {label:'Disk',value:disk==null?'n/a':`${formatBytes(disk)} of ${diskLimit?formatBytes(diskLimit):'unlimited'}`,percent:diskLimit&&disk!=null?disk/diskLimit*100:null},
-    {label:'Bandwidth',value:bandwidth==null?'n/a':`${formatBytes(bandwidth)} of ${bandwidthLimit?formatBytes(bandwidthLimit):'unlimited'}`,percent:bandwidthLimit&&bandwidth!=null?bandwidth/bandwidthLimit*100:null},
-    {label:'Memory',value:memory==null?'n/a':`${formatBytes(memory)} of ${memoryLimit?formatBytes(memoryLimit):'unlimited'}`,percent:memoryLimit&&memory!=null?memory/memoryLimit*100:null},
-    {label:'CPU',value:'n/a',percent:null},
-    {label:'Inodes',value:inodes==null?'n/a':`${inodes.toLocaleString()} of ${inodeLimit?Number(inodeLimit).toLocaleString():'unlimited'}`,percent:inodeLimit&&inodes!=null?inodes/inodeLimit*100:null},
+  const bytes=(label,used,limit)=>({label,used:used==null?'n/a':formatBytes(used),limit:limit?formatBytes(limit):'Unlimited',percent:percentOf(used,limit)})
+  const capacity=[
+    bytes('Disk space',disk,diskLimit),
+    bytes('Bandwidth',bandwidth,bandwidthLimit),
+    bytes('Memory',memory,memoryLimit),
+    {label:'Inodes',used:inodes==null?'n/a':inodes.toLocaleString(),limit:inodeLimit?Number(inodeLimit).toLocaleString():'Unlimited',percent:percentOf(inodes,inodeLimit)},
+  ]
+  const services=[
+    countRow('Domains',counters?.domain_count,counters?.domain_limit,'domains'),
+    countRow('Subdomains',counters?.subdomain_count,counters?.subdomain_limit,'domains'),
+    countRow('Email accounts',counters?.email_account_count,counters?.email_account_limit,'email'),
+    countRow('Databases',counters?.database_count,counters?.database_limit,'databases'),
+    countRow('FTP accounts',counters?.ftp_account_count,counters?.ftp_account_limit,null),
   ]
   const facts=[
     ['Plan',plan?.name||account.plan_name||'Custom plan'],
@@ -609,29 +611,64 @@ function AccountOverview({ username, account }) {
     ['Namespace isolation',namespace?namespace.enabled?'Active':'Not active':'n/a'],
     ...(account.inode_enforcement_state?[['Inode limits',inodeEnforcement(account)]]:[]),
   ]
+  return {capacity,services,facts}
+}
+
+function UsageTable({ rows }) {
+  return <div className="panel-data-table account-usage-table"><Table scrollLabel="Account usage"><THead><tr><TH>Setting</TH><TH>Usage</TH><TH>Limit</TH></tr></THead><TBody>{rows.map(row=><TR key={row.label}><TD>{row.label}</TD><TD>{row.used}</TD><TD>{row.limit}</TD></TR>)}</TBody></Table></div>
+}
+
+function FactList({ facts }) {
+  return <dl className="account-fact-list">{facts.map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+}
+
+function Meter({ label, used, limit, percent }) {
+  const level = percent == null ? undefined : percent >= 90 ? 'danger' : percent >= 70 ? 'warning' : 'ok'
+  return <div className="account-meter" data-level={level}>
+    <span>{label}</span><strong>{used}</strong><small>of {limit}</small>
+    <div className="account-meter-track" role="progressbar" aria-label={`${label} usage`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent ?? 0)}><i style={{width:`${percent ?? 0}%`}} /></div>
+  </div>
+}
+
+function AccountOverview({ username, account }) {
+  const {capacity,services,facts}=useAccountFigures(username,account)
+  const style=activeTheme()?.account?.overview
+  if (style==='meters') return <div className="account-dashboard">
+    <div className="account-meters">{capacity.map(row=><Meter key={row.label} {...row}/>)}</div>
+    <div className="account-dashboard-columns">
+      <section className="account-overview-card"><h2>Services</h2><div className="account-service-list">{services.map(row=>{const content=<><span>{row.label}</span><strong>{row.used}<small> / {row.limit}</small></strong></>;return row.tab?<Link key={row.label} to={`/accounts/${username}?tab=${row.tab}`}>{content}</Link>:<div key={row.label}>{content}</div>})}</div></section>
+      <section className="account-overview-card"><h2>Account</h2><FactList facts={facts}/></section>
+    </div>
+  </div>
+  if (style==='strip') return <Tabs className="account-info-tabs" defaultValue="usage">
+    <TabsList><TabsTrigger value="usage">Usage statistics</TabsTrigger><TabsTrigger value="info">Account info</TabsTrigger></TabsList>
+    <TabsContent value="usage"><UsageTable rows={[...capacity,...services]}/></TabsContent>
+    <TabsContent value="info"><FactList facts={facts}/></TabsContent>
+  </Tabs>
   return <div className="account-overview">
-    <section className="account-overview-card"><h2>Usage</h2><div className="account-usage-list">{rows.map(row=><UsageRow key={row.label} {...row}/>)}</div></section>
-    <section className="account-overview-card"><h2>Account</h2><dl className="account-fact-list">{facts.map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></section>
+    <section className="account-overview-card"><h2>Usage</h2><UsageTable rows={[...capacity,...services]}/></section>
+    <section className="account-overview-card"><h2>Account</h2><FactList facts={facts}/></section>
   </div>
 }
 
-function AccountSettings({ username, account, setSearchParams }) {
+const MODIFY_SECTIONS = [['account-plan','Hosting plan'],['account-php','PHP version'],['account-resources','Resource limits'],['account-usage-limits','Usage limits'],['account-identity','Identity and passwords'],['account-php-functions','PHP functions'],['account-isolation','Isolation'],['account-danger','Danger zone']]
+
+function jumpTo(id) {
+  document.getElementById(id)?.scrollIntoView({ block: 'start' })
+}
+
+function AccountSettings({ username, account }) {
   return <div className="account-settings">
-    <PhpAndLimits username={username} account={account} part="php"/>
+    <nav className="account-jump" aria-label="On this page">{MODIFY_SECTIONS.map(([id,label])=><button key={id} type="button" onClick={()=>jumpTo(id)}>{label}</button>)}</nav>
     <PlanCard username={username} account={account}/>
+    <PhpAndLimits username={username} account={account} part="php"/>
     <PhpAndLimits username={username} account={account} part="limits"/>
+    <UsageLimitsCard/>
+    <SettingsSection id="account-identity" title="Identity and passwords" description="Rename the account, set its primary domain and contact email, or reset a password."><AccountIdentity username={username} account={account}/></SettingsSection>
+    <PhpFunctionsTab username={username}/>
     <NamespaceCard username={username}/>
-    <SettingsSection title="Applications and advanced settings" description="Open a focused tool when you need to change application or account-level configuration.">
-      <div className="account-settings-links">
-        {[['apps','Applications'],['identity','Account identity'],['usage-limits','Advanced account limits'],['php-functions','PHP functions'],['notes','Notes']].map(([tab,label])=><Button variant="link" key={tab} onClick={()=>setSearchParams({tab})}>{label}</Button>)}
-      </div>
-    </SettingsSection>
-    <SettingsSection danger title="Danger zone" description={`Pause hosting or permanently remove ${username}. Review available backups before termination.`}><AdminActions username={username} account={account} danger/></SettingsSection>
+    <SettingsSection id="account-danger" danger title="Danger zone" description={`Permanently remove ${username}. Review available backups first. To pause hosting instead, use Suspend at the top of this page.`}><AdminActions username={username} account={account} danger/></SettingsSection>
   </div>
-}
-
-function SecurityLanding({ setSearchParams }) {
-  return <div className="account-tool-choices"><h2>Security tools</h2><p>Open one security task at a time.</p><div>{[['ssl','SSL certificates'],['php-functions','PHP functions'],['processes','Processes']].map(([tab,label])=><Button variant="secondary" key={tab} onClick={()=>setSearchParams({tab})}>{label}</Button>)}</div></div>
 }
 
 function AccountDetailContent() {
@@ -639,17 +676,21 @@ function AccountDetailContent() {
   const { username } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedTab = searchParams.get('tab')
-  const activeTab = ACCOUNT_TABS.some(([value])=>value===requestedTab) ? requestedTab : LEGACY_TAB_PARENT[requestedTab] || 'overview'
+  const [legacyTab, legacyAnchor] = LEGACY_TABS[requestedTab] || []
+  const activeTab = ACCOUNT_TABS.some(([value])=>value===requestedTab) ? requestedTab : legacyTab || 'overview'
   const { data: account, isLoading, error, refetch } = useQuery({
     queryKey: ['account', username],
     queryFn: () => get(`/api/v1/accounts/${username}`),
     enabled: !!username,
   })
+  const theme = activeTheme()?.account || {}
+  const side = theme.nav === 'side'
 
   useEffect(() => { if (account?.status === 'terminated') { toast.info('This account has been terminated'); navigate('/accounts', { replace: true }) } }, [account?.status, navigate])
+  useEffect(() => { if (legacyAnchor && account) { const timer = setTimeout(() => jumpTo(legacyAnchor), 300); return () => clearTimeout(timer) } return undefined }, [legacyAnchor, !!account])
 
   return (
-    <div className="reference-page">
+    <div className="reference-page account-page" data-nav={side ? 'side' : 'tabs'}>
       {isLoading ? (
         <CardSkeleton />
       ) : error ? (
@@ -658,23 +699,32 @@ function AccountDetailContent() {
         <>
           <AccountSummary username={username} account={account} />
 
-          <Tabs className="account-tabs" value={activeTab} onValueChange={(tab) => setSearchParams((prev) => {
+          <Tabs className="account-tabs" orientation={side ? 'vertical' : 'horizontal'} value={activeTab} onValueChange={(tab) => setSearchParams((prev) => {
             const next = new URLSearchParams(prev)
             if (tab === 'overview') next.delete('tab')
             else next.set('tab', tab)
             return next
           })}>
             <TabsList className="account-primary-tabs">
-              {ACCOUNT_TABS.map(([value,label])=><TabsTrigger key={value} value={value}>{label}</TabsTrigger>)}
+              {ACCOUNT_SECTIONS.map(section => <div className="account-tab-group" key={section.group || 'top'}>
+                {side && section.group && <span className="account-tab-group-title">{section.group}</span>}
+                {section.items.map(([value,label])=><TabsTrigger key={value} value={value}>{label}</TabsTrigger>)}
+              </div>)}
             </TabsList>
 
-            <TabsContent value="overview"><AccountOverview username={username} account={account}/></TabsContent>
-            <TabsContent value="domains" className="account-detail-tab"><Domains /></TabsContent>
-            <TabsContent value="databases" className="account-detail-tab"><Databases /><DatabaseRecoveryCopies username={username} /></TabsContent>
-            <TabsContent value="email" className="account-detail-tab"><Email /></TabsContent>
-            <TabsContent value="backups" className="account-detail-tab"><Backups /></TabsContent>
-            <TabsContent value="security" className="account-detail-tab">{requestedTab==='ssl'?<><h2 className="sr-only">SSL/TLS</h2><Ssl/></>:requestedTab==='processes'?<Processes embedded/>:<SecurityLanding setSearchParams={setSearchParams}/>}</TabsContent>
-            <TabsContent value="settings" className="account-detail-tab">{requestedTab==='apps'?<Apps/>:requestedTab==='identity'||requestedTab==='advanced'?<AccountIdentity username={username} account={account}/>:requestedTab==='usage-limits'?<UsageLimitsCard/>:requestedTab==='php-functions'?<PhpFunctionsTab username={username}/>:requestedTab==='notes'?<AccountNotes username={username}/>:<AccountSettings username={username} account={account} setSearchParams={setSearchParams}/>}</TabsContent>
+            <div className="account-screen">
+              {theme.actionsBelowTabs && <AdminActions username={username} account={account}/>}
+              <TabsContent value="overview"><AccountOverview username={username} account={account}/></TabsContent>
+              <TabsContent value="domains" className="account-detail-tab"><Domains /></TabsContent>
+              <TabsContent value="ssl" className="account-detail-tab"><h2 className="sr-only">SSL/TLS</h2><Ssl/></TabsContent>
+              <TabsContent value="apps" className="account-detail-tab"><Apps/></TabsContent>
+              <TabsContent value="email" className="account-detail-tab"><Email /></TabsContent>
+              <TabsContent value="databases" className="account-detail-tab"><Databases /><DatabaseRecoveryCopies username={username} /></TabsContent>
+              <TabsContent value="backups" className="account-detail-tab"><Backups /></TabsContent>
+              <TabsContent value="modify" className="account-detail-tab"><AccountSettings username={username} account={account}/></TabsContent>
+              <TabsContent value="processes" className="account-detail-tab"><Processes embedded/></TabsContent>
+              <TabsContent value="notes" className="account-detail-tab"><AccountNotes username={username}/></TabsContent>
+            </div>
           </Tabs>
         </>
       ) : null}

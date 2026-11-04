@@ -14,7 +14,7 @@ Themes differ in everything a person sees, not only the home screen.
 | Theme | id | Frame | Home | Internal pages | Icons |
 |---|---|---|---|---|---|
 | Classic | `classic` | Navy side menu with the logo, plain white bar with search, footer on every page | Panels of icon-and-link rows, details on the right | Large thin titles, no cards: sections flat on the page, boxed tabs, blue table heads between dark rules, bold labels, banded notices | Phosphor duotone as dark outlines with an orange accent |
-| Grid | `grid` | Blue header with a white logo, a top menu with every group, a search card, no side menu | Groups under solid blue title bars, borderless icon tiles, a filter, statistics on the right | Plain title over a rule, bold section titles with rules between them, outlined active tab, boxed striped tables, capital action buttons | Flat Color pictograms for tools, Remix fill elsewhere |
+| Grid | `grid` | Blue header with a white logo, a Menu button opening a panel of every tool, a search card, no side menu | Groups under solid blue title bars, borderless icon tiles, a filter, statistics on the right | Plain title over a rule, bold section titles with rules between them, outlined active tab, boxed striped tables, capital action buttons | Flat Color pictograms for tools, Remix fill elsewhere |
 | Modern | `modern` | Light side menu of hubs, search first in the bar | Greeting, search, at-a-glance numbers, common tools, all tools | Rounded cards, pill tabs, airy tables. Has a dark mode | lucide |
 
 Classic and Grid were matched against the running interfaces of the panels they

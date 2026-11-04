@@ -9,8 +9,8 @@ export const THEMES = [
     darkMode: false,
   },
   {
-    id: 'grid', name: 'Grid', layout: 'Top menu, large icon tiles',
-    description: 'Large full-colour icon tiles with a filter, and a top menu that reaches every tool from any page. No side menu.',
+    id: 'grid', name: 'Grid', layout: 'Blue header, large icon tiles',
+    description: 'Tool groups under blue title bars with full-colour icons, and a Menu button that reaches every tool from any page. No side menu.',
     darkMode: false,
   },
   {

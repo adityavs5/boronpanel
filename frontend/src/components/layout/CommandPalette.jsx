@@ -37,7 +37,7 @@ export function CommandPalette() {
       if ((event.key.toLowerCase() === 'k' && (event.ctrlKey || event.metaKey)) || (event.key === '/' && !event.altKey && !event.metaKey && (!editable || event.ctrlKey))) {
         if (event.key === '/' && event.shiftKey) return
         event.preventDefault()
-        openerRef.current = event.target instanceof Element && event.target.closest('.inner-drawer') ? document.querySelector('.inner-menu-button') : document.activeElement
+        openerRef.current = event.target instanceof Element && event.target.closest('.inner-drawer, .grid-menu-drawer') ? document.querySelector('.inner-menu-button') : document.activeElement
         setMobileNavOpen(false)
         setOpen(true)
       }

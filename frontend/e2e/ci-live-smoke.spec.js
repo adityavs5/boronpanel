@@ -20,7 +20,7 @@ test('real login, account navigation, impersonation and File Manager entry', asy
 
   await page.goto(`/app/accounts/${accountUsername}`)
   await expect(page.getByRole('heading', { name: accountUsername, exact: true })).toBeVisible()
-  for (const name of ['Overview', 'Domains', 'Email', 'Databases', 'Backups', 'Security', 'Settings']) {
+  for (const name of ['Overview', 'Domains', 'SSL', 'Applications', 'Email', 'Databases', 'Backups', 'Modify account', 'Processes', 'Notes']) {
     await expect(page.getByRole('tab', { name, exact: true })).toBeVisible()
   }
   await page.getByRole('tab', { name: 'Domains', exact: true }).click()

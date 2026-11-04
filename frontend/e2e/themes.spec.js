@@ -53,7 +53,7 @@ for (const role of ['admin', 'customer']) for (const theme of themes) {
       await expect(page.locator('main h1')).toHaveText('Tools')
     }
     if (theme === 'grid') {
-      await expect(page.locator('.grid-menu')).toBeVisible()
+      await expect(page.locator('.grid-header-pill')).toBeVisible()
       await expect(page.locator('.persistent-navigation')).toHaveCount(0)
       await expect(page.getByLabel('Navigation filter')).toBeVisible()
     }
@@ -127,19 +127,20 @@ test('tabs and forms change with the theme', async ({ browser }) => {
   expect(new Set(Object.values(seen)).size).toBe(3)
 })
 
-test('grid: the top menu reaches a tool from any page, and the filter narrows the tiles', async ({ page }) => {
+test('grid: the Menu panel reaches a tool from any page, and the filter narrows the tiles', async ({ page }) => {
   await setup(page, 'customer', 'grid')
   await page.goto('/app/dashboard')
   await page.getByLabel('Navigation filter').fill('cron')
-  await expect(page.locator('.tool-link')).toHaveCount(1)
+  await expect(page.locator('main .tool-link')).toHaveCount(1)
   await page.getByLabel('Navigation filter').fill('nothing-like-this')
   await expect(page.getByText(/No tools match/)).toBeVisible()
   await page.getByLabel('Navigation filter').fill('')
   await page.goto('/app/domains')
-  await page.locator('.grid-menu').getByRole('button', { name: 'Email' }).click()
-  await page.getByRole('menuitem', { name: 'Email accounts' }).click()
+  await expect(page.locator('aside')).toHaveCount(0)
+  await page.locator('.grid-header-pill').click()
+  await page.locator('#panel-navigation-drawer').getByRole('link', { name: 'Email accounts' }).click()
   await expect(page).toHaveURL(/\/app\/email$/)
-  await expect(page.locator('.grid-menu').getByRole('button', { name: 'Email' })).toHaveAttribute('data-current', 'true')
+  await expect(page.locator('#panel-navigation-drawer')).toHaveCount(0)
 })
 
 test('nobody picks a theme for themselves', async ({ page }) => {
@@ -208,7 +209,7 @@ test('the administrator applies a theme for the whole server', async ({ page }) 
   await page.getByRole('button', { name: 'Apply theme for everyone' }).click()
   await expect.poll(() => puts).toEqual(['grid'])
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'grid')
-  await expect(page.locator('.grid-menu')).toBeVisible()
+  await expect(page.locator('.grid-search')).toBeVisible()
 })
 
 test('an open page moves to the new theme when the administrator changes it', async ({ page }) => {
@@ -219,7 +220,7 @@ test('an open page moves to the new theme when the administrator changes it', as
   server = 'grid'
   await page.reload()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'grid')
-  await expect(page.locator('.grid-menu')).toBeVisible()
+  await expect(page.locator('.grid-search')).toBeVisible()
 })
 
 test('a cached copy of the old theme does not reload the page', async ({ page }) => {
@@ -232,7 +233,7 @@ test('a cached copy of the old theme does not reload the page', async ({ page })
   let loads = 0
   page.on('load', () => { loads += 1 })
   await page.goto('/app/dashboard')
-  await expect(page.locator('.grid-menu')).toBeVisible()
+  await expect(page.locator('.grid-search')).toBeVisible()
   await page.waitForTimeout(1200)
   expect(loads).toBe(1)
 })

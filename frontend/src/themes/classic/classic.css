@@ -85,6 +85,26 @@ html[data-theme=classic] .email-section-card { box-shadow: none; }
 html[data-theme=classic] .settings-subnav button { border-radius: 2px; color: rgb(var(--link)); font-weight: 400; }
 html[data-theme=classic] .settings-subnav button[aria-selected=true] { background: rgb(var(--muted)); color: rgb(var(--heading)); font-weight: 600; }
 
+/* Manage account */
+html[data-theme=classic] .account-actions [data-ui-button] { height: 30px; font-size: 13px; }
+html[data-theme=classic] .account-tabs > [role=tablist] { flex-wrap: wrap; }
+@media (min-width: 900px) {
+  html[data-theme=classic] .account-overview { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 28px; }
+}
+@media (max-width: 899px) {
+  html[data-theme=classic] .account-overview { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+}
+html[data-theme=classic] .account-overview-card > h2 { padding: 0 0 10px; border-bottom: 0; font-size: 26px; font-weight: 400; }
+html[data-theme=classic] .account-fact-list { padding: 0; }
+html[data-theme=classic] .account-fact-list dt { color: rgb(var(--heading)); font-weight: 600; }
+html[data-theme=classic] .account-settings-section { padding: 18px 0; border-bottom: 0; }
+html[data-theme=classic] .account-settings-section-heading h2 { font-size: 26px; font-weight: 400; }
+html[data-theme=classic] .account-settings-section-heading p { color: rgb(var(--fg)); font-size: 14px; }
+html[data-theme=classic] .account-danger-section { padding: 16px; border: 1px solid rgb(217 83 79 / 0.5); background: rgb(250 240 240); }
+
+html[data-theme=classic] :is(.accounts-list, .account-create-page, .templates-workspace, .wordpress-workspace) { max-width: none; margin-inline: 0; }
+html[data-theme=classic] .password-page { margin-inline: 0; }
+
 /* Tabs: boxed, joined to the rule beneath */
 html[data-theme=classic] [role=tablist] { gap: 2px; border-bottom: 1px solid rgb(var(--border-strong)); }
 html[data-theme=classic] [role=tab] { margin-bottom: -1px; padding: 9px 15px; border: 1px solid transparent; border-bottom: 0; border-radius: 4px 4px 0 0; color: rgb(var(--link)); font-size: 14px; font-weight: 400; }

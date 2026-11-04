@@ -70,7 +70,15 @@
 .account-fact-list > div:last-child { border-bottom: 0; }
 .account-fact-list dt { color: rgb(var(--muted-fg)); font-size: var(--text-sm); }
 .account-fact-list dd { font-weight: 500; overflow-wrap: anywhere; }
-.account-settings { width: 100%; max-width: 720px; margin-inline: auto; }
+.account-settings { width: 100%; max-width: 860px; }
+.account-settings > * { scroll-margin-top: var(--space-4); }
+.account-jump { display: flex; flex-wrap: wrap; gap: 2px var(--space-3); margin-bottom: var(--space-2); }
+.account-jump button { padding: 2px 0; color: rgb(var(--link)); font-size: var(--text-sm); }
+.account-jump button:hover { text-decoration: underline; text-underline-offset: 2px; }
+.account-tab-group { display: contents; }
+.account-actions { margin-bottom: var(--space-1); }
+.account-screen { min-width: 0; }
+.account-settings .panel-card { margin-block: var(--space-4); }
 .account-settings-section { padding: var(--space-6) 0; border-bottom: 1px solid rgb(var(--border)); }
 .account-settings-section:first-child { padding-top: var(--space-2); }
 .account-settings-section-heading { margin-bottom: var(--space-4); }
@@ -497,7 +505,7 @@
 .theme-sketch-modern .sketch-side { background: #fff; border-right: 1px solid #e7eaf1; }
 .theme-sketch-modern .sketch-side i { background: #d9dcf5; border-radius: 4px; }
 .sketch-head { flex: none; height: 18px; background: #fff; border-bottom: 1px solid #e3e7ed; }
-.sketch-menu { flex: none; height: 12px; background: #1283cc; }
+.sketch-menu { flex: none; height: 22px; background: #0a6daa; }
 .sketch-body { display: flex; flex: 1; flex-direction: column; min-width: 0; }
 .sketch-tools { display: grid; flex: 1; grid-template-columns: repeat(3, 1fr); gap: 7px; padding: 10px; }
 .sketch-tools i { display: block; border-radius: 2px; background: #cfdbe9; }

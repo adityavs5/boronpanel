@@ -231,7 +231,6 @@ test('saved account limits follow a newly applied plan without creating a false 
 test('equivalent account usage values stay clean and changed values save once', async ({ page }) => {
   const state = await fixture(page)
   await page.goto('/app/accounts/alpha?tab=usage-limits')
-  await page.getByText('Additional usage limits', { exact: true }).click()
   const bandwidth = page.getByRole('spinbutton', { name: 'Bandwidth limit (GB/month)', exact: true })
   const databases = page.getByRole('spinbutton', { name: 'Database limit', exact: true })
   const bar = page.getByRole('region', { name: 'Unsaved changes', exact: true })
@@ -252,7 +251,6 @@ test('equivalent account usage values stay clean and changed values save once', 
 test('account usage refetch preserves an edit made after the preceding save', async ({ page }) => {
   const state = await fixture(page)
   await page.goto('/app/accounts/alpha?tab=usage-limits')
-  await page.getByText('Additional usage limits', { exact: true }).click()
   const databases = page.getByRole('spinbutton', { name: 'Database limit', exact: true })
   const bar = page.getByRole('region', { name: 'Unsaved changes', exact: true })
   await databases.fill('2')

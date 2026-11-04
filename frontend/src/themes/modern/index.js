@@ -5,4 +5,4 @@ import { Layout } from './Layout'
 import { Home } from './Home'
 import './modern.css'
 
-export default { id: 'modern', Layout, Home, sidebar: { tone: 'rail', groupIcons: true } }
+export default { id: 'modern', Layout, Home, sidebar: { tone: 'rail', groupIcons: true }, account: { nav: 'side', overview: 'meters' } }

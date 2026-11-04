@@ -1,6 +1,35 @@
 # Changelog
 
-## 3.5.0 — Stable
+## 3.6.0 — Stable
+
+### Changed
+
+- Manage account is rebuilt so every screen is one click away. Overview, Domains,
+  SSL, Applications, Email, Databases, Backups, Modify account, Processes and
+  Notes sit at one level, replacing the Security and Settings screens and the
+  links hidden inside them.
+- Login as user, File Manager, Change password and Suspend are direct buttons
+  instead of a More menu. Terminate stays in the Danger zone.
+- Modify account holds every setting on one page with jump links: plan, PHP,
+  resource and usage limits, identity and passwords, PHP functions, isolation.
+- Overview shows a Setting, Usage and Limit table in Classic and Grid. Modern
+  gets a grouped side list, usage meters and service counts that link to their
+  screens.
+- Grid now follows the icon grid layout exactly: the menu strip is gone, and a
+  Menu button opens a panel of every tool.
+- Manage accounts, Create account, Templates and WordPress use the full page
+  width in Classic and Grid, and Change password lines up with the page heading.
+
+### Fixed
+
+- Backup manager no longer scrolls sideways on phones while account counts load.
+- OpenLiteSpeed and Firewall section icons sit beside their headings, not above.
+
+### Upgrade notes
+
+- No schema or configuration change. Old links to account tabs still work.
+
+## 3.5.0
 
 ### Changed
 

@@ -46,7 +46,7 @@ export function AppShell() {
   const role = useAuth((s) => s.role)
   const { panelName } = useBranding()
   const { pathname, search } = useLocation()
-  const { Layout } = activeTheme()
+  const { Layout, NavDrawer = MobileNavDrawer } = activeTheme()
   const inner = !['/overview', '/dashboard'].includes(pathname)
   useLayoutEffect(() => {
     document.documentElement.dataset.innerPage = String(inner)
@@ -72,7 +72,7 @@ export function AppShell() {
         </Suspense>
       </Layout>
       <MobileBottomNav />
-      <MobileNavDrawer />
+      <NavDrawer />
       <CommandPalette />
     </div>
   )

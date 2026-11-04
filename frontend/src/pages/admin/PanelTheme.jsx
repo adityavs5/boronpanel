@@ -13,7 +13,7 @@ import { THEMES } from '@/themes/registry'
 function Preview({ id }) {
   const tools = Array.from({ length: id === 'grid' ? 8 : 9 })
   return <div className={`theme-sketch theme-sketch-${id}`} aria-hidden="true">
-    {id === 'grid' ? <><div className="sketch-head" /><div className="sketch-menu" /></> : <div className="sketch-side">{[0, 1, 2, 3, 4, 5].map((n) => <i key={n} />)}</div>}
+    {id === 'grid' ? <div className="sketch-menu" /> : <div className="sketch-side">{[0, 1, 2, 3, 4, 5].map((n) => <i key={n} />)}</div>}
     <div className="sketch-body">
       {id !== 'grid' && <div className="sketch-head" />}
       <div className="sketch-tools">{tools.map((_, n) => <i key={n} />)}</div>

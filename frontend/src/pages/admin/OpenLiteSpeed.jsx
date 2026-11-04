@@ -52,7 +52,7 @@ export default function OpenLiteSpeed() {
       <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">WebAdmin HTTPS</div><Badge className="mt-2" variant={data.webadmin_tls_valid ? 'success' : 'warning'}>{data.webadmin_tls_valid ? 'Trusted certificate' : 'Certificate needs attention'}</Badge><div className="mt-2 truncate text-xs text-muted-foreground" title={data.webadmin_tls_hostname}>{data.webadmin_tls_hostname}:7080</div></CardContent></Card>
     </div>
 
-    <Card><CardHeader><CardTitle><Gauge className="h-5 w-5" /> Server settings</CardTitle><CardDescription>Changes are stored in Boron, rendered into the managed OLS configuration, validated, reloaded, and rolled back if verification fails.</CardDescription></CardHeader><CardContent className="space-y-5">
+    <Card><CardHeader><CardTitle className="flex items-center gap-2"><Gauge className="h-5 w-5" /> Server settings</CardTitle><CardDescription>Changes are stored in Boron, rendered into the managed OLS configuration, validated, reloaded, and rolled back if verification fails.</CardDescription></CardHeader><CardContent className="space-y-5">
       <FormField label="Performance profile" hint="Choose a starting point, then adjust individual values."><Select value={profile} onChange={(event) => { const value = event.target.value; setProfile(value); setForm((current) => ({ ...current, ...PROFILES[value] })) }}><option value="balanced">Balanced (recommended)</option><option value="conservative">Conservative / small server</option><option value="high">High traffic</option></Select></FormField>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <FormField label="Maximum connections"><Input aria-label="Maximum connections" type="number" min="100" max="1000000" value={form.max_connections} onChange={number('max_connections')} /></FormField>
@@ -70,7 +70,7 @@ export default function OpenLiteSpeed() {
       <Button loading={saveMut.isPending} onClick={() => saveMut.mutate()}><Settings2 className="h-4 w-4" /> Validate and apply</Button>
     </CardContent></Card>
 
-    <Card><CardHeader><CardTitle><ScrollText className="h-5 w-5" /> Domain error logging</CardTitle><CardDescription>Access and error logs rotate at 50 MiB, retain 90 days, and compress closed segments. DEBUG is always time-limited and automatically returns to the prior level.</CardDescription></CardHeader><CardContent className="space-y-4">
+    <Card><CardHeader><CardTitle className="flex items-center gap-2"><ScrollText className="h-5 w-5" /> Domain error logging</CardTitle><CardDescription>Access and error logs rotate at 50 MiB, retain 90 days, and compress closed segments. DEBUG is always time-limited and automatically returns to the prior level.</CardDescription></CardHeader><CardContent className="space-y-4">
       <div className="grid gap-4 md:grid-cols-[1fr_180px_180px_auto] md:items-end">
         <FormField label="Hosted domain"><Select value={domainLogForm.domain} onChange={(event) => { const domain = event.target.value; const current = data.domain_logs?.find((row) => row.domain === domain); setDomainLogForm({ domain, log_level: current?.log_level || 'WARN', debug_minutes: 0 }) }}><option value="">Select domain</option>{(data.domain_logs || []).map((row) => <option key={row.domain} value={row.domain}>{row.domain}{row.debug_until ? ' · temporary DEBUG' : ''}</option>)}</Select></FormField>
         <FormField label="Error level"><Select value={domainLogForm.log_level} onChange={(event) => setDomainLogForm((current) => ({ ...current, log_level: event.target.value, debug_minutes: event.target.value === 'DEBUG' ? 30 : 0 }))}><option>ERROR</option><option>WARN</option><option>NOTICE</option><option>INFO</option><option>DEBUG</option></Select></FormField>
@@ -79,7 +79,7 @@ export default function OpenLiteSpeed() {
       </div>
     </CardContent></Card>
 
-    <Card><CardHeader><CardTitle><KeyRound className="h-5 w-5" /> WebAdmin credentials</CardTitle><CardDescription>The installed one-way password hash cannot be decoded. After a reset, Boron can reveal the newly generated credential to authenticated administrators.</CardDescription></CardHeader><CardContent className="flex flex-wrap items-center justify-between gap-4">
+    <Card><CardHeader><CardTitle className="flex items-center gap-2"><KeyRound className="h-5 w-5" /> WebAdmin credentials</CardTitle><CardDescription>The installed one-way password hash cannot be decoded. After a reset, Boron can reveal the newly generated credential to authenticated administrators.</CardDescription></CardHeader><CardContent className="flex flex-wrap items-center justify-between gap-4">
       <div><div className="text-sm font-medium">Username: {data.credential?.username || 'admin'}</div><div className="text-sm text-muted-foreground">{data.credential?.password_available ? 'A Boron-managed password is available.' : 'Reset once to make a password available.'}</div></div>
       <div className="flex gap-2">{data.credential?.password_available && <Button variant="outline" loading={revealMut.isPending} onClick={() => revealMut.mutate()}>View password</Button>}<Button variant="danger" onClick={() => setResetOpen(true)}>Reset password</Button></div>
     </CardContent></Card>

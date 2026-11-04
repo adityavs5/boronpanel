@@ -63,7 +63,7 @@ for(const skin of ['modern', 'classic', 'grid'])for(const mode of ['light','dark
   await fixture(page,{skin,mode,role:reference==='domains'?'customer':'admin'})
   await page.goto(reference==='account'?'/app/accounts/alpha':reference==='settings'?'/app/panel-settings':'/app/domains')
   await expect(page.locator('main h1').first()).toBeVisible()
-  if(reference==='account'){await page.getByRole('tab',{name:'Settings',exact:true}).click();await expect(page.getByLabel('CPU cores',{exact:true})).toHaveValue('2')}
+  if(reference==='account'){await page.getByRole('tab',{name:'Modify account',exact:true}).click();await expect(page.getByLabel('CPU cores',{exact:true})).toHaveValue('2')}
   if(reference==='domains')await expect(page.getByRole('button',{name:'Manage',exact:true}).first()).toBeVisible()
   if(reference==='domains'&&width>=640){
     const row=page.locator('.domains-reference-table tbody tr').first()
@@ -132,9 +132,9 @@ test('account summary, usage save, independent section save and typed danger con
  const {writes}=await fixture(page)
  await page.goto('/app/accounts/alpha')
  const summary=page.getByRole('region',{name:'Account summary'})
- await expect(summary.getByRole('button',{name:'Suspend',exact:true})).toHaveCount(0)
+ await expect(summary.getByRole('button',{name:'Suspend',exact:true})).toHaveCount(1)
  await expect(page.getByRole('button',{name:'Login as user',exact:true})).toBeVisible()
- await page.getByRole('tab',{name:'Settings',exact:true}).click()
+ await page.getByRole('tab',{name:'Modify account',exact:true}).click()
  await page.getByLabel('CPU cores',{exact:true}).fill('999')
  await page.getByLabel('CPU cores',{exact:true}).blur()
  await expect(page.getByText('Enter a core count from 0.01 to 12.')).toBeVisible()
