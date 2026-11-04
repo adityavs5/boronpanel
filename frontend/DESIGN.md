@@ -13,8 +13,8 @@ Themes differ in everything a person sees, not only the home screen.
 
 | Theme | id | Frame | Home | Internal pages | Icons |
 |---|---|---|---|---|---|
-| Classic | `classic` | Navy side menu with the logo, white bar with search | Collapsible panels of icon-and-link rows, account details on the right | Large thin titles, flat panels, boxed tabs, striped tables, stacked bold labels | Phosphor duotone |
-| Grid | `grid` | White header with wide search, blue top menu with every group, no side menu | Large tiles with a navigation filter, statistics on the right | Pictogram title band, boxes with grey title strips, joined tabs, dark table heads, labels left of fields, capital buttons | Remix fill, Flat Color pictograms for tools |
+| Classic | `classic` | Navy side menu with the logo, white bar with search | Collapsible panels of icon-and-link rows, account details on the right | Large thin titles with no icon, flat panels, boxed tabs, tables flat on the page with blue heads between dark rules, stacked bold labels | Phosphor duotone |
+| Grid | `grid` | White header with wide search, blue top menu with every group, no side menu | Large tiles with a navigation filter, statistics on the right | Pictogram title band, boxes with grey title strips, joined tabs, tables with a blue toolbar over light heads, labels left of fields | Remix fill, Flat Color pictograms for tools |
 | Modern | `modern` | Light side menu of hubs, search first in the bar | Greeting, search, at-a-glance numbers, common tools, all tools | Rounded cards, pill tabs, airy tables. Has a dark mode | lucide |
 
 How it fits together:

@@ -1,6 +1,19 @@
 # Changelog
 
-## 3.4.1 — Stable
+## 3.4.2 — Stable
+
+### Changed
+
+- Classic: internal pages lose the title icon, and tables sit flat on the page
+  with blue sortable headings between dark rules.
+- Grid: tables have a blue toolbar over light headings, and buttons use normal
+  capitalisation.
+
+### Upgrade notes
+
+- No schema or configuration change.
+
+## 3.4.1
 
 ### Fixed
 

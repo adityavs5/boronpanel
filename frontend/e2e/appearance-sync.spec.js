@@ -6,10 +6,13 @@ test('display preferences reach other tabs without echoing back', async ({ conte
     const path = new URL(route.request().url()).pathname
     return route.fulfill({ json: path.endsWith('/whoami') ? { role: 'admin', username: 'preview' } : path.endsWith('/branding') ? { panel_name: 'Boron' } : {} })
   })
-  const other = await context.newPage()
   await page.goto('/app/appearance')
+  await expect(page.getByLabel('Text size', { exact: true })).toBeVisible()
+  const other = await context.newPage()
   await other.goto('/app/appearance')
   for (const tab of [page, other]) {
+    // Visibility checks need animation frames, which a background tab does not get.
+    await tab.bringToFront()
     await expect(tab.getByLabel('Text size', { exact: true })).toBeVisible()
     await tab.evaluate(() => {
       window.preferenceWrites = 0
@@ -20,7 +23,9 @@ test('display preferences reach other tabs without echoing back', async ({ conte
       }
     })
   }
+  await page.bringToFront()
   await page.getByLabel('Text size', { exact: true }).selectOption('large')
+  await other.bringToFront()
   await expect(other.getByLabel('Text size', { exact: true })).toHaveValue('large')
   expect(await other.evaluate(() => window.preferenceWrites)).toBe(0)
   // A delayed old event must not undo the latest value in shared storage.
@@ -31,6 +36,7 @@ test('display preferences reach other tabs without echoing back', async ({ conte
   await expect(other.getByLabel('Text size', { exact: true })).toHaveValue('large')
   expect(await other.evaluate(() => window.preferenceWrites)).toBe(0)
   await other.getByLabel('Spacing', { exact: true }).selectOption('compact')
+  await page.bringToFront()
   await expect(page.getByLabel('Spacing', { exact: true })).toHaveValue('compact')
   await page.waitForTimeout(500)
   for (const tab of [page, other]) expect(await tab.evaluate(() => window.preferenceWrites)).toBe(1)

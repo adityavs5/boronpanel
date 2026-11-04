@@ -85,23 +85,20 @@ html[data-theme=grid] [role=tab]:first-child { margin-left: 0; }
 html[data-theme=grid] [role=tab]:hover { background: rgb(var(--hover)); color: rgb(var(--link)); }
 html[data-theme=grid] [role=tab][data-state=active] { position: relative; border-color: rgb(var(--accent)); background: rgb(var(--accent)); color: rgb(var(--accent-fg)); }
 
-/* Tables: dark heads */
+/* Tables: a blue toolbar over a light table, selected rows in pale blue */
 html[data-theme=grid] .panel-data-table { border-color: rgb(var(--border-strong)); }
-html[data-theme=grid] .panel-data-table thead tr { background: #3c4b5c; }
-html[data-theme=grid] .panel-data-table thead th, html[data-theme=grid] table thead th { background: #3c4b5c; color: #fff; border-bottom: 0; font-size: 12.5px; font-weight: 500; letter-spacing: 0.02em; }
-html[data-theme=grid] thead th :is(button, a) { color: #fff; }
-html[data-theme=grid] thead th input[type=checkbox] { accent-color: #fff; }
+html[data-theme=grid] .table-toolbar { background: #0a6fb5; border-bottom: 0; color: #fff; }
+html[data-theme=grid] .table-toolbar :is(label, p, span):not(button *, [data-ui-button] *) { color: #fff; }
+html[data-theme=grid] .table-toolbar [data-ui-button=primary]:not(:disabled) { background: #fff; color: #0a6fb5; }
+html[data-theme=grid] .panel-data-table thead tr { background: rgb(var(--muted)); }
+html[data-theme=grid] .panel-data-table thead th, html[data-theme=grid] table thead th { background: rgb(var(--muted)); color: rgb(var(--muted-fg)); border-bottom: 1px solid rgb(var(--border-strong)); font-size: 13px; font-weight: 500; }
 html[data-theme=grid] .panel-data-table tbody tr:hover { background: rgb(var(--hover)); }
-html[data-theme=grid] .table-toolbar { background: rgb(var(--muted)); }
 
 /* Forms: label on the left, wrapping above the field where space is tight */
 html[data-theme=grid] .panel-card-content .form-field { flex-flow: row wrap; align-items: center; gap: 4px 16px; }
 html[data-theme=grid] .panel-card-content .form-field > label { flex: 0 0 190px; font-weight: 500; }
 html[data-theme=grid] .panel-card-content .form-field > :not(label):not(p) { flex: 1 1 240px; min-width: 0; }
 html[data-theme=grid] .panel-card-content .form-field > p { flex: 1 1 100%; }
-
-/* Buttons: compact capitals */
-html[data-theme=grid] [data-ui-button]:not([data-ui-button=link]):not([data-ui-size^=icon]) { font-size: 12.5px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; }
 
 /* Home: section titles over large tiles */
 html[data-theme=grid] .tools-dashboard { max-width: none; }

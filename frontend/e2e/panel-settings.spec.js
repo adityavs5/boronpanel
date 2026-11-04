@@ -26,7 +26,7 @@ for (const skin of ['modern', 'classic', 'grid']) for (const mode of ['light', '
     await expect(button).toBeDisabled()
     await page.getByRole('checkbox').check()
     await button.click()
-    expect(submitted).toEqual({ admin_port: 2222, customer_port: 3333, confirm: true })
+    await expect.poll(() => submitted).toEqual({ admin_port: 2222, customer_port: 3333, confirm: true })
     await expect(page.getByRole('heading', { name: 'Applying panel ports' })).toBeVisible()
     await expect(page.getByRole('link', { name: 'Open new administrator address' })).toHaveAttribute('href', 'https://127.0.0.1:2222/app/panel-settings')
     job = { ...job, status: 'failed', error: 'Previous listeners restored.' }

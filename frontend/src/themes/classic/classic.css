@@ -2,7 +2,7 @@
    white panels with thin headings, tools listed as icon-and-link rows, account
    details down the right, and two-tone icons. Light only. */
 html[data-theme=classic] {
-  --bg: 243 245 248;
+  --bg: 247 248 250;
   --surface: 255 255 255;
   --card: 255 255 255;
   --muted: 238 241 245;
@@ -51,9 +51,7 @@ html[data-theme=classic] .sidebar-tool svg { width: 20px; height: 20px; opacity:
 /* Page titles: large and thin */
 html[data-theme=classic] .panel-page-heading { margin-bottom: 20px; }
 html[data-theme=classic] .panel-page-heading h1, html[data-theme=classic] .dashboard-heading h1 { font-size: var(--text-title); font-weight: 300; letter-spacing: -0.01em; color: rgb(var(--heading)); }
-html[data-theme=classic] .page-heading-icon { width: 48px; height: 48px; margin-top: -2px; background: none; color: rgb(var(--link)); }
-html[data-theme=classic] .page-heading-icon svg { width: 44px; height: 44px; }
-html[data-theme=classic] .panel-page-heading .page-heading-icon { margin-top: 0; }
+html[data-theme=classic] .page-heading-icon { display: none; }
 
 /* Panels */
 html[data-theme=classic] .panel-card, html[data-theme=classic] .panel-data-table, html[data-theme=classic] .stat-card { border: 0; box-shadow: var(--shadow-card); }
@@ -70,11 +68,18 @@ html[data-theme=classic] [role=tab] { margin-bottom: -1px; padding: 9px 16px; bo
 html[data-theme=classic] [role=tab]:hover { background: rgb(var(--muted)); color: rgb(var(--link)); }
 html[data-theme=classic] [role=tab][data-state=active] { border-color: rgb(var(--border-strong)); background: rgb(var(--bg)); color: rgb(var(--heading)); box-shadow: inset 0 1px 0 #fff; font-weight: 600; }
 
-/* Tables: ruled and striped */
-html[data-theme=classic] .panel-data-table thead th, html[data-theme=classic] table thead th { background: #fff; color: rgb(var(--heading)); font-weight: 600; border-bottom: 2px solid rgb(var(--border-strong)); }
-html[data-theme=classic] .panel-data-table thead tr { background: #fff; }
-html[data-theme=classic] .panel-data-table tbody tr:nth-child(even) { background: rgb(247 249 251); }
-html[data-theme=classic] .panel-data-table tbody tr:hover { background: rgb(236 243 251); }
+/* Tables: flat on the page, sortable blue heads between dark rules */
+html[data-theme=classic] .panel-data-table { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+html[data-theme=classic] .table-toolbar { padding: 0 0 12px; border-bottom: 0; }
+html[data-theme=classic] .table-pagination { padding-inline: 0; border-top: 0; }
+html[data-theme=classic] .panel-data-table thead tr { background: transparent; }
+html[data-theme=classic] .panel-data-table thead th, html[data-theme=classic] table thead th { background: transparent; color: rgb(var(--link)); font-size: 14px; font-weight: 400; border-top: 1px solid rgb(var(--heading)); border-bottom: 2px solid rgb(var(--heading)); }
+html[data-theme=classic] thead th :is(button, a) { color: rgb(var(--link)); }
+html[data-theme=classic] .panel-data-table tbody tr { background: rgb(var(--bg)); }
+html[data-theme=classic] .panel-data-table tbody tr:nth-child(odd) { background: rgb(238 240 243); }
+html[data-theme=classic] .panel-data-table tbody tr:hover { background: rgb(230 239 249); }
+html[data-theme=classic] .panel-data-table tbody .table-actions-cell { background: inherit; }
+html[data-theme=classic] .panel-card .panel-data-table thead th { border-top: 0; }
 
 /* Forms: stacked with strong labels */
 html[data-theme=classic] .form-field > label { font-weight: 600; font-size: 14px; color: rgb(var(--heading)); }
