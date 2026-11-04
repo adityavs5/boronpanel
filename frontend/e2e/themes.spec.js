@@ -223,6 +223,21 @@ test('an open page moves to the new theme when the administrator changes it', as
   await expect(page.locator('.grid-menu')).toBeVisible()
 })
 
+test('a cached copy of the old theme does not reload the page', async ({ page }) => {
+  await setup(page, 'customer', 'classic', { handle: (_route, pathname) => pathname === '/api/v1/branding' ? { panel_name: 'Boron', theme: 'grid' } : null })
+  // The panel names the theme on <html>; the browser still caches the old one.
+  await page.route('**/app/dashboard', async (route) => {
+    const response = await route.fetch()
+    await route.fulfill({ response, body: (await response.text()).replace('<html ', '<html data-theme="grid" ') })
+  })
+  let loads = 0
+  page.on('load', () => { loads += 1 })
+  await page.goto('/app/dashboard')
+  await expect(page.locator('.grid-menu')).toBeVisible()
+  await page.waitForTimeout(1200)
+  expect(loads).toBe(1)
+})
+
 test('failed statistics offer retry without hiding the tool directory', async ({ page }) => {
   await setup(page, 'admin', 'classic', { handle: async (route, pathname) => {
     if (!pathname.endsWith('/health')) return null

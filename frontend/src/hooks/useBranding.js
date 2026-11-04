@@ -40,7 +40,7 @@ async function fetchBranding() {
 // title/favicon bootstrap, the admin settings page itself), so it's a
 // single network call per page load, not one per consumer.
 export function useBranding() {
-  const { data, isError } = useQuery({
+  const { data, isError, dataUpdatedAt } = useQuery({
     queryKey: ['branding'],
     queryFn: fetchBranding,
     initialData: cachedBranding,
@@ -56,6 +56,7 @@ export function useBranding() {
     faviconUrl: brandingReady ? (data?.favicon_url || null) : undefined,
     supportEmail: data?.support_email || null,
     supportUrl: data?.support_url || null,
-    theme: data?.theme || null,
+    // Only the server's answer counts: the cached copy may predate a change.
+    theme: dataUpdatedAt > 0 ? data?.theme || null : null,
   }
 }

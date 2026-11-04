@@ -1,6 +1,18 @@
 # Changelog
 
-## 3.4.0 — Stable
+## 3.4.1 — Stable
+
+### Fixed
+
+- After the administrator changes the panel theme, a browser that remembered
+  the old theme no longer reloads the page once on its next visit.
+- The Updates page buttons wrap on a phone instead of running off the screen.
+
+### Upgrade notes
+
+- No schema or configuration change.
+
+## 3.4.0
 
 ### New
 
