@@ -346,7 +346,8 @@ def test_manual_database_restore_is_only_offered_for_compatible_snapshots(
     live = tmp_path / "boron"
     live.mkdir()
     (live / "schema-compat.json").write_text(json.dumps({
-        "schema_version": 3, "minimum_supported_schema": 0, "maximum_supported_schema": 3,
+        "schema_version": CURRENT_SCHEMA_VERSION, "minimum_supported_schema": 0,
+        "maximum_supported_schema": CURRENT_SCHEMA_VERSION,
     }))
     monkeypatch.setattr(settings, "update_backup_dir", str(backup_root))
     monkeypatch.setattr(settings, "update_live_dir", str(live))

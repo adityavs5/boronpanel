@@ -446,6 +446,7 @@ def test_php_process_rows_rejects_tenant_named_decoy(monkeypatch):
 def test_rebuild_namespace_uses_enable_refresh_path(monkeypatch):
     calls = []
     monkeypatch.setattr(nsisolation, "_account_uid", lambda username: 2000)
+    monkeypatch.setattr(nsisolation, "get_status", lambda username: {"enabled": False})
     monkeypatch.setattr(nsisolation, "unmount_uid", lambda uid: calls.append(("unmount", uid)))
     monkeypatch.setattr(nsisolation, "enable_namespace", lambda params: calls.append(("enable", params["username"])) or {"enabled": True})
 
