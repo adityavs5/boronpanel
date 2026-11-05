@@ -1,6 +1,21 @@
 # Changelog
 
-## 3.6.1 — Stable
+## 3.6.2 — Stable
+
+### Changed
+
+- Classic was compared against the live reference interfaces and moved closer:
+  the side menu colour, row lines and stripes now match them exactly.
+- Classic's Manage accounts shows every column, has a Login button on each row
+  and highlights suspended accounts.
+- Classic's Modify account uses boxed sections with the label beside each field.
+- Manage accounts has a Suspended filter in all three themes.
+
+### Upgrade notes
+
+- No schema or configuration change.
+
+## 3.6.1
 
 ### Changed
 

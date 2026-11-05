@@ -14,7 +14,7 @@ html[data-theme=classic] {
   --heading: 51 51 51;
   --muted-fg: 96 96 96;
   --link: 54 90 162;
-  --chrome-bg: 8 25 62;
+  --chrome-bg: 32 38 84;
   --radius-card: 4px;
   --radius-btn: 2px;
   --radius-badge: 3px;
@@ -33,7 +33,7 @@ html[data-theme=classic] {
 
 /* Frame */
 html[data-theme=classic] .panel-topbar { border-bottom: 0; box-shadow: 0 1px 4px rgb(10 37 64 / 0.1); }
-html[data-theme=classic] .topbar-avatar { width: 30px; height: 30px; background: #fff; color: rgb(8 25 62); border: 1.5px solid rgb(8 25 62); }
+html[data-theme=classic] .topbar-avatar { width: 30px; height: 30px; background: #fff; color: rgb(32 38 84); border: 1.5px solid rgb(32 38 84); }
 html[data-theme=classic] .topbar-account-name, html[data-theme=classic] .topbar-account > svg { display: none; }
 html[data-theme=classic] .topbar-account { padding: 0 2px; }
 @media (min-width: 1101px) {
@@ -96,9 +96,18 @@ html[data-theme=classic] .account-tabs > [role=tablist] { flex-wrap: wrap; }
 }
 html[data-theme=classic] .account-overview-card > h2 { padding: 0 0 10px; border-bottom: 0; font-size: 26px; font-weight: 400; }
 html[data-theme=classic] .account-fact-list { padding: 0; }
+html[data-theme=classic] .account-list-identity .account-list-domain { display: none; }
 html[data-theme=classic] .account-fact-list dt { color: rgb(var(--heading)); font-weight: 600; }
-html[data-theme=classic] .account-settings-section { padding: 18px 0; border-bottom: 0; }
-html[data-theme=classic] .account-settings-section-heading h2 { font-size: 26px; font-weight: 400; }
+html[data-theme=classic] .account-settings-section { margin-bottom: 18px; padding: 14px 16px; border: 1px solid rgb(204 204 204); background: #fff; }
+html[data-theme=classic] .account-danger-section { margin-bottom: 18px; }
+@media (min-width: 640px) {
+  html[data-theme=classic] .account-setting-fields { align-items: stretch; }
+  html[data-theme=classic] .account-setting-fields > .form-field, html[data-theme=classic] .account-setting-fields > .space-y-1\.5 { display: grid; grid-template-columns: 220px minmax(0, 420px); align-items: center; gap: 4px 24px; max-width: none; padding: 10px 0; border-bottom: 1px solid rgb(221 221 221); }
+  html[data-theme=classic] .account-setting-fields > .form-field > label, html[data-theme=classic] .account-setting-fields > .space-y-1\.5 > label { font-weight: 600; }
+  html[data-theme=classic] .account-setting-fields > .form-field > p { grid-column: 2; }
+  html[data-theme=classic] .account-setting-fields > [data-ui-button] { align-self: flex-start; }
+}
+html[data-theme=classic] .account-settings-section-heading h2 { font-size: 18px; font-weight: 600; }
 html[data-theme=classic] .account-settings-section-heading p { color: rgb(var(--fg)); font-size: 14px; }
 html[data-theme=classic] .account-danger-section { padding: 16px; border: 1px solid rgb(217 83 79 / 0.5); background: rgb(250 240 240); }
 
@@ -119,8 +128,10 @@ html[data-theme=classic] .panel-data-table thead tr { background: transparent; }
 html[data-theme=classic] .panel-data-table thead th, html[data-theme=classic] table thead th { height: 38px; padding: 8px; background: transparent; color: rgb(var(--link)); font-size: 14px; font-weight: 400; border-top: 1px solid rgb(50 50 50); border-bottom: 2px solid rgb(50 50 50); }
 html[data-theme=classic] thead th :is(button, a) { color: rgb(var(--link)); }
 html[data-theme=classic] .panel-data-table td { height: 44px; padding: 8px; font-size: 14px; }
-html[data-theme=classic] .panel-data-table tbody tr { background: rgb(var(--bg)); }
-html[data-theme=classic] .panel-data-table tbody tr:nth-child(odd) { background: rgb(240 240 240); }
+html[data-theme=classic] .panel-data-table tbody tr { background: rgb(248 248 248); }
+html[data-theme=classic] .panel-data-table tbody td { border-top: 1px solid rgb(221 221 221); }
+html[data-theme=classic] .panel-data-table tbody tr:nth-child(odd) { background: rgb(241 241 241); }
+html[data-theme=classic] .panel-data-table tbody tr:has(.account-status-suspended) { background: rgb(252 228 228); }
 html[data-theme=classic] .panel-data-table tbody tr:hover { background: rgb(232 239 248); }
 html[data-theme=classic] .panel-data-table tbody .table-actions-cell { background: inherit; }
 

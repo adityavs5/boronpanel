@@ -15,6 +15,7 @@
 .accounts-reference-table button[role=checkbox] { vertical-align: middle; }
 .accounts-reference-table .table-actions-cell { padding-right: var(--space-5); }
 .accounts-reference-table .table-pagination { padding: var(--space-3) var(--space-5); background: rgb(var(--card)); }
+.accounts-status-filter { display: flex; gap: 4px; }
 .accounts-list-count { margin-right: var(--space-2); color: rgb(var(--muted-fg)); font-size: var(--text-sm); white-space: nowrap; }
 .account-list-identity { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; }
 .account-list-username { font-size: var(--text-body); font-weight: 600; line-height: 1.3; color: rgb(var(--fg)); }
