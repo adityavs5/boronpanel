@@ -28,6 +28,9 @@ const synonyms = {
   '/health': 'server information health cpu memory load uptime status',
   '/waf': 'waf web application firewall modsecurity owasp rules',
   '/accounts/new': 'create account new hosting account add user',
+  '/plans': 'hosting plan plans package packages limits quota resources',
+  '/ip-bans': 'block ban banned blacklist deny ip address attacker',
+  '/ip-whitelist': 'allow trusted whitelist ip address panel access',
   '/ip-management': 'server ip address addresses multiple dedicated shared allocation pool network interface new account default random',
 }
 export function normalize(text) { return String(text || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() }

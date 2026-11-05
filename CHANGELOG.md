@@ -1,6 +1,18 @@
 # Changelog
 
-## 3.6.2 — Stable
+## 3.6.3 — Stable
+
+### Changed
+
+- Classic's account editor uses the reference form frame, section titles, label
+  column and row lines.
+- Search finds tools from more everyday words, such as block ip and hosting plan.
+
+### Upgrade notes
+
+- No schema or configuration change.
+
+## 3.6.2
 
 ### Changed
 

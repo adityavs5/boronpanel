@@ -98,16 +98,16 @@ html[data-theme=classic] .account-overview-card > h2 { padding: 0 0 10px; border
 html[data-theme=classic] .account-fact-list { padding: 0; }
 html[data-theme=classic] .account-list-identity .account-list-domain { display: none; }
 html[data-theme=classic] .account-fact-list dt { color: rgb(var(--heading)); font-weight: 600; }
-html[data-theme=classic] .account-settings-section { margin-bottom: 18px; padding: 14px 16px; border: 1px solid rgb(204 204 204); background: #fff; }
-html[data-theme=classic] .account-danger-section { margin-bottom: 18px; }
+html[data-theme=classic] .account-settings-section { margin: 8px 8px 24px; padding: 10px 15px 5px; border: 1px solid rgb(170 170 170); outline: 8px solid rgb(221 221 221); background: #fff; }
+html[data-theme=classic] .account-danger-section { margin: 8px 0 18px; outline: 0; }
 @media (min-width: 640px) {
   html[data-theme=classic] .account-setting-fields { align-items: stretch; }
-  html[data-theme=classic] .account-setting-fields > .form-field, html[data-theme=classic] .account-setting-fields > .space-y-1\.5 { display: grid; grid-template-columns: 220px minmax(0, 420px); align-items: center; gap: 4px 24px; max-width: none; padding: 10px 0; border-bottom: 1px solid rgb(221 221 221); }
+  html[data-theme=classic] .account-setting-fields > .form-field, html[data-theme=classic] .account-setting-fields > .space-y-1\.5 { display: grid; grid-template-columns: 227px minmax(0, 420px); align-items: center; gap: 4px 15px; max-width: none; padding: 12px 0 8px; border-bottom: 2px solid rgb(204 204 204); }
   html[data-theme=classic] .account-setting-fields > .form-field > label, html[data-theme=classic] .account-setting-fields > .space-y-1\.5 > label { font-weight: 600; }
   html[data-theme=classic] .account-setting-fields > .form-field > p { grid-column: 2; }
   html[data-theme=classic] .account-setting-fields > [data-ui-button] { align-self: flex-start; }
 }
-html[data-theme=classic] .account-settings-section-heading h2 { font-size: 18px; font-weight: 600; }
+html[data-theme=classic] .account-settings-section-heading h2 { font-size: 16.24px; font-weight: 700; }
 html[data-theme=classic] .account-settings-section-heading p { color: rgb(var(--fg)); font-size: 14px; }
 html[data-theme=classic] .account-danger-section { padding: 16px; border: 1px solid rgb(217 83 79 / 0.5); background: rgb(250 240 240); }
 
