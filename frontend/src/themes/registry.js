@@ -10,7 +10,7 @@ export const THEMES = [
   },
   {
     id: 'grid', name: 'Grid', layout: 'Blue header, large icon tiles',
-    description: 'Tool groups under blue title bars with full-colour icons, and a Menu button that reaches every tool from any page. No side menu.',
+    description: 'Tool groups under blue title bars with bright tile icons, and a Menu button that reaches every tool from any page. No side menu.',
     darkMode: false,
   },
   {

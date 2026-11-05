@@ -1,5 +1,5 @@
 /* Grid: a blue header with a white logo, a search card under it, tool groups
-   under solid blue title bars with full-colour icons, and internal pages laid
+   under solid blue title bars with colour tile icons, and internal pages laid
    flat on white with bold section titles, boxed tables and capital action
    buttons. Light only. */
 html[data-theme=grid] {
@@ -169,12 +169,36 @@ html[data-theme=grid] .group-chip, html[data-theme=grid] .group-count { display:
 html[data-theme=grid] .tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px; padding: 14px 10px 10px; }
 html[data-theme=grid] .tool-link { flex-direction: column; align-items: center; justify-content: flex-start; gap: 8px; min-height: 104px; padding: 8px 6px; border-radius: 4px; text-align: center; }
 html[data-theme=grid] .tool-link:hover { background: rgb(var(--hover)); }
-html[data-theme=grid] .tool-icon, html[data-theme=grid] .tool-group .tool-icon.tool-icon-brand { width: 48px; height: 48px; background: none; color: rgb(var(--link)); }
+html[data-theme=grid] .tool-icon, html[data-theme=grid] .tool-group .tool-icon.tool-icon-brand { width: 52px; height: 52px; background: none; color: rgb(var(--link)); }
 html[data-theme=grid] .tool-icon > svg { width: 46px; height: 46px; }
-html[data-theme=grid] .tool-icon > img { width: 42px; height: 42px; }
+
+/* Tool pictograms: a white glyph on a lit tile, so every tool carries the same
+   visual weight. Each tone stays dark enough for the glyph to read (3:1 or more). */
+html[data-theme=grid] .grid-tile, html[data-theme=grid] .tool-group .tool-icon.tool-icon-brand { border-radius: 15px; transition: transform 160ms ease, box-shadow 160ms ease; }
+html[data-theme=grid] .grid-tile { --tile-a: 47 137 235; --tile-b: 21 88 206; display: grid; place-items: center; width: 52px; height: 52px; background: linear-gradient(165deg, rgb(var(--tile-a)), rgb(var(--tile-b))); box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.3), inset 0 -1px 0 rgb(0 0 0 / 0.08), 0 1px 2px rgb(15 23 42 / 0.16), 0 7px 14px -7px rgb(var(--tile-b) / 0.75); color: #fff; }
+html[data-theme=grid] .grid-tile > svg { width: 28px; height: 28px; filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.16)); }
+html[data-theme=grid] .grid-tile[data-tone=cyan] { --tile-a: 13 148 190; --tile-b: 8 108 150; }
+html[data-theme=grid] .grid-tile[data-tone=teal] { --tile-a: 15 150 136; --tile-b: 10 108 100; }
+html[data-theme=grid] .grid-tile[data-tone=green] { --tile-a: 30 155 90; --tile-b: 14 116 66; }
+html[data-theme=grid] .grid-tile[data-tone=amber] { --tile-a: 222 122 12; --tile-b: 186 84 8; }
+html[data-theme=grid] .grid-tile[data-tone=red] { --tile-a: 236 72 84; --tile-b: 196 28 58; }
+html[data-theme=grid] .grid-tile[data-tone=pink] { --tile-a: 226 70 146; --tile-b: 180 30 112; }
+html[data-theme=grid] .grid-tile[data-tone=violet] { --tile-a: 139 92 246; --tile-b: 96 50 214; }
+html[data-theme=grid] .grid-tile[data-tone=indigo] { --tile-a: 88 104 236; --tile-b: 52 62 196; }
+html[data-theme=grid] .grid-tile[data-tone=slate] { --tile-a: 100 116 139; --tile-b: 60 72 92; }
+/* Product marks keep their own colours on a white tile of the same shape. */
+html[data-theme=grid] .tool-group .tool-icon.tool-icon-brand { display: grid; place-items: center; background: #fff; box-shadow: inset 0 0 0 1px rgb(15 23 42 / 0.09), 0 1px 2px rgb(15 23 42 / 0.1), 0 7px 14px -8px rgb(15 23 42 / 0.3); }
+html[data-theme=grid] .tool-icon > img { width: 32px; height: 32px; }
+html[data-theme=grid] .tool-link:hover .grid-tile, html[data-theme=grid] .tool-link:focus-visible .grid-tile, html[data-theme=grid] .tool-link:hover .tool-icon-brand, html[data-theme=grid] .tool-link:focus-visible .tool-icon-brand { transform: translateY(-2px); }
+html[data-theme=grid] .tool-link:hover .grid-tile, html[data-theme=grid] .tool-link:focus-visible .grid-tile { box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.3), inset 0 -1px 0 rgb(0 0 0 / 0.08), 0 2px 3px rgb(15 23 42 / 0.16), 0 11px 18px -8px rgb(var(--tile-b) / 0.85); }
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme=grid] .grid-tile, html[data-theme=grid] .tool-group .tool-icon.tool-icon-brand { transition: none; }
+  html[data-theme=grid] .tool-link:hover .grid-tile, html[data-theme=grid] .tool-link:focus-visible .grid-tile, html[data-theme=grid] .tool-link:hover .tool-icon-brand, html[data-theme=grid] .tool-link:focus-visible .tool-icon-brand { transform: none; }
+}
 html[data-theme=grid] .tool-label { max-width: none; font-size: 13.5px; font-weight: 400; line-height: 1.25; color: rgb(var(--fg)); }
 html[data-theme=grid] .tool-link:hover .tool-label { color: rgb(var(--link)); }
 html[data-theme=grid] .tool-update-count { top: 6px; left: calc(50% + 16px); }
+html[data-theme=grid] .tool-external { top: 6px; right: auto; left: calc(50% + 30px); }
 
 /* Right column */
 html[data-theme=grid] .stats-panel { border: 1px solid rgb(var(--border)); border-radius: 4px; background: #fff; }

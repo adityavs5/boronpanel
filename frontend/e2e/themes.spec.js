@@ -143,6 +143,36 @@ test('grid: the Menu panel reaches a tool from any page, and the filter narrows 
   await expect(page.locator('#panel-navigation-drawer')).toHaveCount(0)
 })
 
+for (const role of ['admin', 'customer']) {
+  test(`grid: every ${role} tool has a modern tile that stands apart in its group`, async ({ page }) => {
+    await setup(page, role, 'grid')
+    await page.goto(role === 'admin' ? '/app/overview' : '/app/dashboard')
+    await expect(page.locator('.tool-link').first()).toBeVisible()
+    const groups = await page.locator('.tool-group').evaluateAll(items => items.map(group => ({
+      name: group.getAttribute('aria-label'),
+      tools: [...group.querySelectorAll('.tool-link')].map(link => {
+        const tile = link.querySelector('.grid-tile')
+        const size = (tile || link.querySelector('.tool-icon')).getBoundingClientRect()
+        return {
+          label: link.querySelector('.tool-label').innerText,
+          picture: tile ? `${tile.dataset.tone} ${tile.querySelector('svg').innerHTML}` : link.querySelector('img')?.getAttribute('src'),
+          painted: !tile || getComputedStyle(tile).backgroundImage.includes('gradient'),
+          size: [size.width, size.height],
+        }
+      }),
+    })))
+    expect(groups.length).toBeGreaterThanOrEqual(6)
+    for (const { name, tools } of groups) {
+      for (const tool of tools) {
+        expect(tool.picture, `${tool.label} has a tile`).toBeTruthy()
+        expect(tool.painted, `${tool.label} is painted`).toBe(true)
+        expect(tool.size, `${tool.label} is full size`).toEqual([52, 52])
+      }
+      expect(new Set(tools.map(tool => tool.picture)).size, `${name} has no repeated picture`).toBe(tools.length)
+    }
+  })
+}
+
 test('nobody picks a theme for themselves', async ({ page }) => {
   await setup(page, 'customer', 'classic')
   await page.goto('/app/appearance')

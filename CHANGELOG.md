@@ -1,6 +1,17 @@
 # Changelog
 
-## 3.6.3 — Stable
+## 3.6.4 — Stable
+
+### Changed
+
+- Grid has a new set of tool icons: white symbols on bright coloured tiles, with
+  product logos on matching white tiles. Tiles lift gently on hover.
+
+### Upgrade notes
+
+- No schema or configuration change.
+
+## 3.6.3
 
 ### Changed
 

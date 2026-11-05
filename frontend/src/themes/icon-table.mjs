@@ -45,23 +45,50 @@ export const ICONS = {
   Wrench: ['Wrench', 'RiToolsFill'], X: ['X', 'RiCloseLine'], XCircle: ['XCircle', 'RiCloseCircleFill'], Zap: ['Lightning', 'RiFlashlightFill'],
 }
 
-// Grid's home tiles and page headers use full-colour pictograms (Flat Color
-// Icons), one per tool route. A route without one falls back to its Remix icon.
+// Grid's tool pictograms: a solid Remix glyph on a coloured tile (grid/tile.jsx),
+// as [glyph, tone]. grid.css draws the tones listed in GRID_TONES.
+export const GRID_TONES = ['blue', 'cyan', 'teal', 'green', 'amber', 'red', 'pink', 'violet', 'indigo', 'slate']
 export const GRID_TOOL_ICONS = {
-  '/domains': 'FcGlobe', '/subdomains': 'FcTreeStructure', '/ftp': 'FcUpload', '/ssl': 'FcLock', '/databases': 'FcDatabase', '/dns': 'FcFlowChart', '/php': 'FcCommandLine',
-  '/email': 'FcInvite', '/email?webmail=1': 'FcFeedback', '/email/settings': 'FcDataConfiguration', '/email/dns': 'FcApproval', '/email/spam': 'FcCancel', '/email/migration': 'FcCollect',
-  '/files': 'FcOpenedFolder', '/files?tool=permissions': 'FcPrivacy', '/redirects': 'FcAdvance', '/forwarding': 'FcLink', '/cache': 'FcFlashOn', '/website-maintenance': 'FcSupport', '/error-pages': 'FcHighPriority',
-  '/cron': 'FcAlarmClock', '/ssh': 'FcKey', '/terminal': 'FcCommandLine', '/logs': 'FcViewDetails', '/devtools': 'FcEngineering', '/change-password': 'FcKey', '/appearance': 'FcTemplate',
-  '/disk-usage': 'FcPieChart', '/website-statistics': 'FcBarChart', '/processes': 'FcProcess', '/malware': 'FcBiohazard', '/website-security': 'FcDataProtection', '/security': 'FcLock', '/site-health': 'FcLike',
-  
-  '/accounts': 'FcConferenceCall', '/accounts/new': 'FcBusinessman', '/resellers': 'FcBusiness', '/administrators': 'FcManager', '/plans': 'FcPackage', '/import/accounts': 'FcImport',
-  '/health': 'FcLineChart', '/diagnostics': 'FcInspection', '/resource-manager': 'FcElectronics', '/filesystem-isolation': 'FcLockPortrait', '/security-center': 'FcDataProtection',
-  '/stack-manager': 'FcDeployment', '/services': 'FcServices', '/openlitespeed': 'FcFlashAuto', '/db-monitor': 'FcDataSheet', '/slow-queries': 'FcOvertime', '/dns-setup': 'FcWorkflow', '/cloudflare': 'FcDataEncryption',
-  '/dns-cluster': 'FcMindMap', '/ip-management': 'FcOrgUnit', '/updates': 'FcRefresh', '/mail-queue': 'FcInTransit', '/mail-tracking': 'FcBinoculars', '/imap-migrations': 'FcCollect', '/notifications': 'FcAdvertising',
-  '/templates': 'FcTemplate', '/maintenance-mode': 'FcSupport', '/firewall': 'FcBadDecision', '/fail2ban': 'FcDisapprove', '/waf': 'FcGoodDecision', '/ip-bans': 'FcCancel', '/ip-whitelist': 'FcApprove', '/tokens': 'FcKey',
-  '/bandwidth': 'FcComboChart', '/site-stats': 'FcAreaChart', '/audit-log': 'FcTodoList', '/account-log': 'FcSurvey', '/error-log': 'FcHighPriority', '/retention': 'FcFilingCabinet', '/webhooks': 'FcShare',
-  '/panel-settings': 'FcSettings', '/server-setup': 'FcAutomatic', '/branding': 'FcEditImage', '/panel-theme': 'FcTemplate', '/api/docs': 'FcLibrary', '/license': 'FcDiploma2',
-  
-  '/backups': 'FcDataBackup', '/backups?component=files': 'FcFolder', '/backups?component=databases': 'FcDataRecovery', '/backups?component=mail': 'FcInvite', '/backups?action=create&kind=full': 'FcDataBackup', '/backups?view=restores': 'FcDownload',
-  '/backup-jobs': 'FcDataBackup', '/backup-jobs?tab=jobs': 'FcPlanner', '/backup-jobs?tab=destinations': 'FcFilingCabinet', '/backup-jobs?tab=history&view=recovery': 'FcDataRecovery', '/backup-jobs?tab=history&view=activity': 'FcTodoList', '/backup-jobs?tab=notifications': 'FcAdvertising',
+  '/domains': ['RiGlobalFill', 'blue'], '/subdomains': ['RiNodeTree', 'cyan'], '/ftp': ['RiFolderTransferFill', 'teal'], '/ssl': ['RiLockFill', 'green'],
+  '/databases': ['RiDatabase2Fill', 'amber'], '/dns': ['RiSignpostFill', 'violet'], '/php': ['RiPhpFill', 'indigo'],
+
+  '/email': ['RiMailFill', 'blue'], '/email?webmail=1': ['RiMailOpenFill', 'cyan'], '/email/settings': ['RiMailSettingsFill', 'slate'], '/email/dns': ['RiMailCheckFill', 'green'],
+  '/email/spam': ['RiMailForbidFill', 'red'], '/email/migration': ['RiMailDownloadFill', 'violet'],
+
+  '/files': ['RiFolderOpenFill', 'amber'], '/files?tool=permissions': ['RiFolderKeyholeFill', 'indigo'], '/redirects': ['RiDirectionFill', 'teal'], '/forwarding': ['RiLinksFill', 'blue'],
+  '/cache': ['RiFlashlightFill', 'violet'], '/website-maintenance': ['RiToolsFill', 'slate'], '/error-pages': ['RiFileWarningFill', 'red'],
+
+  '/cron': ['RiAlarmFill', 'pink'], '/ssh': ['RiKey2Fill', 'amber'], '/terminal': ['RiTerminalBoxFill', 'slate'], '/logs': ['RiFileList3Fill', 'blue'], '/devtools': ['RiCodeSSlashFill', 'violet'],
+  '/change-password': ['RiLockPasswordFill', 'indigo'], '/appearance': ['RiPaletteFill', 'pink'],
+
+  '/disk-usage': ['RiPieChart2Fill', 'blue'], '/website-statistics': ['RiBarChartBoxFill', 'green'], '/processes': ['RiCpuFill', 'indigo'], '/malware': ['RiBugFill', 'red'],
+  '/website-security': ['RiShieldCheckFill', 'teal'], '/security': ['RiFingerprintFill', 'violet'], '/site-health': ['RiStethoscopeFill', 'pink'],
+
+  '/accounts': ['RiGroupFill', 'blue'], '/accounts/new': ['RiUserAddFill', 'green'], '/resellers': ['RiStore2Fill', 'amber'], '/administrators': ['RiAdminFill', 'violet'],
+  '/plans': ['RiPriceTag3Fill', 'pink'], '/import/accounts': ['RiUserSharedFill', 'teal'],
+
+  '/health': ['RiPulseFill', 'green'], '/diagnostics': ['RiStethoscopeFill', 'cyan'], '/services': ['RiServerFill', 'blue'], '/openlitespeed': ['RiFlashlightFill', 'amber'],
+  '/resource-manager': ['RiEqualizerFill', 'indigo'], '/filesystem-isolation': ['RiFolderShield2Fill', 'slate'], '/security-center': ['RiShieldStarFill', 'red'], '/stack-manager': ['RiStackFill', 'violet'],
+  '/db-monitor': ['RiDatabase2Fill', 'teal'], '/slow-queries': ['RiHourglassFill', 'pink'], '/updates': ['RiRefreshFill', 'blue'],
+
+  '/dns-setup': ['RiSignpostFill', 'violet'], '/cloudflare': ['RiCloudFill', 'amber'], '/dns-cluster': ['RiShareFill', 'indigo'], '/ip-management': ['RiMapPin2Fill', 'teal'],
+
+  '/mail-queue': ['RiMailSendFill', 'blue'], '/mail-tracking': ['RiSearchEyeFill', 'cyan'], '/imap-migrations': ['RiMailDownloadFill', 'violet'], '/notifications': ['RiNotification3Fill', 'amber'],
+
+  '/templates': ['RiLayoutMasonryFill', 'pink'], '/maintenance-mode': ['RiToolsFill', 'slate'],
+
+  '/firewall': ['RiFireFill', 'red'], '/fail2ban': ['RiUserForbidFill', 'amber'], '/waf': ['RiShieldFlashFill', 'indigo'], '/ip-bans': ['RiForbid2Fill', 'pink'],
+  '/ip-whitelist': ['RiCheckboxCircleFill', 'green'], '/tokens': ['RiKeyFill', 'slate'],
+
+  '/bandwidth': ['RiSpeedUpFill', 'blue'], '/site-stats': ['RiLineChartFill', 'green'], '/audit-log': ['RiFileShield2Fill', 'indigo'], '/account-log': ['RiFileUserFill', 'teal'],
+  '/error-log': ['RiFileWarningFill', 'red'], '/retention': ['RiArchiveDrawerFill', 'slate'], '/webhooks': ['RiWebhookFill', 'pink'],
+
+  '/server-setup': ['RiInstallFill', 'violet'], '/panel-settings': ['RiSettings3Fill', 'slate'], '/panel-theme': ['RiLayout4Fill', 'blue'], '/branding': ['RiQuillPenFill', 'amber'],
+  '/license': ['RiAwardFill', 'green'], '/api/docs': ['RiBookOpenFill', 'teal'],
+
+  '/backups': ['RiHistoryFill', 'violet'], '/backups?component=files': ['RiFolderZipFill', 'amber'], '/backups?component=databases': ['RiDatabase2Fill', 'indigo'],
+  '/backups?component=mail': ['RiInboxArchiveFill', 'blue'], '/backups?action=create&kind=full': ['RiArchiveFill', 'teal'], '/backups?view=restores': ['RiDownloadCloud2Fill', 'cyan'],
+
+  '/backup-jobs': ['RiHistoryFill', 'violet'], '/backup-jobs?tab=jobs': ['RiCalendarScheduleFill', 'blue'], '/backup-jobs?tab=destinations': ['RiHardDrive3Fill', 'teal'],
+  '/backup-jobs?tab=history&view=recovery': ['RiInboxUnarchiveFill', 'green'], '/backup-jobs?tab=history&view=activity': ['RiFileList3Fill', 'slate'], '/backup-jobs?tab=notifications': ['RiNotification3Fill', 'amber'],
 }
