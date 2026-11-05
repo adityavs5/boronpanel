@@ -61,11 +61,32 @@ for (const [role, username, home] of [['customer', 'alpha', '/app/dashboard'], [
       if (await section.getAttribute('aria-expanded') !== 'true') await section.click()
       await expect(section).toHaveAttribute('aria-expanded', 'true')
     }
-    const tools = page.locator('aside a.sidebar-tool:not(.sidebar-home)')
-    expect(await tools.count()).toBeGreaterThanOrEqual(role === 'admin' ? 40 : 30)
-    for (const tool of await tools.all()) {
-      await expect(tool).toBeVisible()
-      await expect(tool).toHaveAccessibleName(/\S/)
+    const links = page.locator('aside a.sidebar-tool:not(.sidebar-home)')
+    const tools = await links.evaluateAll(items => items.map(item => ({
+      label: item.getAttribute('aria-label') || item.innerText.trim(),
+      path: new URL(item.href).pathname,
+      external: item.target === '_blank',
+      section: item.closest('.sidebar-group, section, div')?.parentElement?.querySelector('.sidebar-section')?.innerText.trim(),
+    })))
+    expect(tools.length).toBeGreaterThanOrEqual(role === 'admin' ? 40 : 30)
+
+    // Really walk each tool from a fresh home page, counting the clicks.
+    test.setTimeout(240000)
+    for (const tool of tools) {
+      await page.goto(home)
+      const link = page.locator('aside').getByRole('link', { name: tool.label, exact: true }).first()
+      await expect(page.locator('aside .sidebar-section').first()).toBeVisible()
+      let clicks = 0
+      if (!await link.isVisible()) {
+        await page.locator('aside .sidebar-section').filter({ hasText: tool.section }).first().click()
+        clicks++
+      }
+      await expect(link, `${tool.label} is in its menu section`).toBeVisible()
+      if (tool.external) continue
+      await link.click()
+      clicks++
+      await expect.poll(() => new URL(page.url()).pathname, { message: `${tool.label} opens its page` }).toBe(tool.path)
+      expect(clicks, tool.label).toBeLessThanOrEqual(2)
     }
   })
 
